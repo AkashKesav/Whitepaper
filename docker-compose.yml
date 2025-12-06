@@ -1,0 +1,160 @@
+version: "3.8"
+
+services:
+  # DGraph Zero - Cluster management
+  dgraph-zero:
+    image: dgraph/dgraph:v24.0.0
+    container_name: rmk-dgraph-zero
+    ports:
+      - "5080:5080"
+      - "6080:6080"
+    volumes:
+      - dgraph-zero-data:/dgraph
+    command: dgraph zero --my=dgraph-zero:5080
+    networks:
+      - rmk-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # DGraph Alpha - Graph database
+  dgraph-alpha:
+    image: dgraph/dgraph:v24.0.0
+    container_name: rmk-dgraph-alpha
+    ports:
+      - "8080:8080"
+      - "9080:9080"
+    volumes:
+      - dgraph-alpha-data:/dgraph
+    command: dgraph alpha --my=dgraph-alpha:7080 --zero=dgraph-zero:5080 --security whitelist=0.0.0.0/0
+    networks:
+      - rmk-network
+    depends_on:
+      dgraph-zero:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # NATS - Message queue for streaming
+  nats:
+    image: nats:2.10-alpine
+    container_name: rmk-nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--jetstream", "--http_port", "8222"]
+    networks:
+      - rmk-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Redis - Caching activation scores and hot paths
+  redis:
+    image: redis:7-alpine
+    container_name: rmk-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - rmk-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Ollama - Local LLM inference
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rmk-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - rmk-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # AI Services - Python FastAPI for SLM orchestration
+  ai-services:
+    build:
+      context: ./ai
+      dockerfile: Dockerfile
+    container_name: rmk-ai-services
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    networks:
+      - rmk-network
+    depends_on:
+      - ollama
+
+  # Memory Kernel - The Subconscious
+  memory-kernel:
+    build:
+      context: .
+      dockerfile: Dockerfile.kernel
+    container_name: rmk-memory-kernel
+    ports:
+      - "9000:9000"
+    environment:
+      - DGRAPH_URL=dgraph-alpha:9080
+      - NATS_URL=nats://nats:4222
+      - REDIS_URL=redis:6379
+      - AI_SERVICES_URL=http://ai-services:8000
+    networks:
+      - rmk-network
+    depends_on:
+      dgraph-alpha:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Front-End Agent - The Consciousness
+  frontend-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: rmk-frontend-agent
+    ports:
+      - "3000:3000"
+    environment:
+      - MEMORY_KERNEL_URL=http://memory-kernel:9000
+      - NATS_URL=nats://nats:4222
+      - AI_SERVICES_URL=http://ai-services:8000
+    networks:
+      - rmk-network
+    depends_on:
+      - memory-kernel
+      - ai-services
+
+volumes:
+  dgraph-zero-data:
+  dgraph-alpha-data:
+  redis-data:
+  ollama-data:
+
+networks:
+  rmk-network:
+    driver: bridge
