@@ -158,8 +158,8 @@ func (m *AnticipationModule) detectTemporalPatterns(ctx context.Context) ([]grap
 
 			pattern := graph.Pattern{
 				Node: graph.Node{
-					Type: graph.NodeTypePattern,
-					Name: fmt.Sprintf("Pattern: %s on %s at %d:00", stats.Event, stats.Day, stats.Hour),
+					DType: []string{string(graph.NodeTypePattern)},
+					Name:  fmt.Sprintf("Pattern: %s on %s at %d:00", stats.Event, stats.Day, stats.Hour),
 				},
 				PatternType:     "temporal",
 				Frequency:       stats.Count,
@@ -243,8 +243,8 @@ func (m *AnticipationModule) detectSequencePatterns(ctx context.Context) ([]grap
 
 			pattern := graph.Pattern{
 				Node: graph.Node{
-					Type: graph.NodeTypePattern,
-					Name: fmt.Sprintf("Sequence: %s", seqKey),
+					DType: []string{string(graph.NodeTypePattern)},
+					Name:  fmt.Sprintf("Sequence: %s", seqKey),
 				},
 				PatternType:     "sequence",
 				Frequency:       seq.Count,
@@ -274,7 +274,7 @@ func (m *AnticipationModule) persistPattern(ctx context.Context, pattern graph.P
 
 	// Create new pattern
 	node := &graph.Node{
-		Type:        graph.NodeTypePattern,
+		DType:       []string{string(graph.NodeTypePattern)},
 		Name:        pattern.Name,
 		Description: pattern.PredictedAction,
 		Activation:  pattern.ConfidenceScore,
@@ -353,7 +353,7 @@ func (m *AnticipationModule) CreateRuleFromPattern(ctx context.Context, patternU
 
 	// Create a rule node linked to the pattern
 	ruleNode := &graph.Node{
-		Type:        graph.NodeTypeRule,
+		DType:       []string{string(graph.NodeTypeRule)},
 		Name:        fmt.Sprintf("Rule from %s", patternNode.Name),
 		Description: patternNode.Description,
 		Activation:  patternNode.Activation,

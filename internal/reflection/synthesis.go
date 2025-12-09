@@ -143,10 +143,10 @@ func (m *SynthesisModule) evaluateConnection(ctx context.Context, conn Potential
 
 	reqBody := EvaluationRequest{
 		Node1Name:  conn.Node1.Name,
-		Node1Type:  string(conn.Node1.Type),
+		Node1Type:  string(conn.Node1.GetType()),
 		Node1Desc:  conn.Node1.Description,
 		Node2Name:  conn.Node2.Name,
-		Node2Type:  string(conn.Node2.Type),
+		Node2Type:  string(conn.Node2.GetType()),
 		Node2Desc:  conn.Node2.Description,
 		PathExists: conn.PathExists,
 		PathLength: conn.PathLength,
@@ -165,7 +165,8 @@ func (m *SynthesisModule) evaluateConnection(ctx context.Context, conn Potential
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Increased timeout to 120s to support large models running on hybrid CPU/GPU or pure CPU
+	client := &http.Client{Timeout: 120 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -193,9 +194,9 @@ func (m *SynthesisModule) evaluateConnection(ctx context.Context, conn Potential
 
 	insight := &graph.Insight{
 		Node: graph.Node{
-			UID:  uuid.New().String(),
-			Type: graph.NodeTypeInsight,
-			Name: fmt.Sprintf("Insight: %s <-> %s", conn.Node1.Name, conn.Node2.Name),
+			UID:   uuid.New().String(),
+			DType: []string{string(graph.NodeTypeInsight)},
+			Name:  fmt.Sprintf("Insight: %s <-> %s", conn.Node1.Name, conn.Node2.Name),
 		},
 		InsightType:      result.InsightType,
 		SourceNodeUIDs:   []string{conn.Node1.UID, conn.Node2.UID},
@@ -210,7 +211,7 @@ func (m *SynthesisModule) evaluateConnection(ctx context.Context, conn Potential
 // createInsight creates an insight node in the graph
 func (m *SynthesisModule) createInsight(ctx context.Context, insight *graph.Insight) error {
 	node := &graph.Node{
-		Type:        graph.NodeTypeInsight,
+		DType:       []string{string(graph.NodeTypeInsight)},
 		Name:        insight.Name,
 		Description: insight.Summary,
 		Activation:  0.8, // New insights start with high activation
@@ -307,8 +308,8 @@ func (m *SynthesisModule) DiscoverAllergyConflicts(ctx context.Context) ([]graph
 			if containsAllergen(food.Name, allergyIngredients) {
 				insight := graph.Insight{
 					Node: graph.Node{
-						Type: graph.NodeTypeInsight,
-						Name: fmt.Sprintf("Allergy Risk: %s", food.Name),
+						DType: []string{string(graph.NodeTypeInsight)},
+						Name:  fmt.Sprintf("Allergy Risk: %s", food.Name),
 					},
 					InsightType:      "allergy_warning",
 					Summary:          fmt.Sprintf("Food preference '%s' may contain allergens. Exercise caution.", food.Name),

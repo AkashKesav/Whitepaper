@@ -26,9 +26,9 @@ func main() {
 
 	// Load configuration from environment
 	cfg := kernel.Config{
-		DGraphAddress:          getEnv("DGRAPH_URL", "localhost:9080"),
-		NATSAddress:            getEnv("NATS_URL", "nats://localhost:4222"),
-		RedisAddress:           getEnv("REDIS_URL", "localhost:6379"),
+		DGraphAddress:          getEnv("DGRAPH_URL", "localhost:9180"),
+		NATSAddress:            getEnv("NATS_URL", "nats://localhost:4322"),
+		RedisAddress:           getEnv("REDIS_URL", "localhost:6479"),
 		AIServicesURL:          getEnv("AI_SERVICES_URL", "http://localhost:8000"),
 		ReflectionInterval:     5 * time.Minute,
 		ActivationDecayRate:    0.05,

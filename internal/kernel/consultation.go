@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,9 +47,10 @@ func NewConsultationHandler(
 }
 
 // Handle processes a consultation request and returns a synthesized response
+// SIMPLIFIED: Directly queries user's knowledge and formats it without external AI call
 func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.ConsultationRequest) (*graph.ConsultationResponse, error) {
 	startTime := time.Now()
-	h.logger.Debug("Handling consultation request",
+	h.logger.Info("=== CONSULTATION START ===",
 		zap.String("user_id", req.UserID),
 		zap.String("query", req.Query))
 
@@ -56,63 +58,153 @@ func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.Consultatio
 		RequestID: uuid.New().String(),
 	}
 
-	// Step 1: Check Redis cache for recent similar queries
-	cachedBrief, err := h.checkCache(ctx, req)
-	if err == nil && cachedBrief != "" {
-		response.SynthesizedBrief = cachedBrief
-		h.logger.Debug("Cache hit for consultation", zap.Duration("latency", time.Since(startTime)))
-		return response, nil
-	}
-
-	// Step 2: Search the knowledge graph for relevant facts
-	relevantFacts, err := h.findRelevantFacts(ctx, req)
+	// STEP 1: Get facts matching the query terms
+	facts, err := h.getUserKnowledge(ctx, req.UserID, req.Query)
 	if err != nil {
-		h.logger.Warn("Failed to find relevant facts", zap.Error(err))
+		h.logger.Warn("Failed to get user knowledge", zap.Error(err))
 	}
-	response.RelevantFacts = relevantFacts
+	response.RelevantFacts = facts
 
-	// Step 3: Get high-priority insights
-	if req.IncludeInsights {
-		insights, err := h.getRelevantInsights(ctx, req)
-		if err != nil {
-			h.logger.Warn("Failed to get insights", zap.Error(err))
+	h.logger.Info("Retrieved user knowledge",
+		zap.Int("facts_count", len(facts)))
+
+	// STEP 2: Format facts directly into a brief (no external AI call)
+	var brief strings.Builder
+	if len(facts) > 0 {
+		brief.WriteString("Based on what you've told me:\n")
+		for i, fact := range facts {
+			if i >= 10 {
+				brief.WriteString(fmt.Sprintf("... and %d more items.\n", len(facts)-10))
+				break
+			}
+			nodeType := fact.GetType()
+			brief.WriteString(fmt.Sprintf("- %s", fact.Name))
+			if fact.Description != "" {
+				brief.WriteString(fmt.Sprintf(": %s", fact.Description))
+			}
+			if len(fact.Tags) > 0 {
+				brief.WriteString(fmt.Sprintf(" [%s]", strings.Join(fact.Tags, ", ")))
+			}
+			brief.WriteString(fmt.Sprintf(" (%s)\n", nodeType))
 		}
-		response.Insights = insights
+		response.Confidence = 0.9
+	} else {
+		brief.WriteString("I don't have any stored information about you yet.")
+		response.Confidence = 0.3
 	}
 
-	// Step 4: Check for matching patterns (proactive assistance)
-	patterns, alerts := h.checkPatterns(ctx, req)
-	response.Patterns = patterns
-	response.ProactiveAlerts = alerts
+	response.SynthesizedBrief = brief.String()
 
-	// Step 5: Synthesize a brief using the AI service
-	synthesizedBrief, confidence, err := h.synthesizeBrief(ctx, req, response)
-	if err != nil {
-		h.logger.Warn("Failed to synthesize brief", zap.Error(err))
-		// Create a fallback brief from raw facts
-		synthesizedBrief = h.createFallbackBrief(response)
-		confidence = 0.5
-	}
-	response.SynthesizedBrief = synthesizedBrief
-	response.Confidence = confidence
-
-	// Step 6: Cache the response
-	if err := h.cacheResponse(ctx, req, response); err != nil {
-		h.logger.Warn("Failed to cache response", zap.Error(err))
-	}
-
-	// Step 7: Update activation on accessed nodes
-	h.updateAccessedNodes(ctx, response)
-
-	h.logger.Info("Consultation completed",
-		zap.String("request_id", response.RequestID),
-		zap.Int("facts", len(response.RelevantFacts)),
-		zap.Int("insights", len(response.Insights)),
-		zap.Int("alerts", len(response.ProactiveAlerts)),
-		zap.Float64("confidence", response.Confidence),
+	h.logger.Info("=== CONSULTATION COMPLETE ===",
+		zap.String("brief", response.SynthesizedBrief),
+		zap.Int("facts", len(facts)),
 		zap.Duration("latency", time.Since(startTime)))
 
 	return response, nil
+}
+
+// getUserKnowledge retrieves ALL stored facts and lets the LLM find relevant ones
+func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, userID string, queryText string) ([]graph.Node, error) {
+	h.logger.Info("Fetching all knowledge for context", zap.String("query", queryText))
+
+	// Simple approach: fetch ALL non-User nodes, ordered by most recent first
+	query := `{
+		all_facts(func: has(name), first: 50, orderdesc: created_at) @filter(NOT type(User)) {
+			uid
+			dgraph.type
+			name
+			description
+			tags
+		}
+	}`
+
+	resp, err := h.graphClient.Query(ctx, query, nil)
+	if err != nil {
+		h.logger.Error("Query failed", zap.Error(err))
+		return nil, err
+	}
+
+	h.logger.Info("Raw DGraph response", zap.String("json", string(resp)))
+
+	var result struct {
+		AllFacts []graph.Node `json:"all_facts"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		h.logger.Error("Failed to unmarshal nodes", zap.Error(err))
+		return nil, err
+	}
+
+	h.logger.Info("Fetched all knowledge", zap.Int("count", len(result.AllFacts)))
+	for i, node := range result.AllFacts {
+		h.logger.Info("Node found",
+			zap.Int("index", i),
+			zap.String("name", node.Name),
+			zap.String("description", node.Description))
+	}
+
+	return result.AllFacts, nil
+}
+
+// textSearchFallback provides fallback text-based search if semantic search fails
+func (h *ConsultationHandler) textSearchFallback(ctx context.Context, queryText string) ([]graph.Node, error) {
+	cleanedQuery := h.cleanQuery(queryText)
+	h.logger.Info("Fallback to text search", zap.String("query", cleanedQuery))
+
+	query := fmt.Sprintf(`{
+		desc_match(func: anyoftext(description, %q), first: 10) @filter(NOT type(User)) {
+			uid
+			dgraph.type
+			name
+			description
+			tags
+		}
+	}`, cleanedQuery)
+
+	resp, err := h.graphClient.Query(ctx, query, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		DescMatch []graph.Node `json:"desc_match"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+
+	return result.DescMatch, nil
+}
+
+// getString safely extracts a string from a map
+func getString(m map[string]interface{}, key string) string {
+	if v, ok := m[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// cleanQuery removes common stop words to focus search on keywords
+func (h *ConsultationHandler) cleanQuery(query string) string {
+	stopWords := map[string]bool{
+		"what": true, "is": true, "my": true, "the": true, "a": true, "an": true,
+		"of": true, "for": true, "in": true, "on": true, "at": true, "to": true,
+		"do": true, "does": true, "did": true, "can": true, "could": true,
+		"who": true, "where": true, "when": true, "why": true, "how": true,
+		"tell": true, "me": true, "about": true, "know": true,
+	}
+
+	words := strings.Fields(strings.ToLower(query))
+	var keywords []string
+	for _, w := range words {
+		// Strip punctuation
+		w = strings.Trim(w, "?!.,\"'")
+		if !stopWords[w] && len(w) > 1 {
+			keywords = append(keywords, w)
+		}
+	}
+	return strings.Join(keywords, " ")
 }
 
 // checkCache checks Redis for a cached response
@@ -145,17 +237,44 @@ func (h *ConsultationHandler) findRelevantFacts(ctx context.Context, req *graph.
 		maxResults = 10
 	}
 
+	h.logger.Debug("Finding relevant facts",
+		zap.String("user_id", req.UserID),
+		zap.String("query", req.Query),
+		zap.Int("max_results", maxResults))
+
 	// Search by text
 	nodes, err := h.queryBuilder.SearchByText(ctx, req.Query, maxResults)
 	if err != nil {
-		return nil, err
+		h.logger.Warn("Text search failed", zap.Error(err))
+	}
+	h.logger.Debug("Text search results", zap.Int("count", len(nodes)))
+
+	// CRITICAL: Also get nodes connected to the User via relationship edges
+	// This is essential for queries like "Who is my manager?" where text search won't match "Bob"
+	userRelated, err := h.queryBuilder.GetUserRelatedNodes(ctx, req.UserID, maxResults)
+	if err != nil {
+		h.logger.Warn("Failed to get user related nodes", zap.Error(err), zap.String("user_id", req.UserID))
+	} else {
+		h.logger.Debug("User related nodes", zap.Int("count", len(userRelated)))
+		// Merge user-related nodes with text search results
+		seen := make(map[string]bool)
+		for _, n := range nodes {
+			seen[n.UID] = true
+		}
+		for _, n := range userRelated {
+			if !seen[n.UID] {
+				nodes = append(nodes, n)
+				seen[n.UID] = true
+			}
+		}
 	}
 
 	// Also get high-activation nodes as they represent core knowledge
-	highActivation, err := h.queryBuilder.GetHighActivationNodes(ctx, req.UserID, 0.7, 5)
+	highActivation, err := h.queryBuilder.GetHighActivationNodes(ctx, req.UserID, 0.3, 10)
 	if err != nil {
 		h.logger.Warn("Failed to get high activation nodes", zap.Error(err))
 	} else {
+		h.logger.Debug("High activation nodes", zap.Int("count", len(highActivation)))
 		// Merge, prioritizing text matches
 		seen := make(map[string]bool)
 		for _, n := range nodes {
@@ -165,6 +284,23 @@ func (h *ConsultationHandler) findRelevantFacts(ctx context.Context, req *graph.
 			if !seen[n.UID] {
 				nodes = append(nodes, n)
 			}
+		}
+	}
+
+	// CRITICAL FALLBACK: If no nodes found, get ALL nodes with names (most reliable)
+	if len(nodes) == 0 {
+		h.logger.Debug("No nodes found via specific queries, using GetAllNodes fallback")
+		allNodes, err := h.queryBuilder.GetAllNodes(ctx, maxResults)
+		if err != nil {
+			h.logger.Warn("Failed to get all nodes", zap.Error(err))
+		} else {
+			// Filter out User nodes, keep only Entity/Fact/Event nodes
+			for _, n := range allNodes {
+				if n.GetType() != graph.NodeTypeUser && n.Name != "" {
+					nodes = append(nodes, n)
+				}
+			}
+			h.logger.Debug("Fallback nodes", zap.Int("count", len(nodes)))
 		}
 	}
 
@@ -281,7 +417,11 @@ func (h *ConsultationHandler) createFallbackBrief(data *graph.ConsultationRespon
 			brief += fmt.Sprintf("... and %d more related facts.", len(data.RelevantFacts)-3)
 			break
 		}
-		brief += fmt.Sprintf("- %s: %s\n", fact.Name, fact.Description)
+		brief += fmt.Sprintf("- %s: %s", fact.Name, fact.Description)
+		if len(fact.Tags) > 0 {
+			brief += fmt.Sprintf(" [Tags: %v]", fact.Tags)
+		}
+		brief += "\n"
 	}
 
 	if len(data.ProactiveAlerts) > 0 {

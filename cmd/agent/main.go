@@ -23,10 +23,10 @@ func main() {
 
 	// Load configuration
 	cfg := agent.Config{
-		NATSAddress:     getEnv("NATS_URL", "nats://localhost:4222"),
+		NATSAddress:     getEnv("NATS_URL", "nats://localhost:4322"),
 		MemoryKernelURL: getEnv("MEMORY_KERNEL_URL", "http://localhost:9000"),
 		AIServicesURL:   getEnv("AI_SERVICES_URL", "http://localhost:8000"),
-		ResponseTimeout: 10 * time.Second,
+		ResponseTimeout: 60 * time.Second,
 	}
 
 	// Create and start the agent
@@ -45,7 +45,7 @@ func main() {
 	server.SetupRoutes(router)
 
 	// Serve static files for web UI
-	router.PathPrefix("/").Handler(http.FileServer(http.Dir("./static")))
+	// router.PathPrefix("/").Handler(http.FileServer(http.Dir("./static")))
 
 	port := getEnv("PORT", "3000")
 	httpServer := &http.Server{

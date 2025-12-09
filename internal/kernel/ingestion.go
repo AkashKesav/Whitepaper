@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -84,14 +85,10 @@ func (p *IngestionPipeline) Ingest(ctx context.Context, event *graph.TranscriptE
 	}
 	event.ExtractedEntities = entities
 
-	// Step 2: Create or update nodes for each entity
-	for _, entity := range entities {
-		if err := p.processEntity(ctx, event.UserID, event.ConversationID, entity); err != nil {
-			p.logger.Error("Failed to process entity",
-				zap.String("entity", entity.Name),
-				zap.Error(err))
-			continue
-		}
+	// Step 2: Batch process all entities and relationships
+	if err := p.processBatchedEntities(ctx, event.UserID, event.ConversationID, entities); err != nil {
+		p.logger.Error("Failed to batch process entities", zap.Error(err))
+		return err
 	}
 
 	// Step 3: Cache recent context in Redis for fast access
@@ -132,7 +129,8 @@ func (p *IngestionPipeline) extractEntities(ctx context.Context, event *graph.Tr
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Increased timeout to 120s to support large models running on hybrid CPU/GPU or pure CPU
+	client := &http.Client{Timeout: 120 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -167,88 +165,158 @@ func (p *IngestionPipeline) basicEntityExtraction(event *graph.TranscriptEvent) 
 	}
 }
 
-// processEntity creates or updates a node and its relationships in the graph
-func (p *IngestionPipeline) processEntity(ctx context.Context, userID, conversationID string, entity graph.ExtractedEntity) error {
-	// Check if entity already exists
-	existingNode, err := p.graphClient.FindNodeByName(ctx, entity.Name, entity.Type)
+// processBatchedEntities handles the 3-step batched ingestion: Read -> Write Nodes -> Write Edges
+func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, userID, conversationID string, entities []graph.ExtractedEntity) error {
+	// 1. COLLECT ALL UNIQUE NAMES
+	// We need to check existence for the User, all extracted Entities, and any Relation Targets
+	uniqueNames := make(map[string]bool)
+	uniqueNames[userID] = true // Always check user
+
+	for _, e := range entities {
+		uniqueNames[e.Name] = true
+		for _, r := range e.Relations {
+			uniqueNames[r.TargetName] = true
+		}
+	}
+
+	namesList := make([]string, 0, len(uniqueNames))
+	for name := range uniqueNames {
+		namesList = append(namesList, name)
+	}
+
+	// 2. BULK READ - Check what exists
+	existingNodes, err := p.graphClient.GetNodesByNames(ctx, namesList)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to batch get nodes: %w", err)
 	}
 
-	var nodeUID string
-	if existingNode != nil {
-		// Update existing node - boost activation
-		nodeUID = existingNode.UID
-		if err := p.graphClient.IncrementAccessCount(ctx, nodeUID, graph.DefaultActivationConfig()); err != nil {
-			p.logger.Warn("Failed to increment access count", zap.Error(err))
-		}
-	} else {
-		// Create new node
-		node := &graph.Node{
-			Type:                 entity.Type,
-			Name:                 entity.Name,
-			Attributes:           entity.Attributes,
-			SourceConversationID: conversationID,
-			Activation:           0.5, // Start at 50% activation
-			Confidence:           0.8, // Default confidence
+	// 3. BULK CREATE NODES - Prepare missing nodes
+	nodesToCreate := make([]*graph.Node, 0)
+
+	// Check User
+	if _, exists := existingNodes[userID]; !exists {
+		nodesToCreate = append(nodesToCreate, &graph.Node{
+			DType:      []string{string(graph.NodeTypeUser)},
+			Name:       userID,
+			Activation: 1.0,
+			Confidence: 1.0,
+		})
+	}
+
+	// Check Entities and Relations
+	for _, e := range entities {
+		if _, exists := existingNodes[e.Name]; !exists {
+			// Normalize type
+			dtype := e.Type
+			if dtype == "" {
+				dtype = graph.NodeTypeEntity
+			}
+
+			nodesToCreate = append(nodesToCreate, &graph.Node{
+				DType:                []string{string(dtype)},
+				Name:                 e.Name,
+				Description:          e.Description,
+				Tags:                 e.Tags,
+				Attributes:           e.Attributes,
+				SourceConversationID: conversationID,
+				Activation:           0.8,
+				Confidence:           0.9,
+			})
 		}
 
-		nodeUID, err = p.graphClient.CreateNode(ctx, node)
+		for _, r := range e.Relations {
+			if _, exists := existingNodes[r.TargetName]; !exists {
+				// Normalize target type
+				dtype := r.TargetType
+				if dtype == "" {
+					dtype = graph.NodeTypeEntity
+				}
+
+				nodesToCreate = append(nodesToCreate, &graph.Node{
+					DType:      []string{string(dtype)},
+					Name:       r.TargetName,
+					Activation: 0.5,
+					Confidence: 0.7,
+				})
+			}
+		}
+	}
+
+	// Execute Batch Create
+	if len(nodesToCreate) > 0 {
+		p.logger.Info("Batch creating nodes", zap.Int("count", len(nodesToCreate)))
+		newUIDs, err := p.graphClient.CreateNodes(ctx, nodesToCreate)
 		if err != nil {
-			return fmt.Errorf("failed to create node: %w", err)
+			return err
 		}
-		p.logger.Debug("Created new node",
-			zap.String("uid", nodeUID),
-			zap.String("name", entity.Name),
-			zap.String("type", string(entity.Type)))
-	}
 
-	// Process relationships
-	for _, relation := range entity.Relations {
-		if err := p.processRelation(ctx, nodeUID, relation); err != nil {
-			p.logger.Warn("Failed to process relation",
-				zap.String("from", entity.Name),
-				zap.String("to", relation.TargetName),
-				zap.Error(err))
+		// Merge new UIDs into existingNodes map so we can build edges
+		for name, uid := range newUIDs {
+			// We only need the UID for edge creation
+			existingNodes[name] = &graph.Node{UID: uid, Name: name}
 		}
 	}
 
-	return nil
-}
+	// 4. BULK CREATE EDGES
+	edgesToCreate := make([]graph.EdgeInput, 0)
+	userUID := existingNodes[userID].UID
 
-// processRelation creates or updates a relationship between nodes
-func (p *IngestionPipeline) processRelation(ctx context.Context, fromUID string, relation graph.ExtractedRelation) error {
-	// Find or create the target node
-	targetNode, err := p.graphClient.FindNodeByName(ctx, relation.TargetName, relation.TargetType)
-	if err != nil {
-		return err
+	for _, e := range entities {
+		entityUID, ok := existingNodes[e.Name]
+		if !ok {
+			continue
+		} // Should not happen
+
+		// User -> Entity (KNOWS)
+		edgesToCreate = append(edgesToCreate, graph.EdgeInput{
+			FromUID: userUID,
+			ToUID:   entityUID.UID,
+			Type:    graph.EdgeTypeKnows,
+			Status:  graph.EdgeStatusCurrent,
+		})
+
+		// Entity -> Target (Relations)
+		for _, r := range e.Relations {
+			targetUID, ok := existingNodes[r.TargetName]
+			if !ok {
+				continue
+			}
+
+			edgesToCreate = append(edgesToCreate, graph.EdgeInput{
+				FromUID: entityUID.UID,
+				ToUID:   targetUID.UID,
+				Type:    r.Type,
+				Status:  graph.EdgeStatusCurrent,
+			})
+		}
 	}
 
-	var targetUID string
-	if targetNode != nil {
-		targetUID = targetNode.UID
-		// Boost activation on related node
-		if err := p.graphClient.IncrementAccessCount(ctx, targetUID, graph.DefaultActivationConfig()); err != nil {
-			p.logger.Warn("Failed to boost related node", zap.Error(err))
-		}
-	} else {
-		// Create new target node
-		node := &graph.Node{
-			Type:       relation.TargetType,
-			Name:       relation.TargetName,
-			Activation: 0.5,
-			Confidence: 0.7,
-		}
-		targetUID, err = p.graphClient.CreateNode(ctx, node)
-		if err != nil {
-			return fmt.Errorf("failed to create target node: %w", err)
+	// Execute Batch edges
+	if len(edgesToCreate) > 0 {
+		p.logger.Info("Batch creating edges", zap.Int("count", len(edgesToCreate)))
+		if err := p.graphClient.CreateEdges(ctx, edgesToCreate); err != nil {
+			return err
 		}
 	}
 
-	// Create the edge
-	if err := p.graphClient.CreateEdge(ctx, fromUID, targetUID, relation.Type, graph.EdgeStatusCurrent); err != nil {
-		return fmt.Errorf("failed to create edge: %w", err)
-	}
+	// 5. ASYNC UPDATES (Fire and forget)
+	// Update activation/tags for existing nodes that we found in step 2
+	go func() {
+		// Create a separate context for async ops
+		asyncCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		for _, e := range entities {
+			if node, exists := existingNodes[e.Name]; exists {
+				// Boost activation
+				p.graphClient.IncrementAccessCount(asyncCtx, node.UID, graph.DefaultActivationConfig())
+				// Add tags
+				if len(e.Tags) > 0 {
+					p.graphClient.AddTags(asyncCtx, node.UID, e.Tags)
+				}
+			}
+		}
+	}()
 
 	return nil
 }
@@ -294,6 +362,22 @@ func PublishTranscript(js nats.JetStreamContext, event *graph.TranscriptEvent) e
 	}
 
 	subject := fmt.Sprintf("transcripts.%s", event.UserID)
-	_, err = js.Publish(subject, data)
-	return err
+
+	// Log the publish attempt
+	log.Printf("[NATS] Publishing to '%s' (user: %s, query: %s)", subject, event.UserID, event.UserQuery[:min(50, len(event.UserQuery))])
+
+	ack, err := js.Publish(subject, data)
+	if err != nil {
+		log.Printf("[NATS] Publish FAILED: %v", err)
+		return err
+	}
+	log.Printf("[NATS] Publish SUCCESS: stream=%s, seq=%d", ack.Stream, ack.Sequence)
+	return nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -166,6 +166,9 @@ func (a *Agent) Chat(ctx context.Context, userID, conversationID, message string
 	if mkResponse != nil && mkErr == nil {
 		contextBrief = mkResponse.SynthesizedBrief
 		proactiveAlerts = mkResponse.ProactiveAlerts
+		a.logger.Info("Context brief from MK",
+			zap.String("brief", contextBrief),
+			zap.Int("facts_count", len(mkResponse.RelevantFacts)))
 	}
 
 	response, err := a.aiClient.GenerateResponse(ctx, message, contextBrief, proactiveAlerts)

@@ -32,10 +32,18 @@ func NewServer(agent *Agent, logger *zap.Logger) *Server {
 
 // SetupRoutes configures the HTTP routes
 func (s *Server) SetupRoutes(r *mux.Router) {
+	s.logger.Info("Registering routes...")
 	// REST API
 	r.HandleFunc("/api/chat", s.handleChat).Methods("POST")
 	r.HandleFunc("/api/stats", s.handleStats).Methods("GET")
 	r.HandleFunc("/health", s.handleHealth).Methods("GET")
+
+	r.Walk(func(route *mux.Route, router *mux.Router, ancestors []*mux.Route) error {
+		pathTemplate, _ := route.GetPathTemplate()
+		methods, _ := route.GetMethods()
+		s.logger.Info("Route registered", zap.String("path", pathTemplate), zap.Strings("methods", methods))
+		return nil
+	})
 
 	// WebSocket for real-time chat
 	r.HandleFunc("/ws/chat", s.handleWebSocketChat)
@@ -62,14 +70,49 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.UserID == "" {
-		req.UserID = "anonymous"
-	}
-	if req.ConversationID == "" {
-		req.ConversationID = uuid.New().String()
+	// Get user ID from: 1) request body, 2) cookie, 3) generate new
+	userID := req.UserID
+	if userID == "" {
+		// Check for existing session cookie
+		if cookie, err := r.Cookie("rmk_user_id"); err == nil && cookie.Value != "" {
+			userID = cookie.Value
+		} else {
+			// Generate new persistent user ID
+			userID = uuid.New().String()
+		}
 	}
 
-	response, err := s.agent.Chat(r.Context(), req.UserID, req.ConversationID, req.Message)
+	// Set persistent cookie (expires in 1 year)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "rmk_user_id",
+		Value:    userID,
+		Path:     "/",
+		MaxAge:   60 * 60 * 24 * 365, // 1 year
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	// Get or generate conversation ID
+	conversationID := req.ConversationID
+	if conversationID == "" {
+		// Check for session cookie for conversation continuity
+		if cookie, err := r.Cookie("rmk_conversation_id"); err == nil && cookie.Value != "" {
+			conversationID = cookie.Value
+		} else {
+			conversationID = uuid.New().String()
+		}
+	}
+
+	// Set conversation cookie (session-based, persists until browser closes)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "rmk_conversation_id",
+		Value:    conversationID,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	response, err := s.agent.Chat(r.Context(), userID, conversationID, req.Message)
 	if err != nil {
 		s.logger.Error("Chat failed", zap.Error(err))
 		http.Error(w, "Failed to generate response", http.StatusInternalServerError)
@@ -77,7 +120,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := ChatResponse{
-		ConversationID: req.ConversationID,
+		ConversationID: conversationID,
 		Response:       response,
 	}
 

@@ -238,6 +238,16 @@ func (q *QueryBuilder) SearchByText(ctx context.Context, searchText string, limi
 			activation
 			last_accessed
 		}
+
+		tag_results(func: anyofterms(tags, $text), first: $limit) {
+			uid
+			dgraph.type
+			name
+			description
+			tags
+			activation
+			last_accessed
+		}
 	}`
 
 	vars := map[string]string{
@@ -253,6 +263,7 @@ func (q *QueryBuilder) SearchByText(ctx context.Context, searchText string, limi
 	var result struct {
 		Results     []Node `json:"results"`
 		DescResults []Node `json:"desc_results"`
+		TagResults  []Node `json:"tag_results"`
 	}
 	if err := json.Unmarshal(resp, &result); err != nil {
 		return nil, err
@@ -261,7 +272,7 @@ func (q *QueryBuilder) SearchByText(ctx context.Context, searchText string, limi
 	// Merge and deduplicate results
 	seen := make(map[string]bool)
 	var merged []Node
-	for _, node := range append(result.Results, result.DescResults...) {
+	for _, node := range append(result.Results, append(result.DescResults, result.TagResults...)...) {
 		if !seen[node.UID] {
 			seen[node.UID] = true
 			merged = append(merged, node)
@@ -348,6 +359,40 @@ func (q *QueryBuilder) GetPatterns(ctx context.Context, minConfidence float64, l
 	return result.Patterns, nil
 }
 
+// GetAllNodes retrieves all nodes with names (most reliable fallback)
+func (q *QueryBuilder) GetAllNodes(ctx context.Context, limit int) ([]Node, error) {
+	query := `query AllNodes($limit: int) {
+		nodes(func: has(name), orderdesc: activation, first: $limit) {
+			uid
+			dgraph.type
+			name
+			description
+			activation
+			access_count
+			last_accessed
+			created_at
+		}
+	}`
+
+	vars := map[string]string{
+		"$limit": fmt.Sprintf("%d", limit),
+	}
+
+	resp, err := q.client.Query(ctx, query, vars)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Nodes []Node `json:"nodes"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+
+	return result.Nodes, nil
+}
+
 // GetNodesByType retrieves all nodes of a specific type
 func (q *QueryBuilder) GetNodesByType(ctx context.Context, nodeType NodeType, limit int) ([]Node, error) {
 	query := fmt.Sprintf(`query NodesByType($limit: int) {
@@ -408,4 +453,71 @@ func (q *QueryBuilder) CountNodes(ctx context.Context, nodeType NodeType) (int, 
 		return result.Count[0].Total, nil
 	}
 	return 0, nil
+}
+
+// GetUserRelatedNodes retrieves nodes connected to the user via specific relationship predicates
+func (q *QueryBuilder) GetUserRelatedNodes(ctx context.Context, userID string, limit int) ([]Node, error) {
+	// First, find the User node by name with correct NodeType
+	userNode, err := q.client.FindNodeByName(ctx, userID, NodeTypeUser)
+	if err != nil || userNode == nil {
+		// User node not found - this is expected for new users
+		// Return empty rather than error to allow fallback search
+		return nil, nil
+	}
+
+	// Query to get all nodes connected via KNOWS edge (stores all ingested entities)
+	query := `query UserKnowledge($uid: string, $limit: int) {
+		nodes(func: uid($uid)) {
+			knows (first: $limit) {
+				uid
+				dgraph.type
+				name
+				description
+				activation
+				last_accessed
+				
+				# Also get the reverse relationship targets (e.g., who this person has_manager to)
+				~has_manager {
+					uid
+					name
+				}
+			}
+			has_manager {
+				uid
+				dgraph.type
+				name
+				description
+				activation
+			}
+		}
+	}`
+
+	vars := map[string]string{
+		"$uid":   userNode.UID,
+		"$limit": fmt.Sprintf("%d", limit),
+	}
+
+	resp, err := q.client.Query(ctx, query, vars)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Nodes []struct {
+			Knows      []Node `json:"knows"`
+			HasManager []Node `json:"has_manager"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+
+	// Combine all related nodes
+	var allNodes []Node
+	if len(result.Nodes) > 0 {
+		allNodes = append(allNodes, result.Nodes[0].Knows...)
+		allNodes = append(allNodes, result.Nodes[0].HasManager...)
+	}
+
+	return allNodes, nil
 }

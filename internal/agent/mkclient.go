@@ -98,7 +98,7 @@ func NewAIClient(baseURL string, logger *zap.Logger) *AIClient {
 	return &AIClient{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 120 * time.Second,
 		},
 		logger: logger,
 	}

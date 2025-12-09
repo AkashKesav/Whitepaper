@@ -54,6 +54,9 @@ const (
 	EdgeTypeDerivedFrom EdgeType = "DERIVED_FROM"
 	EdgeTypeSynthesized EdgeType = "SYNTHESIZED_FROM"
 	EdgeTypeSupersedes  EdgeType = "SUPERSEDES"
+
+	// Knowledge relationships (User to entities)
+	EdgeTypeKnows EdgeType = "KNOWS"
 )
 
 // EdgeStatus represents the current status of a relationship
@@ -81,11 +84,13 @@ var FunctionalEdges = map[EdgeType]bool{
 }
 
 // Node represents a node in the knowledge graph
+// Node represents a node in the knowledge graph
 type Node struct {
 	UID         string            `json:"uid,omitempty"`
-	Type        NodeType          `json:"dgraph.type,omitempty"`
+	DType       []string          `json:"dgraph.type,omitempty"`
 	Name        string            `json:"name,omitempty"`
 	Description string            `json:"description,omitempty"`
+	Tags        []string          `json:"tags,omitempty"`
 	Attributes  map[string]string `json:"attributes,omitempty"`
 
 	// Temporal metadata
@@ -100,6 +105,19 @@ type Node struct {
 	// Source tracking
 	SourceConversationID string  `json:"source_conversation_id,omitempty"`
 	Confidence           float64 `json:"confidence,omitempty"`
+}
+
+// GetType returns the primary type of the node
+func (n *Node) GetType() NodeType {
+	if len(n.DType) > 0 {
+		return NodeType(n.DType[0])
+	}
+	return ""
+}
+
+// SetType sets the primary type of the node
+func (n *Node) SetType(t NodeType) {
+	n.DType = []string{string(t)}
 }
 
 // Edge represents a relationship between nodes
@@ -172,10 +190,12 @@ type TranscriptEvent struct {
 
 // ExtractedEntity represents an entity extracted from conversation
 type ExtractedEntity struct {
-	Name       string              `json:"name,omitempty"`
-	Type       NodeType            `json:"type,omitempty"`
-	Attributes map[string]string   `json:"attributes,omitempty"`
-	Relations  []ExtractedRelation `json:"relations,omitempty"`
+	Name        string              `json:"name,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Type        NodeType            `json:"type,omitempty"`
+	Tags        []string            `json:"tags,omitempty"`
+	Attributes  map[string]string   `json:"attributes,omitempty"`
+	Relations   []ExtractedRelation `json:"relations,omitempty"`
 }
 
 // ExtractedRelation represents a relationship extracted from conversation

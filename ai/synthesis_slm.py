@@ -11,6 +11,7 @@ class SynthesisSLM:
 
     def __init__(self, router: LLMRouter):
         self.router = router
+        self.provider = None
 
     async def synthesize(
         self,
@@ -22,33 +23,70 @@ class SynthesisSLM:
     ) -> dict:
         """Synthesize a coherent brief from facts and insights."""
         
-        facts_text = "\n".join([f"- {f.get('name', '')}: {f.get('description', '')}" for f in facts[:10]])
+        # Format facts more comprehensively - use all available fields
+        def format_fact(f):
+            name = f.get('name', '')
+            desc = f.get('description', '')
+            node_type = f.get('dgraph.type', f.get('type', ''))
+            attrs = f.get('attributes', {})
+            
+            # Build a comprehensive fact string
+            parts = [f"- {name}"]
+            
+            if desc:
+                parts.append(f": {desc}")
+            elif node_type:
+                # Use type as context if no description
+                if isinstance(node_type, list):
+                    node_type = node_type[0] if node_type else ''
+                parts.append(f" ({node_type})")
+            
+            # Include attributes for additional context
+            if attrs and isinstance(attrs, dict):
+                attr_str = ", ".join([f"{k}={v}" for k, v in attrs.items() if v])
+                if attr_str:
+                    parts.append(f" [{attr_str}]")
+            
+            return "".join(parts)
+        
+        # Handle None values
+        facts = facts or []
+        insights = insights or []
+        alerts = alerts or []
+        
+        facts_text = "\n".join([format_fact(f) for f in facts[:10]])
         insights_text = "\n".join([f"- {i.get('summary', '')}" for i in insights[:5]])
         alerts_text = "\n".join([f"- {a}" for a in alerts[:3]])
 
-        prompt = f"""Create a concise, synthesized response to this query using the available context.
+        prompt = f"""You are a memory retrieval system. Your ONLY job is to answer questions using the KNOWN FACTS below.
+
+CRITICAL RULES:
+1. If facts are provided, you MUST use them to answer
+2. NEVER say "I don't have information" if facts are available
+3. Quote the facts directly in your answer
+4. If no facts match the query, say "I don't have that stored yet"
 
 Query: {query}
 
-Known Facts:
-{facts_text or "No specific facts available."}
+=== KNOWN FACTS (USE THESE!) ===
+{facts_text if facts_text else "No facts stored."}
 
-Insights:
-{insights_text or "No specific insights."}
+=== INSIGHTS ===
+{insights_text if insights_text else "None."}
 
-Proactive Alerts:
-{alerts_text or "None."}
+=== ALERTS ===
+{alerts_text if alerts_text else "None."}
 
-Create a brief that:
-1. Directly answers the query
-2. Incorporates relevant facts naturally
-3. Mentions any important alerts if relevant
-4. Is conversational and helpful
+EXAMPLE:
+- If facts say "Bob: user's manager" and query is "Who is my manager?"
+- Your answer MUST be: "Your manager is Bob."
+
+Now answer the query using the facts above.
 
 Return JSON:
-{{"brief": "your synthesized response", "confidence": 0.0-1.0}}"""
+{{"brief": "your answer using the facts", "confidence": 0.0-1.0}}"""
 
-        result = await self.router.extract_json(prompt)
+        result = await self.router.extract_json(prompt, provider=self.provider)
         
         if result and "brief" in result:
             return result
@@ -89,7 +127,7 @@ Return JSON:
   "confidence": 0.0-1.0
 }}"""
 
-        result = await self.router.extract_json(prompt)
+        result = await self.router.extract_json(prompt, provider=self.provider)
         
         if result and "has_insight" in result:
             return result

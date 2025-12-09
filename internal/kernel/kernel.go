@@ -261,16 +261,26 @@ func (k *Kernel) runIngestionLoop() {
 
 	// Subscribe to transcript events
 	sub, err := k.jetStream.Subscribe("transcripts.*", func(msg *nats.Msg) {
+		k.logger.Info("=== RECEIVED NATS MESSAGE ===",
+			zap.String("subject", msg.Subject),
+			zap.Int("data_len", len(msg.Data)))
+
 		if err := k.ingestionPipeline.Process(k.ctx, msg.Data); err != nil {
-			k.logger.Error("Failed to process transcript", zap.Error(err))
+			k.logger.Error("Failed to process transcript",
+				zap.Error(err),
+				zap.String("subject", msg.Subject))
+		} else {
+			k.logger.Info("Successfully processed transcript",
+				zap.String("subject", msg.Subject))
 		}
 		msg.Ack()
-	}, nats.Durable("kernel-ingestion"), nats.ManualAck())
+	}, nats.Durable("kernel-ingestion-v2"), nats.ManualAck())
 
 	if err != nil {
 		k.logger.Error("Failed to subscribe to transcripts", zap.Error(err))
 		return
 	}
+	k.logger.Info("NATS subscription active", zap.String("subject", "transcripts.*"))
 	defer sub.Unsubscribe()
 
 	// Wait for shutdown signal
