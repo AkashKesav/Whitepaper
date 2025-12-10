@@ -38,29 +38,32 @@ class LLMRouter:
         self,
         query: str,
         context: Optional[str] = None,
-        alerts: list = None,
+        alerts: list = [],
         provider: str = None,
         model: str = None,
+        format: str = None,
+        system_instruction: str = None,
     ) -> str:
-        """Generate a response using the specified or default provider."""
+        """Route query to the configured LLM provider."""
+        # Use default provider if none specified
         provider = provider or self.default_provider
-        alerts = alerts or []
-
-        # Build the prompt
-        system_prompt = self._build_system_prompt(context, alerts)
+        
+        # Use provided system instruction or build default one
+        system = system_instruction or self._build_system_prompt(context, alerts)
         
         print(f"DEBUG: Using provider={provider}, model={model}", flush=True)
         
-        if provider == "ollama" or provider is None:
-            return await self._call_ollama(system_prompt, query, model or "dolphin-llama3")
+        if provider == "ollama":
+            return await self._call_ollama(system, query, model or "dolphin-llama3", format=format)
         elif provider == "nvidia":
-            return await self._call_nvidia(system_prompt, query, model or "deepseek-ai/deepseek-v3.1")
+            return await self._call_nvidia(system, query, model or "minimaxai/minimax-m2")
         elif provider == "openai":
-            return await self._call_openai(system_prompt, query, model or "gpt-4o-mini")
+            return await self._call_openai(system, query, model or "gpt-4o-mini")
         elif provider == "anthropic":
-            return await self._call_anthropic(system_prompt, query, model or "claude-3-haiku-20240307")
+            return await self._call_anthropic(system, query, model or "claude-3-haiku-20240307")
         else:
-            return await self._call_ollama(system_prompt, query, model or "qwen3:4b")
+            # Fallback to Ollama if unknown
+            return await self._call_ollama(system, query, model or "qwen3:4b", format=format)
 
     def _build_system_prompt(self, context: Optional[str], alerts: list) -> str:
         """Build the system prompt with context and alerts."""
@@ -111,6 +114,10 @@ class LLMRouter:
             if content is None:
                 # Check for refusal or other fields
                 return "I apologize, but I cannot generate a response to this query."
+            
+            # Strip thinking tags from MiniMax-M2 responses
+            import re
+            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
             return content
 
     async def _call_openai(self, system: str, query: str, model: str) -> str:
@@ -154,17 +161,21 @@ class LLMRouter:
             data = response.json()
             return data["content"][0]["text"]
 
-    async def _call_ollama(self, system: str, query: str, model: str) -> str:
+    async def _call_ollama(self, system: str, query: str, model: str, format: str = None) -> str:
         """Call Ollama (local) API."""
         async with httpx.AsyncClient() as client:
             try:
+                payload = {
+                    "model": model,
+                    "prompt": f"{system}\n\nUser: {query}\n\nAssistant:",
+                    "stream": False,
+                }
+                if format:
+                    payload["format"] = format
+
                 response = await client.post(
                     f"{self.ollama_host}/api/generate",
-                    json={
-                        "model": model,
-                        "prompt": f"{system}\n\nUser: {query}\n\nAssistant:",
-                        "stream": False,
-                    },
+                    json=payload,
                     timeout=120.0,
                 )
                 response.raise_for_status()
@@ -187,6 +198,8 @@ class LLMRouter:
             query=prompt,
             provider=provider,
             model=model,
+            format="json",
+            system_instruction="You are a precise entity extraction engine. Output JSON only.",
         )
         print(f"DEBUG: extract_json RAW RESPONSE: {repr(response)}")
         print(f"DEBUG: extract_json response type: {type(response)}")

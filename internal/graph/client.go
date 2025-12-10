@@ -550,7 +550,7 @@ func (c *Client) GetNodesByNames(ctx context.Context, names []string) (map[strin
 	filterStr := strings.Join(filters, " OR ")
 
 	query := fmt.Sprintf(`query FindNodes {
-		nodes(func: type(Entity)) @filter(%s) {
+		nodes(func: has(name)) @filter(%s) {
 			uid
 			dgraph.type
 			name

@@ -45,7 +45,7 @@ func main() {
 	server.SetupRoutes(router)
 
 	// Serve static files for web UI
-	// router.PathPrefix("/").Handler(http.FileServer(http.Dir("./static")))
+	router.PathPrefix("/").Handler(http.FileServer(http.Dir("./static")))
 
 	port := getEnv("PORT", "3000")
 	httpServer := &http.Server{

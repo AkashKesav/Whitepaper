@@ -269,11 +269,13 @@ func (k *Kernel) runIngestionLoop() {
 			k.logger.Error("Failed to process transcript",
 				zap.Error(err),
 				zap.String("subject", msg.Subject))
+			// Nak to retry later
+			msg.Nak()
 		} else {
 			k.logger.Info("Successfully processed transcript",
 				zap.String("subject", msg.Subject))
+			msg.Ack()
 		}
-		msg.Ack()
 	}, nats.Durable("kernel-ingestion-v2"), nats.ManualAck())
 
 	if err != nil {
@@ -386,6 +388,21 @@ func (k *Kernel) GetStats(ctx context.Context) (map[string]interface{}, error) {
 	patterns, err := k.queryBuilder.GetPatterns(ctx, 0.5, 10)
 	if err == nil {
 		stats["active_patterns"] = len(patterns)
+	}
+
+	// Get ingestion pipeline stats
+	if k.ingestionPipeline != nil {
+		ingestionStats := k.ingestionPipeline.GetStats()
+		stats["ingestion"] = map[string]interface{}{
+			"total_processed":        ingestionStats.TotalProcessed,
+			"total_errors":           ingestionStats.TotalErrors,
+			"total_entities_created": ingestionStats.TotalEntitiesCreated,
+			"last_duration_ms":       ingestionStats.LastDurationMs,
+			"avg_duration_ms":        ingestionStats.AvgDurationMs,
+			"last_extraction_ms":     ingestionStats.LastExtractionMs,
+			"last_dgraph_write_ms":   ingestionStats.LastDgraphWriteMs,
+			"last_processed_at":      ingestionStats.LastProcessedAt,
+		}
 	}
 
 	return stats, nil

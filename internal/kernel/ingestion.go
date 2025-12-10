@@ -21,6 +21,19 @@ import (
 	"github.com/reflective-memory-kernel/internal/graph"
 )
 
+// IngestionStats holds metrics about ingestion performance
+type IngestionStats struct {
+	TotalProcessed       int64     `json:"total_processed"`
+	TotalErrors          int64     `json:"total_errors"`
+	TotalEntitiesCreated int64     `json:"total_entities_created"`
+	LastDurationMs       int64     `json:"last_duration_ms"`
+	AvgDurationMs        float64   `json:"avg_duration_ms"`
+	LastExtractionMs     int64     `json:"last_extraction_ms"`
+	LastDgraphWriteMs    int64     `json:"last_dgraph_write_ms"`
+	LastProcessedAt      time.Time `json:"last_processed_at"`
+	mu                   sync.RWMutex
+}
+
 // IngestionPipeline handles the ingestion of transcript events into the Knowledge Graph
 type IngestionPipeline struct {
 	graphClient   *graph.Client
@@ -35,6 +48,26 @@ type IngestionPipeline struct {
 	// Batching
 	eventBuffer []graph.TranscriptEvent
 	bufferMu    sync.Mutex
+
+	// Metrics
+	stats         IngestionStats
+	totalDuration int64 // for calculating average
+}
+
+// GetStats returns current ingestion statistics
+func (p *IngestionPipeline) GetStats() IngestionStats {
+	p.stats.mu.RLock()
+	defer p.stats.mu.RUnlock()
+	return IngestionStats{
+		TotalProcessed:       p.stats.TotalProcessed,
+		TotalErrors:          p.stats.TotalErrors,
+		TotalEntitiesCreated: p.stats.TotalEntitiesCreated,
+		LastDurationMs:       p.stats.LastDurationMs,
+		AvgDurationMs:        p.stats.AvgDurationMs,
+		LastExtractionMs:     p.stats.LastExtractionMs,
+		LastDgraphWriteMs:    p.stats.LastDgraphWriteMs,
+		LastProcessedAt:      p.stats.LastProcessedAt,
+	}
 }
 
 // NewIngestionPipeline creates a new ingestion pipeline
@@ -71,11 +104,14 @@ func (p *IngestionPipeline) Process(ctx context.Context, data []byte) error {
 
 // Ingest ingests a transcript event into the Knowledge Graph
 func (p *IngestionPipeline) Ingest(ctx context.Context, event *graph.TranscriptEvent) error {
+	startTime := time.Now()
+
 	p.logger.Debug("Ingesting transcript event",
 		zap.String("conversation_id", event.ConversationID),
 		zap.String("user_id", event.UserID))
 
 	// Step 1: Extract entities using the AI service
+	extractionStart := time.Now()
 	entities, err := p.extractEntities(ctx, event)
 	if err != nil {
 		p.logger.Warn("Entity extraction failed, using basic extraction",
@@ -83,24 +119,66 @@ func (p *IngestionPipeline) Ingest(ctx context.Context, event *graph.TranscriptE
 		// Fall back to basic extraction
 		entities = p.basicEntityExtraction(event)
 	}
+	extractionDuration := time.Since(extractionStart)
 	event.ExtractedEntities = entities
 
+	// DEBUG: Log extracted entities
+	for i, e := range entities {
+		p.logger.Info("Extracted entity",
+			zap.Int("index", i),
+			zap.String("name", e.Name),
+			zap.String("type", string(e.Type)),
+			zap.String("description", e.Description))
+	}
+
 	// Step 2: Batch process all entities and relationships
+	dgraphStart := time.Now()
 	if err := p.processBatchedEntities(ctx, event.UserID, event.ConversationID, entities); err != nil {
 		p.logger.Error("Failed to batch process entities", zap.Error(err))
+		p.updateStats(0, extractionDuration, time.Duration(0), true)
 		return err
 	}
+	dgraphDuration := time.Since(dgraphStart)
 
 	// Step 3: Cache recent context in Redis for fast access
 	if err := p.cacheRecentContext(ctx, event); err != nil {
 		p.logger.Warn("Failed to cache context", zap.Error(err))
 	}
 
+	totalDuration := time.Since(startTime)
+	p.updateStats(len(entities), extractionDuration, dgraphDuration, false)
+
 	p.logger.Info("Transcript event ingested successfully",
 		zap.String("conversation_id", event.ConversationID),
-		zap.Int("entities_extracted", len(entities)))
+		zap.Int("entities_extracted", len(entities)),
+		zap.Duration("extraction_time", extractionDuration),
+		zap.Duration("dgraph_time", dgraphDuration),
+		zap.Duration("total_time", totalDuration))
 
 	return nil
+}
+
+// updateStats updates ingestion statistics
+func (p *IngestionPipeline) updateStats(entityCount int, extractionTime, dgraphTime time.Duration, isError bool) {
+	p.stats.mu.Lock()
+	defer p.stats.mu.Unlock()
+
+	if isError {
+		p.stats.TotalErrors++
+		return
+	}
+
+	p.stats.TotalProcessed++
+	p.stats.TotalEntitiesCreated += int64(entityCount)
+	p.stats.LastExtractionMs = extractionTime.Milliseconds()
+	p.stats.LastDgraphWriteMs = dgraphTime.Milliseconds()
+	p.stats.LastDurationMs = (extractionTime + dgraphTime).Milliseconds()
+	p.stats.LastProcessedAt = time.Now()
+
+	p.totalDuration += p.stats.LastDurationMs
+	if p.stats.TotalProcessed > 0 {
+		p.stats.AvgDurationMs = float64(p.totalDuration) / float64(p.stats.TotalProcessed)
+	}
 }
 
 // extractEntities calls the AI service to extract structured entities from the transcript

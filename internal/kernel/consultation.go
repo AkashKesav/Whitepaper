@@ -29,6 +29,16 @@ type ConsultationHandler struct {
 	logger        *zap.Logger
 }
 
+// isUUIDLike checks if a string looks like a UUID (8-4-4-4-12 pattern)
+func isUUIDLike(s string) bool {
+	// Quick length check - UUIDs are 36 chars with dashes or 32 without
+	if len(s) == 36 {
+		_, err := uuid.Parse(s)
+		return err == nil
+	}
+	return false
+}
+
 // NewConsultationHandler creates a new consultation handler
 func NewConsultationHandler(
 	graphClient *graph.Client,
@@ -103,18 +113,33 @@ func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.Consultatio
 	return response, nil
 }
 
-// getUserKnowledge retrieves ALL stored facts and lets the LLM find relevant ones
+// getUserKnowledge retrieves stored facts using hybrid approach:
+// - High activation nodes (frequently accessed)
+// - Recent nodes (newly added within last hour)
+// This ensures both relevant AND fresh memories are considered
 func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, userID string, queryText string) ([]graph.Node, error) {
-	h.logger.Info("Fetching all knowledge for context", zap.String("query", queryText))
+	h.logger.Info("Fetching knowledge with hybrid approach", zap.String("query", queryText))
 
-	// Simple approach: fetch ALL non-User nodes, ordered by most recent first
+	// Hybrid query: top 50 by activation + top 50 by recency
+	// No type filters - filter in code to avoid DGraph type index issues
 	query := `{
-		all_facts(func: has(name), first: 50, orderdesc: created_at) @filter(NOT type(User)) {
+		by_activation(func: has(name), first: 50, orderdesc: activation) {
 			uid
 			dgraph.type
 			name
 			description
 			tags
+			activation
+			created_at
+		}
+		by_recency(func: has(name), first: 50, orderdesc: created_at) {
+			uid
+			dgraph.type
+			name
+			description
+			tags
+			activation
+			created_at
 		}
 	}`
 
@@ -124,25 +149,65 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, userID strin
 		return nil, err
 	}
 
-	h.logger.Info("Raw DGraph response", zap.String("json", string(resp)))
-
 	var result struct {
-		AllFacts []graph.Node `json:"all_facts"`
+		ByActivation []graph.Node `json:"by_activation"`
+		ByRecency    []graph.Node `json:"by_recency"`
 	}
 	if err := json.Unmarshal(resp, &result); err != nil {
 		h.logger.Error("Failed to unmarshal nodes", zap.Error(err))
 		return nil, err
 	}
 
-	h.logger.Info("Fetched all knowledge", zap.Int("count", len(result.AllFacts)))
-	for i, node := range result.AllFacts {
-		h.logger.Info("Node found",
-			zap.Int("index", i),
-			zap.String("name", node.Name),
-			zap.String("description", node.Description))
+	// Merge and deduplicate, filter out User nodes and Conversation nodes
+	seen := make(map[string]bool)
+	var merged []graph.Node
+
+	// Helper to check if node should be included
+	isValidNode := func(node graph.Node) bool {
+		if node.Name == "" {
+			return false
+		}
+		// Skip User nodes
+		if node.Name == "User" {
+			return false
+		}
+		// Skip Conversation_ nodes (these are conversation metadata, not facts)
+		if len(node.Name) > 13 && node.Name[:13] == "Conversation_" {
+			return false
+		}
+		// Skip user_xxx IDs (user identifiers, not knowledge)
+		if len(node.Name) > 5 && node.Name[:5] == "user_" {
+			return false
+		}
+		// Skip UUID-like names (8-4-4-4-12 pattern or just long hex strings)
+		if isUUIDLike(node.Name) {
+			return false
+		}
+		return true
 	}
 
-	return result.AllFacts, nil
+	// Add high-activation first (priority)
+	for _, node := range result.ByActivation {
+		if !seen[node.UID] && isValidNode(node) {
+			seen[node.UID] = true
+			merged = append(merged, node)
+		}
+	}
+
+	// Add recent nodes that weren't already included
+	for _, node := range result.ByRecency {
+		if !seen[node.UID] && isValidNode(node) {
+			seen[node.UID] = true
+			merged = append(merged, node)
+		}
+	}
+
+	h.logger.Info("Fetched hybrid knowledge",
+		zap.Int("by_activation", len(result.ByActivation)),
+		zap.Int("by_recency", len(result.ByRecency)),
+		zap.Int("merged_filtered", len(merged)))
+
+	return merged, nil
 }
 
 // textSearchFallback provides fallback text-based search if semantic search fails

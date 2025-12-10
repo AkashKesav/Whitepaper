@@ -248,10 +248,10 @@ type ActivationConfig struct {
 // DefaultActivationConfig returns sensible defaults for activation
 func DefaultActivationConfig() ActivationConfig {
 	return ActivationConfig{
-		DecayRate:             0.05, // 5% decay per day
-		BoostPerAccess:        0.1,  // 10% boost per access
-		MinActivation:         0.01, // 1% minimum
-		MaxActivation:         1.0,  // 100% maximum
-		CoreIdentityThreshold: 0.8,  // 80% for core identity
+		DecayRate:             0.005, // 0.5% decay per day (~12% per week, gentle)
+		BoostPerAccess:        0.15,  // 15% boost per access
+		MinActivation:         0.01,  // 1% minimum
+		MaxActivation:         1.0,   // 100% maximum
+		CoreIdentityThreshold: 0.8,   // 80% for core identity
 	}
 }
