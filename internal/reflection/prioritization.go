@@ -101,8 +101,9 @@ func (m *PrioritizationModule) ApplyDecay(ctx context.Context) error {
 	now := time.Now()
 	for _, node := range result.Nodes {
 		daysSinceAccess := now.Sub(node.LastAccessed).Hours() / 24
-		if daysSinceAccess < 1 {
-			continue // No decay for recently accessed nodes
+		// For testing: apply decay to nodes not accessed in last 1 minute (originally 1 day)
+		if daysSinceAccess < (1.0 / (24.0 * 60.0)) { // 1 minute in days
+			continue
 		}
 
 		// Exponential decay: newActivation = activation * (1 - decayRate)^days

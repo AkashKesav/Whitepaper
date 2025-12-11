@@ -1,6 +1,6 @@
 """
 LLM Router - Routes requests to appropriate LLM providers.
-Supports NVIDIA NIM, OpenAI, Anthropic, and Ollama (local).
+Supports NVIDIA NIM, OpenAI, and Anthropic.
 """
 import os
 from typing import Optional
@@ -19,7 +19,6 @@ class LLMRouter:
         # Determine available providers
         self.openai_key = os.getenv("OPENAI_API_KEY")
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-        self.ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
         print(f"DEBUG: ENV KEYS: {list(os.environ.keys())}", flush=True)
         
         # Determine available providers
@@ -30,7 +29,6 @@ class LLMRouter:
             self.providers.append("openai")
         if self.anthropic_key:
             self.providers.append("anthropic")
-        self.providers.append("ollama")  # Always available locally
         
         self.default_provider = "nvidia" # Forced per user request
 
@@ -53,17 +51,15 @@ class LLMRouter:
         
         print(f"DEBUG: Using provider={provider}, model={model}", flush=True)
         
-        if provider == "ollama":
-            return await self._call_ollama(system, query, model or "dolphin-llama3", format=format)
-        elif provider == "nvidia":
-            return await self._call_nvidia(system, query, model or "minimaxai/minimax-m2")
+        if provider == "nvidia":
+            return await self._call_nvidia(system, query, model or "meta/llama-3.1-70b-instruct")
         elif provider == "openai":
             return await self._call_openai(system, query, model or "gpt-4o-mini")
         elif provider == "anthropic":
             return await self._call_anthropic(system, query, model or "claude-3-haiku-20240307")
         else:
-            # Fallback to Ollama if unknown
-            return await self._call_ollama(system, query, model or "qwen3:4b", format=format)
+            # Fallback to NVIDIA if unknown
+            return await self._call_nvidia(system, query, model or "meta/llama-3.1-70b-instruct")
 
     def _build_system_prompt(self, context: Optional[str], alerts: list) -> str:
         """Build the system prompt with context and alerts."""
@@ -100,8 +96,8 @@ class LLMRouter:
                 json={
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": query},
+                        {"role": "system", "content": "You are a helpful AI assistant."},
+                        {"role": "user", "content": f"{system}\n\nUser Question: {query}"},
                     ],
                     "max_tokens": 1024,
                     "temperature": 0.7,
@@ -160,32 +156,6 @@ class LLMRouter:
             response.raise_for_status()
             data = response.json()
             return data["content"][0]["text"]
-
-    async def _call_ollama(self, system: str, query: str, model: str, format: str = None) -> str:
-        """Call Ollama (local) API."""
-        async with httpx.AsyncClient() as client:
-            try:
-                payload = {
-                    "model": model,
-                    "prompt": f"{system}\n\nUser: {query}\n\nAssistant:",
-                    "stream": False,
-                }
-                if format:
-                    payload["format"] = format
-
-                response = await client.post(
-                    f"{self.ollama_host}/api/generate",
-                    json=payload,
-                    timeout=120.0,
-                )
-                response.raise_for_status()
-                result = response.json()
-                response_text = result.get("response", "")
-                print(f"DEBUG: Ollama Raw Response: {response_text}", flush=True)
-                return response_text
-            except Exception as e:
-                print(f"DEBUG: Ollama connection error: {e}", flush=True)
-                return "I'm sorry, I couldn't connect to the local model. Please ensure Ollama is running."
 
     async def extract_json(
         self,

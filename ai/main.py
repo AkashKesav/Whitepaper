@@ -222,7 +222,7 @@ Rules:
 
 JSON:"""
         
-        result = await app.state.llm_router.extract_json(prompt, provider="ollama", model="qwen3:4b")
+        result = await app.state.llm_router.extract_json(prompt, provider="nvidia", model="meta/llama-3.1-70b-instruct")
         
         search_terms = result.get("search_terms", []) if result else []
         entity_names = result.get("entity_names", []) if result else []

@@ -121,9 +121,10 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, userID strin
 	h.logger.Info("Fetching knowledge with hybrid approach", zap.String("query", queryText))
 
 	// Hybrid query: top 50 by activation + top 50 by recency
-	// No type filters - filter in code to avoid DGraph type index issues
-	query := `{
-		by_activation(func: has(name), first: 50, orderdesc: activation) {
+	namespace := fmt.Sprintf("user_%s", userID)
+
+	query := `query HybridKnowledge($namespace: string) {
+		by_activation(func: has(name), first: 50, orderdesc: activation) @filter(eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
@@ -132,7 +133,7 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, userID strin
 			activation
 			created_at
 		}
-		by_recency(func: has(name), first: 50, orderdesc: created_at) {
+		by_recency(func: has(name), first: 50, orderdesc: created_at) @filter(eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
@@ -143,7 +144,7 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, userID strin
 		}
 	}`
 
-	resp, err := h.graphClient.Query(ctx, query, nil)
+	resp, err := h.graphClient.Query(ctx, query, map[string]string{"$namespace": namespace})
 	if err != nil {
 		h.logger.Error("Query failed", zap.Error(err))
 		return nil, err
@@ -308,7 +309,8 @@ func (h *ConsultationHandler) findRelevantFacts(ctx context.Context, req *graph.
 		zap.Int("max_results", maxResults))
 
 	// Search by text
-	nodes, err := h.queryBuilder.SearchByText(ctx, req.Query, maxResults)
+	namespace := fmt.Sprintf("user_%s", req.UserID)
+	nodes, err := h.queryBuilder.SearchByText(ctx, namespace, req.Query, maxResults)
 	if err != nil {
 		h.logger.Warn("Text search failed", zap.Error(err))
 	}
@@ -335,7 +337,7 @@ func (h *ConsultationHandler) findRelevantFacts(ctx context.Context, req *graph.
 	}
 
 	// Also get high-activation nodes as they represent core knowledge
-	highActivation, err := h.queryBuilder.GetHighActivationNodes(ctx, req.UserID, 0.3, 10)
+	highActivation, err := h.queryBuilder.GetHighActivationNodes(ctx, namespace, 0.3, 10)
 	if err != nil {
 		h.logger.Warn("Failed to get high activation nodes", zap.Error(err))
 	} else {
@@ -355,7 +357,7 @@ func (h *ConsultationHandler) findRelevantFacts(ctx context.Context, req *graph.
 	// CRITICAL FALLBACK: If no nodes found, get ALL nodes with names (most reliable)
 	if len(nodes) == 0 {
 		h.logger.Debug("No nodes found via specific queries, using GetAllNodes fallback")
-		allNodes, err := h.queryBuilder.GetAllNodes(ctx, maxResults)
+		allNodes, err := h.queryBuilder.GetAllNodes(ctx, namespace, maxResults)
 		if err != nil {
 			h.logger.Warn("Failed to get all nodes", zap.Error(err))
 		} else {
@@ -387,7 +389,9 @@ func (h *ConsultationHandler) findRelevantFacts(ctx context.Context, req *graph.
 
 // getRelevantInsights retrieves insights that may be relevant to the query
 func (h *ConsultationHandler) getRelevantInsights(ctx context.Context, req *graph.ConsultationRequest) ([]graph.Insight, error) {
-	insights, err := h.queryBuilder.GetInsights(ctx, 5)
+	// Get recent insights
+	namespace := fmt.Sprintf("user_%s", req.UserID)
+	insights, err := h.queryBuilder.GetInsights(ctx, namespace, 5)
 	if err != nil {
 		return nil, err
 	}
@@ -399,7 +403,8 @@ func (h *ConsultationHandler) getRelevantInsights(ctx context.Context, req *grap
 
 // checkPatterns checks for patterns that might be relevant (proactive assistance)
 func (h *ConsultationHandler) checkPatterns(ctx context.Context, req *graph.ConsultationRequest) ([]graph.Pattern, []string) {
-	patterns, err := h.queryBuilder.GetPatterns(ctx, 0.7, 5)
+	namespace := fmt.Sprintf("user_%s", req.UserID)
+	patterns, err := h.queryBuilder.GetPatterns(ctx, namespace, 0.7, 5)
 	if err != nil {
 		h.logger.Warn("Failed to get patterns", zap.Error(err))
 		return nil, nil
@@ -504,15 +509,49 @@ func (h *ConsultationHandler) cacheResponse(ctx context.Context, req *graph.Cons
 	return h.redisClient.Set(ctx, key, resp.SynthesizedBrief, 5*time.Minute).Err()
 }
 
-// updateAccessedNodes boosts activation for all accessed nodes
-func (h *ConsultationHandler) updateAccessedNodes(ctx context.Context, resp *graph.ConsultationResponse) {
+// isQueryRelevant checks if a node is semantically relevant to the query
+func isQueryRelevant(nodeName string, query string) bool {
+	queryLower := strings.ToLower(query)
+	nameLower := strings.ToLower(nodeName)
+
+	// Direct substring match
+	if strings.Contains(queryLower, nameLower) {
+		return true
+	}
+
+	// Word-level match (handles "basketball" in "I love basketball")
+	queryWords := strings.Fields(queryLower)
+	nameWords := strings.Fields(nameLower)
+
+	for _, nameWord := range nameWords {
+		for _, queryWord := range queryWords {
+			if nameWord == queryWord {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// updateAccessedNodes boosts activation only for query-relevant nodes
+func (h *ConsultationHandler) updateAccessedNodes(ctx context.Context, query string, resp *graph.ConsultationResponse) {
 	config := graph.DefaultActivationConfig()
 
 	for _, node := range resp.RelevantFacts {
+		// ONLY boost if node is relevant to the query
+		if !isQueryRelevant(node.Name, query) {
+			continue
+		}
+
 		if err := h.graphClient.IncrementAccessCount(ctx, node.UID, config); err != nil {
 			h.logger.Warn("Failed to update node activation",
 				zap.String("uid", node.UID),
 				zap.Error(err))
+		} else {
+			h.logger.Debug("Boosted relevant node",
+				zap.String("name", node.Name),
+				zap.String("query", query))
 		}
 	}
 }

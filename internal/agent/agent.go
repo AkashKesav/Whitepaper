@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"github.com/reflective-memory-kernel/internal/graph"
@@ -20,6 +21,7 @@ type Config struct {
 	NATSAddress     string
 	MemoryKernelURL string
 	AIServicesURL   string
+	RedisAddress    string
 	ResponseTimeout time.Duration
 }
 
@@ -27,20 +29,22 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		NATSAddress:     "nats://localhost:4222",
-		MemoryKernelURL: "http://localhost:9000",
+		MemoryKernelURL: "http://127.0.0.1:9000",
 		AIServicesURL:   "http://localhost:8000",
+		RedisAddress:    "127.0.0.1:6379",
 		ResponseTimeout: 10 * time.Second,
 	}
 }
 
 // Agent is the Front-End Agent - fast, conversational interface
 type Agent struct {
-	config   Config
-	logger   *zap.Logger
-	natsConn *nats.Conn
-	js       nats.JetStreamContext
-	mkClient *MKClient
-	aiClient *AIClient
+	config      Config
+	logger      *zap.Logger
+	natsConn    *nats.Conn
+	js          nats.JetStreamContext
+	mkClient    *MKClient
+	aiClient    *AIClient
+	RedisClient *redis.Client // Exposed for user authentication
 
 	// Active conversations
 	conversations map[string]*Conversation
@@ -105,6 +109,15 @@ func (a *Agent) Start() error {
 	// Initialize clients
 	a.mkClient = NewMKClient(a.config.MemoryKernelURL, a.logger)
 	a.aiClient = NewAIClient(a.config.AIServicesURL, a.logger)
+
+	// Initialize Redis for user authentication
+	a.RedisClient = redis.NewClient(&redis.Options{
+		Addr: a.config.RedisAddress,
+	})
+	if err := a.RedisClient.Ping(a.ctx).Err(); err != nil {
+		a.logger.Warn("Failed to connect to Redis for auth, user credentials will not persist", zap.Error(err))
+		// Don't fail startup - just continue without auth persistence
+	}
 
 	a.logger.Info("Front-End Agent started successfully")
 	return nil

@@ -1,6 +1,6 @@
 """
 Embedding service for semantic search.
-Uses Ollama's embedding models for vector generation.
+Uses NVIDIA NIM for embedding generation.
 """
 import os
 from typing import Optional
@@ -8,28 +8,42 @@ import httpx
 
 
 class EmbeddingService:
-    """Generates embeddings using Ollama's embedding models."""
+    """Generates embeddings using NVIDIA NIM embedding models."""
     
     def __init__(self):
-        self.ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-        self.model = "nomic-embed-text"  # Fast, high-quality embedding model
+        self.nvidia_key = os.getenv("NVIDIA_API_KEY", "").strip()
+        self.base_url = "https://integrate.api.nvidia.com/v1"
+        self.model = "nvidia/nv-embedqa-e5-v5"  # NVIDIA embedding model
     
     async def get_embedding(self, text: str) -> list[float]:
-        """Generate embedding vector for text."""
+        """Generate embedding vector for text using NVIDIA NIM."""
+        if not self.nvidia_key:
+            print("WARNING: NVIDIA_API_KEY not set, returning empty embedding", flush=True)
+            return []
+            
         async with httpx.AsyncClient(timeout=60.0) as client:
             try:
                 response = await client.post(
-                    f"{self.ollama_host}/api/embeddings",
+                    f"{self.base_url}/embeddings",
+                    headers={
+                        "Authorization": f"Bearer {self.nvidia_key}",
+                        "Content-Type": "application/json",
+                    },
                     json={
                         "model": self.model,
-                        "prompt": text,
+                        "input": [text],
+                        "input_type": "query",
+                        "encoding_format": "float",
                     },
                 )
                 response.raise_for_status()
                 data = response.json()
-                return data.get("embedding", [])
+                embeddings = data.get("data", [])
+                if embeddings:
+                    return embeddings[0].get("embedding", [])
+                return []
             except Exception as e:
-                print(f"Embedding error: {e}", flush=True)
+                print(f"NVIDIA Embedding error: {e}", flush=True)
                 return []
     
     async def get_embeddings_batch(self, texts: list[str]) -> list[list[float]]:

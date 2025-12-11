@@ -52,9 +52,9 @@ func (q *QueryBuilder) GetUserGraph(ctx context.Context, userUID string, maxDept
 }
 
 // GetHighActivationNodes retrieves nodes above a certain activation threshold
-func (q *QueryBuilder) GetHighActivationNodes(ctx context.Context, userUID string, threshold float64, limit int) ([]Node, error) {
-	query := fmt.Sprintf(`query HighActivation($threshold: float, $limit: int) {
-		nodes(func: ge(activation, $threshold), orderdesc: activation, first: $limit) {
+func (q *QueryBuilder) GetHighActivationNodes(ctx context.Context, namespace string, threshold float64, limit int) ([]Node, error) {
+	query := fmt.Sprintf(`query HighActivation($threshold: float, $limit: int, $namespace: string) {
+		nodes(func: ge(activation, $threshold), orderdesc: activation, first: $limit) @filter(eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
@@ -69,6 +69,7 @@ func (q *QueryBuilder) GetHighActivationNodes(ctx context.Context, userUID strin
 	vars := map[string]string{
 		"$threshold": fmt.Sprintf("%f", threshold),
 		"$limit":     fmt.Sprintf("%d", limit),
+		"$namespace": namespace,
 	}
 
 	resp, err := q.client.Query(ctx, query, vars)
@@ -87,11 +88,11 @@ func (q *QueryBuilder) GetHighActivationNodes(ctx context.Context, userUID strin
 }
 
 // GetDecayedNodes retrieves nodes that haven't been accessed recently
-func (q *QueryBuilder) GetDecayedNodes(ctx context.Context, staleThreshold time.Duration) ([]Node, error) {
+func (q *QueryBuilder) GetDecayedNodes(ctx context.Context, namespace string, staleThreshold time.Duration) ([]Node, error) {
 	cutoffTime := time.Now().Add(-staleThreshold)
 
-	query := `query DecayedNodes($cutoff: string) {
-		nodes(func: lt(last_accessed, $cutoff)) @filter(gt(activation, 0.01)) {
+	query := `query DecayedNodes($cutoff: string, $namespace: string) {
+		nodes(func: lt(last_accessed, $cutoff)) @filter(gt(activation, 0.01) AND eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
@@ -101,7 +102,8 @@ func (q *QueryBuilder) GetDecayedNodes(ctx context.Context, staleThreshold time.
 	}`
 
 	vars := map[string]string{
-		"$cutoff": cutoffTime.Format(time.RFC3339),
+		"$cutoff":    cutoffTime.Format(time.RFC3339),
+		"$namespace": namespace,
 	}
 
 	resp, err := q.client.Query(ctx, query, vars)
@@ -218,10 +220,10 @@ func (q *QueryBuilder) FindPathBetweenNodes(ctx context.Context, fromUID, toUID 
 	})
 }
 
-// SearchByText performs full-text search across node names and descriptions
-func (q *QueryBuilder) SearchByText(ctx context.Context, searchText string, limit int) ([]Node, error) {
-	query := `query TextSearch($text: string, $limit: int) {
-		results(func: anyoftext(name, $text), first: $limit) {
+// SearchByText performs full-text search across node names and descriptions, scoped to the namespace
+func (q *QueryBuilder) SearchByText(ctx context.Context, namespace string, searchText string, limit int) ([]Node, error) {
+	query := `query TextSearch($text: string, $limit: int, $namespace: string) {
+		results(func: anyoftext(name, $text), first: $limit) @filter(eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
@@ -230,7 +232,7 @@ func (q *QueryBuilder) SearchByText(ctx context.Context, searchText string, limi
 			last_accessed
 		}
 		
-		desc_results(func: anyoftext(description, $text), first: $limit) {
+		desc_results(func: anyoftext(description, $text), first: $limit) @filter(eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
@@ -239,7 +241,7 @@ func (q *QueryBuilder) SearchByText(ctx context.Context, searchText string, limi
 			last_accessed
 		}
 
-		tag_results(func: anyofterms(tags, $text), first: $limit) {
+		tag_results(func: anyofterms(tags, $text), first: $limit) @filter(eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
@@ -251,8 +253,9 @@ func (q *QueryBuilder) SearchByText(ctx context.Context, searchText string, limi
 	}`
 
 	vars := map[string]string{
-		"$text":  searchText,
-		"$limit": fmt.Sprintf("%d", limit),
+		"$text":      searchText,
+		"$limit":     fmt.Sprintf("%d", limit),
+		"$namespace": namespace,
 	}
 
 	resp, err := q.client.Query(ctx, query, vars)
@@ -282,10 +285,10 @@ func (q *QueryBuilder) SearchByText(ctx context.Context, searchText string, limi
 	return merged, nil
 }
 
-// GetInsights retrieves all insights for a user
-func (q *QueryBuilder) GetInsights(ctx context.Context, limit int) ([]Insight, error) {
-	query := `query GetInsights($limit: int) {
-		insights(func: type(Insight), orderdesc: created_at, first: $limit) {
+// GetInsights retrieves all insights for a namespace
+func (q *QueryBuilder) GetInsights(ctx context.Context, namespace string, limit int) ([]Insight, error) {
+	query := fmt.Sprintf(`query GetInsights($limit: int, $namespace: string) {
+		insights(func: type(Insight), orderdesc: created_at, first: $limit) @filter(eq(namespace, $namespace)) {
 			uid
 			name
 			description
@@ -299,10 +302,11 @@ func (q *QueryBuilder) GetInsights(ctx context.Context, limit int) ([]Insight, e
 				name
 			}
 		}
-	}`
+	}`)
 
 	vars := map[string]string{
-		"$limit": fmt.Sprintf("%d", limit),
+		"$limit":     fmt.Sprintf("%d", limit),
+		"$namespace": namespace,
 	}
 
 	resp, err := q.client.Query(ctx, query, vars)
@@ -320,10 +324,10 @@ func (q *QueryBuilder) GetInsights(ctx context.Context, limit int) ([]Insight, e
 	return result.Insights, nil
 }
 
-// GetPatterns retrieves all patterns for a user
-func (q *QueryBuilder) GetPatterns(ctx context.Context, minConfidence float64, limit int) ([]Pattern, error) {
-	query := `query GetPatterns($minConf: float, $limit: int) {
-		patterns(func: type(Pattern), orderdesc: confidence_score, first: $limit) @filter(ge(confidence_score, $minConf)) {
+// GetPatterns retrieves all patterns for a namespace
+func (q *QueryBuilder) GetPatterns(ctx context.Context, namespace string, minConfidence float64, limit int) ([]Pattern, error) {
+	query := `query GetPatterns($minConf: float, $limit: int, $namespace: string) {
+		patterns(func: type(Pattern), orderdesc: confidence_score, first: $limit) @filter(ge(confidence_score, $minConf) AND eq(namespace, $namespace)) {
 			uid
 			name
 			description
@@ -340,8 +344,9 @@ func (q *QueryBuilder) GetPatterns(ctx context.Context, minConfidence float64, l
 	}`
 
 	vars := map[string]string{
-		"$minConf": fmt.Sprintf("%f", minConfidence),
-		"$limit":   fmt.Sprintf("%d", limit),
+		"$minConf":   fmt.Sprintf("%f", minConfidence),
+		"$limit":     fmt.Sprintf("%d", limit),
+		"$namespace": namespace,
 	}
 
 	resp, err := q.client.Query(ctx, query, vars)
@@ -360,9 +365,9 @@ func (q *QueryBuilder) GetPatterns(ctx context.Context, minConfidence float64, l
 }
 
 // GetAllNodes retrieves all nodes with names (most reliable fallback)
-func (q *QueryBuilder) GetAllNodes(ctx context.Context, limit int) ([]Node, error) {
-	query := `query AllNodes($limit: int) {
-		nodes(func: has(name), orderdesc: activation, first: $limit) {
+func (q *QueryBuilder) GetAllNodes(ctx context.Context, namespace string, limit int) ([]Node, error) {
+	query := `query AllNodes($limit: int, $namespace: string) {
+		nodes(func: has(name), orderdesc: activation, first: $limit) @filter(eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
@@ -375,7 +380,8 @@ func (q *QueryBuilder) GetAllNodes(ctx context.Context, limit int) ([]Node, erro
 	}`
 
 	vars := map[string]string{
-		"$limit": fmt.Sprintf("%d", limit),
+		"$limit":     fmt.Sprintf("%d", limit),
+		"$namespace": namespace,
 	}
 
 	resp, err := q.client.Query(ctx, query, vars)
@@ -394,9 +400,9 @@ func (q *QueryBuilder) GetAllNodes(ctx context.Context, limit int) ([]Node, erro
 }
 
 // GetNodesByType retrieves all nodes of a specific type
-func (q *QueryBuilder) GetNodesByType(ctx context.Context, nodeType NodeType, limit int) ([]Node, error) {
-	query := fmt.Sprintf(`query NodesByType($limit: int) {
-		nodes(func: type(%s), orderdesc: activation, first: $limit) {
+func (q *QueryBuilder) GetNodesByType(ctx context.Context, namespace string, nodeType NodeType, limit int) ([]Node, error) {
+	query := fmt.Sprintf(`query NodesByType($limit: int, $namespace: string) {
+		nodes(func: type(%s), orderdesc: activation, first: $limit) @filter(eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
@@ -409,7 +415,8 @@ func (q *QueryBuilder) GetNodesByType(ctx context.Context, nodeType NodeType, li
 	}`, nodeType)
 
 	vars := map[string]string{
-		"$limit": fmt.Sprintf("%d", limit),
+		"$limit":     fmt.Sprintf("%d", limit),
+		"$namespace": namespace,
 	}
 
 	resp, err := q.client.Query(ctx, query, vars)

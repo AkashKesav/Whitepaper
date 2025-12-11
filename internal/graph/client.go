@@ -11,6 +11,7 @@ import (
 
 	"github.com/dgraph-io/dgo/v240"
 	"github.com/dgraph-io/dgo/v240/protos/api"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -88,6 +89,21 @@ func NewClient(ctx context.Context, cfg ClientConfig, logger *zap.Logger) (*Clie
 func (c *Client) initSchema(ctx context.Context) error {
 	schema := `
 		# Node types
+		# Group Management (V2)
+		group_has_admin: [uid] @reverse .
+		group_has_member: [uid] @reverse .
+		
+		type Group {
+			name
+			description
+			namespace
+			created_by
+			created_at
+			updated_at
+			group_has_admin
+			group_has_member
+		}
+
 		type User {
 			name
 			description
@@ -160,6 +176,7 @@ func (c *Client) initSchema(ctx context.Context) error {
 		attributes: [string] .
 		tags: [string] @index(term) .
 		entity_type: string @index(exact) .
+		namespace: string @index(exact) .
 		
 		# Temporal predicates
 		created_at: datetime @index(hour) .
@@ -221,6 +238,8 @@ func (c *Client) initSchema(ctx context.Context) error {
 		edge_created_at: datetime .
 		edge_activation: float .
 		edge_confidence: float .
+
+
 	`
 
 	op := &api.Operation{Schema: schema}
@@ -275,6 +294,12 @@ func (c *Client) CreateNode(ctx context.Context, node *Node) (string, error) {
 	// Name (required)
 	nquads.WriteString(fmt.Sprintf(`%s <name> %q .
 `, blankNode, node.Name))
+
+	// Namespace (critical for isolation)
+	if node.Namespace != "" {
+		nquads.WriteString(fmt.Sprintf(`%s <namespace> %q .
+`, blankNode, node.Namespace))
+	}
 
 	// Activation
 	nquads.WriteString(fmt.Sprintf(`%s <activation> "%f"^^<xs:double> .
@@ -536,8 +561,8 @@ func (c *Client) FindNodeByName(ctx context.Context, name string, nodeType NodeT
 	return &result.Node[0], nil
 }
 
-// GetNodesByNames fetches multiple nodes by name in a single query
-func (c *Client) GetNodesByNames(ctx context.Context, names []string) (map[string]*Node, error) {
+// GetNodesByNames fetches multiple nodes by name in a single query, scoped to namespace
+func (c *Client) GetNodesByNames(ctx context.Context, namespace string, names []string) (map[string]*Node, error) {
 	if len(names) == 0 {
 		return make(map[string]*Node), nil
 	}
@@ -549,23 +574,19 @@ func (c *Client) GetNodesByNames(ctx context.Context, names []string) (map[strin
 	}
 	filterStr := strings.Join(filters, " OR ")
 
-	query := fmt.Sprintf(`query FindNodes {
-		nodes(func: has(name)) @filter(%s) {
+	query := fmt.Sprintf(`query FindNodes($namespace: string) {
+		nodes(func: has(name)) @filter((%s) AND eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
 			description
 			attributes
 			created_at
-			updated_at
-			last_accessed
 			activation
-			access_count
-			tags
+			namespace
 		}
 	}`, filterStr)
-
-	resp, err := c.dg.NewReadOnlyTxn().Query(ctx, query)
+	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, map[string]string{"$namespace": namespace})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query nodes batch: %w", err)
 	}
@@ -712,6 +733,12 @@ func (c *Client) CreateNodes(ctx context.Context, nodes []*Node) (map[string]str
 		nquads.WriteString(fmt.Sprintf(`%s <name> %q .
 `, blankNode, node.Name))
 
+		// Namespace
+		if node.Namespace != "" {
+			nquads.WriteString(fmt.Sprintf(`%s <namespace> %q .
+`, blankNode, node.Namespace))
+		}
+
 		// Metadata
 		nquads.WriteString(fmt.Sprintf(`%s <activation> "%f"^^<xs:double> .
 `, blankNode, node.Activation))
@@ -840,4 +867,237 @@ func (c *Client) Mutate(ctx context.Context, mutation *api.Mutation) (*api.Respo
 	txn := c.dg.NewTxn()
 	defer txn.Discard(ctx)
 	return txn.Mutate(ctx, mutation)
+}
+
+// EnsureUserNode creates a User node in DGraph if it doesn't exist (idempotent)
+func (c *Client) EnsureUserNode(ctx context.Context, username string) error {
+	// Check if user already exists
+	existing, err := c.FindNodeByName(ctx, username, NodeTypeUser)
+	if err != nil {
+		return fmt.Errorf("failed to check user existence: %w", err)
+	}
+	if existing != nil {
+		return nil // Already exists
+	}
+
+	// Create new User node
+	now := time.Now().Format(time.RFC3339)
+	nquads := fmt.Sprintf(`
+		_:user <dgraph.type> "User" .
+		_:user <name> %q .
+		_:user <namespace> %q .
+		_:user <created_at> %q .
+		_:user <updated_at> %q .
+		_:user <activation> "0.5" .
+	`, username, fmt.Sprintf("user_%s", username), now, now)
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquads),
+		CommitNow: true,
+	}
+
+	_, err = txn.Mutate(ctx, mu)
+	if err != nil {
+		return fmt.Errorf("failed to create user node: %w", err)
+	}
+
+	c.logger.Info("Created User node in DGraph", zap.String("username", username))
+	return nil
+}
+
+// CreateGroup creates a new group (V2) with strict namespace isolation and admin hierarchy
+func (c *Client) CreateGroup(ctx context.Context, name, description, ownerID string) (string, error) {
+	// Find owner user
+	ownerNode, err := c.FindNodeByName(ctx, ownerID, NodeTypeUser)
+	if err != nil {
+		return "", fmt.Errorf("failed to find owner: %w", err)
+	}
+	if ownerNode == nil {
+		return "", fmt.Errorf("owner user %s not found", ownerID)
+	}
+
+	groupID := uuid.New().String()
+	namespace := fmt.Sprintf("group_%s", groupID)
+
+	// Create Group Node (It exists within its OWN namespace so it can be found by queries filtering for that group)
+	// WAIT: A group node itself acts as the anchor. If I put it in "group_X", then to find it I need to know "group_X".
+	// But I don't know "group_X" yet.
+	// The Group Node must be visible to the CREATOR (user_X) and Members.
+	// So Group Node should effectively be in "user_X" (created by)?
+	// NO.
+	// Solution: The Group Node has `namespace: "system"` or `namespace: "registry"`, OR
+	// We simply use the `group_has_member` edges from the USER to find the groups.
+	// The USER is in `user_X`. The User Node has `~group_has_member` edge to Group Node.
+	// When we query `User { ~group_has_member { ... } }` we are traversing FROM `user_X`.
+	// As long as the Group Node EXISTS, DGraph handles the traversal.
+	// The `namespace` field on the Group Node is just metadata for "what namespace does this define".
+	// So, we set `namespace` = `group_X` on the Group Node to indicate "I define this space".
+
+	now := time.Now().Format(time.RFC3339)
+	groupUID := "_:newgroup"
+
+	nquads := fmt.Sprintf(`
+		%s <dgraph.type> "Group" .
+		%s <name> %q .
+		%s <description> %q .
+		%s <namespace> %q .
+		%s <created_at> %q .
+		%s <updated_at> %q .
+		
+		# Hierarchy
+		%s <group_has_admin> <%s> .
+		%s <group_has_member> <%s> .
+	`,
+		groupUID, groupUID, name,
+		groupUID, description,
+		groupUID, namespace,
+		groupUID, now,
+		groupUID, now,
+		groupUID, ownerNode.UID,
+		groupUID, ownerNode.UID)
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquads),
+		CommitNow: true,
+	}
+
+	_, err = txn.Mutate(ctx, mu)
+	if err != nil {
+		return "", fmt.Errorf("failed to create group: %w", err)
+	}
+
+	// The returned ID is the DGraph UID.
+	// But the LOGICAL ID (for namespace) is the UUID we generated.
+	// We should probably store the UUID as a property `group_id` for external reference?
+	// For now, returning the Namespace string as the identifier to the caller is most useful.
+	// But `resp.Uids["newgroup"]` returns the DGraph UID.
+	// Let's return the namespace string, as that is the "ID" needed for further API calls.
+
+	return namespace, nil
+}
+
+// AddGroupMember adds a user to a group (V2)
+func (c *Client) AddGroupMember(ctx context.Context, groupNamespace, username string) error {
+	// groupNamespace e.g. "group_<UUID>"
+	// We need to find the Group Node by its namespace field.
+
+	q := `query FindGroup($ns: string) {
+		g(func: eq(namespace, $ns)) @filter(type(Group)) {
+			uid
+		}
+	}`
+	resp, err := c.Query(ctx, q, map[string]string{"$ns": groupNamespace})
+	if err != nil {
+		return fmt.Errorf("failed to query group: %w", err)
+	}
+
+	var res struct {
+		G []struct {
+			UID string `json:"uid"`
+		} `json:"g"`
+	}
+	json.Unmarshal(resp, &res)
+	if len(res.G) == 0 {
+		return fmt.Errorf("group %s not found", groupNamespace)
+	}
+	groupUID := res.G[0].UID
+
+	// Find the User
+	userNode, err := c.FindNodeByName(ctx, username, NodeTypeUser)
+	if err != nil || userNode == nil {
+		return fmt.Errorf("user %s not found", username)
+	}
+
+	nquad := fmt.Sprintf(`<%s> <group_has_member> <%s> .`, groupUID, userNode.UID)
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquad),
+		CommitNow: true,
+	}
+
+	if _, err := txn.Mutate(ctx, mu); err != nil {
+		return fmt.Errorf("failed to add member: %w", err)
+	}
+	return nil
+}
+
+// ListUserGroups returns groups the user is a member of (V2)
+// NOTE: This intentionally steps OUTSIDE the strict namespace filter for discovery.
+func (c *Client) ListUserGroups(ctx context.Context, userID string) ([]Group, error) {
+	userNode, err := c.FindNodeByName(ctx, userID, NodeTypeUser)
+	if err != nil || userNode == nil {
+		return nil, fmt.Errorf("user not found: %s", userID)
+	}
+
+	// Traverse from User -> ~group_has_member -> Group
+	query := `query UserGroups($user: string) {
+		groups(func: type(Group)) @filter(uid_in(group_has_member, $user)) {
+			uid
+			name
+			description
+			namespace
+			created_at
+			# We can also fetch members if needed
+			group_has_member {
+				uid
+				name
+			}
+		}
+	}`
+
+	resp, err := c.Query(ctx, query, map[string]string{"$user": userNode.UID})
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Groups []Group `json:"groups"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+
+	return result.Groups, nil
+}
+
+// IsGroupAdmin checks if a user is an admin of the group
+func (c *Client) IsGroupAdmin(ctx context.Context, groupNamespace, userID string) (bool, error) {
+	userNode, err := c.FindNodeByName(ctx, userID, NodeTypeUser)
+	if err != nil || userNode == nil {
+		return false, fmt.Errorf("user not found: %s", userID)
+	}
+
+	query := `query IsAdmin($ns: string, $user: string) {
+		g(func: eq(namespace, $ns)) @filter(uid_in(group_has_admin, $user)) {
+			uid
+		}
+	}`
+
+	resp, err := c.Query(ctx, query, map[string]string{
+		"$ns":   groupNamespace,
+		"$user": userNode.UID,
+	})
+	if err != nil {
+		return false, err
+	}
+
+	var res struct {
+		G []struct {
+			UID string `json:"uid"`
+		} `json:"g"`
+	}
+	if err := json.Unmarshal(resp, &res); err != nil {
+		return false, err
+	}
+
+	return len(res.G) > 0, nil
 }

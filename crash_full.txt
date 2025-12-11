@@ -1,0 +1,30 @@
+﻿docker : {"level":"info","ts":1765441395.039472,"caller":"k
+ernel/main.go:25","msg":"Starting Reflective Memory 
+Kernel"}
+At line:1 char:63
++ ... l; Start-Sleep -Seconds 5; docker logs 
+rmk-memory-kernel 2>&1 | Out-F ...
++                                
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ({"level":"inf 
+   o"...Memory Kernel"}:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+{"level":"info","ts":1765441395.0395792,"caller":"kernel/ke
+rnel.go:145","msg":"Starting Memory Kernel..."}
+{"level":"fatal","ts":1765441395.0445757,"caller":"kernel/m
+ain.go:48","msg":"Failed to start kernel","error":"failed 
+to initialize schema: failed to alter schema: rpc error: 
+code = Unknown desc = type User defined multiple times","st
+acktrace":"main.main\n\t/app/cmd/kernel/main.go:48\nruntime
+.main\n\t/usr/local/go/src/runtime/proc.go:283"}
+{"level":"info","ts":1765441706.3871524,"caller":"kernel/ma
+in.go:25","msg":"Starting Reflective Memory Kernel"}
+{"level":"info","ts":1765441706.3872936,"caller":"kernel/ke
+rnel.go:145","msg":"Starting Memory Kernel..."}
+{"level":"fatal","ts":1765441706.3964055,"caller":"kernel/m
+ain.go:48","msg":"Failed to start kernel","error":"failed 
+to initialize schema: failed to alter schema: rpc error: 
+code = Unknown desc = type User defined multiple times","st
+acktrace":"main.main\n\t/app/cmd/kernel/main.go:48\nruntime
+.main\n\t/usr/local/go/src/runtime/proc.go:283"}

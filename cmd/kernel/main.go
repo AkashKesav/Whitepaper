@@ -126,6 +126,103 @@ func setupRoutes(r *mux.Router, k *kernel.Kernel, logger *zap.Logger) {
 		w.Write([]byte(`{"status": "reflection triggered"}`))
 	}).Methods("POST")
 
+	// EnsureUserNode endpoint (creates User node in DGraph if not exists)
+	r.HandleFunc("/api/ensure-user", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Username string `json:"username"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		if err := k.EnsureUserNode(r.Context(), req.Username); err != nil {
+			logger.Error("EnsureUserNode failed", zap.Error(err))
+			http.Error(w, "Failed to ensure user node", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}).Methods("POST")
+
+	// Group API endpoints
+	r.HandleFunc("/api/groups", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			OwnerID     string `json:"owner_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		groupID, err := k.CreateGroup(r.Context(), req.Name, req.Description, req.OwnerID)
+		if err != nil {
+			logger.Error("Create group failed", zap.Error(err))
+			http.Error(w, "Create group failed", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"group_id": groupID})
+	}).Methods("POST")
+
+	r.HandleFunc("/api/groups", func(w http.ResponseWriter, r *http.Request) {
+		userID := r.URL.Query().Get("user")
+		groups, err := k.ListUserGroups(r.Context(), userID)
+		if err != nil {
+			logger.Error("List groups failed", zap.Error(err))
+			http.Error(w, "List groups failed", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(groups)
+	}).Methods("GET")
+
+	r.HandleFunc("/api/groups/members", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			GroupID  string `json:"group_id"`
+			Username string `json:"username"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		if err := k.AddGroupMember(r.Context(), req.GroupID, req.Username); err != nil {
+			logger.Error("Add member failed", zap.Error(err))
+			http.Error(w, "Add member failed", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "added"})
+	}).Methods("POST")
+
+	r.HandleFunc("/api/groups/is-admin", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			GroupNamespace string `json:"group_namespace"`
+			UserID         string `json:"user_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		isAdmin, err := k.IsGroupAdmin(r.Context(), req.GroupNamespace, req.UserID)
+		if err != nil {
+			logger.Error("Check admin status failed", zap.Error(err))
+			http.Error(w, "Check admin status failed", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"is_admin": isAdmin})
+	}).Methods("POST")
+
 	// Health check
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

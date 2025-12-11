@@ -8,14 +8,16 @@ import "time"
 type NodeType string
 
 const (
-	NodeTypeUser       NodeType = "User"
-	NodeTypeEntity     NodeType = "Entity"
-	NodeTypeEvent      NodeType = "Event"
-	NodeTypeInsight    NodeType = "Insight"
-	NodeTypePattern    NodeType = "Pattern"
-	NodeTypePreference NodeType = "Preference"
-	NodeTypeFact       NodeType = "Fact"
-	NodeTypeRule       NodeType = "Rule"
+	NodeTypeUser         NodeType = "User"
+	NodeTypeEntity       NodeType = "Entity"
+	NodeTypeEvent        NodeType = "Event"
+	NodeTypeInsight      NodeType = "Insight"
+	NodeTypePattern      NodeType = "Pattern"
+	NodeTypePreference   NodeType = "Preference"
+	NodeTypeFact         NodeType = "Fact"
+	NodeTypeRule         NodeType = "Rule"
+	NodeTypeGroup        NodeType = "Group"
+	NodeTypeConversation NodeType = "Conversation"
 )
 
 // EdgeType represents relationship types between nodes
@@ -105,6 +107,7 @@ type Node struct {
 	// Source tracking
 	SourceConversationID string  `json:"source_conversation_id,omitempty"`
 	Confidence           float64 `json:"confidence,omitempty"`
+	Namespace            string  `json:"namespace,omitempty"` // "user_<UUID>" or "group_<UUID>"
 }
 
 // GetType returns the primary type of the node
@@ -173,6 +176,18 @@ type Contradiction struct {
 	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 	Resolution string     `json:"resolution,omitempty"`
 	WinningUID string     `json:"winning_uid,omitempty"`
+}
+
+// Group represents a group for shared memories
+type Group struct {
+	UID         string    `json:"uid,omitempty"`
+	DType       []string  `json:"dgraph.type,omitempty"`
+	Name        string    `json:"name,omitempty"`
+	Description string    `json:"description,omitempty"`
+	CreatedBy   *Node     `json:"created_by,omitempty"`
+	Members     []Node    `json:"group_members,omitempty"`
+	CreatedAt   time.Time `json:"created_at,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at,omitempty"`
 }
 
 // TranscriptEvent represents an ingested conversation event

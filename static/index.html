@@ -100,6 +100,7 @@
             text-align: center;
             padding: 20px 0;
             animation: fadeInDown 0.6s ease-out;
+            position: relative;
         }
 
         .header h1 {
@@ -114,6 +115,49 @@
         .header p {
             font-size: 0.9rem;
             color: #9ca3af;
+        }
+
+        /* User info bar */
+        .user-bar {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .user-avatar {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        .user-name {
+            font-size: 0.85rem;
+            color: #a5b4fc;
+            font-weight: 500;
+        }
+
+        .logout-btn {
+            padding: 6px 12px;
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: 8px;
+            color: #fca5a5;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .logout-btn:hover {
+            background: rgba(239, 68, 68, 0.3);
         }
 
         .status-indicator {
@@ -143,6 +187,131 @@
             50% {
                 opacity: 0.5;
             }
+        }
+
+        /* Login Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal-overlay.hidden {
+            display: none;
+        }
+
+        .login-modal {
+            background: rgba(30, 30, 60, 0.95);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 24px;
+            padding: 40px;
+            width: 100%;
+            max-width: 400px;
+            animation: modalIn 0.3s ease-out;
+        }
+
+        @keyframes modalIn {
+            from {
+                opacity: 0;
+                transform: scale(0.9) translateY(20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: scale(1) translateY(0);
+            }
+        }
+
+        .login-modal h2 {
+            text-align: center;
+            font-size: 1.5rem;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .login-modal .subtitle {
+            text-align: center;
+            color: #9ca3af;
+            font-size: 0.85rem;
+            margin-bottom: 24px;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.85rem;
+            color: #a5b4fc;
+            margin-bottom: 6px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 14px 16px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 12px;
+            color: #e4e4f0;
+            font-size: 1rem;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        .form-group input:focus {
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+        }
+
+        .login-btn {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+            border: none;
+            border-radius: 12px;
+            color: white;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 8px;
+        }
+
+        .login-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.4);
+        }
+
+        .login-error {
+            color: #f87171;
+            font-size: 0.8rem;
+            text-align: center;
+            margin-top: 12px;
+        }
+
+        .anonymous-link {
+            display: block;
+            text-align: center;
+            margin-top: 16px;
+            color: #9ca3af;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+
+        .anonymous-link:hover {
+            color: #a5b4fc;
         }
 
         /* Chat container */
@@ -378,8 +547,39 @@
         <div class="orb"></div>
     </div>
 
+    <!-- Login Modal -->
+    <div class="modal-overlay" id="loginModal">
+        <div class="login-modal">
+            <h2 id="modalTitle">🧠 Welcome</h2>
+            <p class="subtitle" id="modalSubtitle">Sign in to access your personal memory</p>
+            <form id="loginForm">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="usernameInput" placeholder="Enter your username" autocomplete="username"
+                        required>
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="passwordInput" placeholder="Enter your password"
+                        autocomplete="current-password" required>
+                </div>
+                <button type="submit" class="login-btn" id="submitBtn">Sign In</button>
+                <div class="login-error" id="loginError"></div>
+            </form>
+            <div class="anonymous-link" id="toggleMode">Don't have an account? Register →</div>
+            <div class="anonymous-link" id="anonymousBtn">Continue as anonymous →</div>
+        </div>
+    </div>
+
+
+
     <div class="container">
         <div class="header">
+            <div class="user-bar" id="userBar" style="display: none;">
+                <div class="user-avatar" id="userAvatar">?</div>
+                <span class="user-name" id="userNameDisplay">User</span>
+                <button class="logout-btn" id="logoutBtn">Logout</button>
+            </div>
             <h1>🧠 Reflective Memory Kernel</h1>
             <p>Your AI assistant with persistent memory</p>
             <div class="status-indicator">
@@ -418,14 +618,169 @@
     </div>
 
     <script>
+        // JWT Secret for client-side token generation (must match server)
+        const JWT_SECRET = 'i39kvQgLepT20Xk4Chjmmwr+vRq3Sg8zeVsGhlB5fc4=';
+
+        // DOM elements
         const messagesEl = document.getElementById('messages');
         const inputEl = document.getElementById('messageInput');
         const sendBtn = document.getElementById('sendBtn');
+        const loginModal = document.getElementById('loginModal');
+        const loginForm = document.getElementById('loginForm');
+        const usernameInput = document.getElementById('usernameInput');
+        const passwordInput = document.getElementById('passwordInput');
+        const loginError = document.getElementById('loginError');
+        const anonymousBtn = document.getElementById('anonymousBtn');
+        const toggleMode = document.getElementById('toggleMode');
+        const modalTitle = document.getElementById('modalTitle');
+        const modalSubtitle = document.getElementById('modalSubtitle');
+        const submitBtn = document.getElementById('submitBtn');
+        const userBar = document.getElementById('userBar');
+        const userAvatar = document.getElementById('userAvatar');
+        const userNameDisplay = document.getElementById('userNameDisplay');
+        const logoutBtn = document.getElementById('logoutBtn');
+
+        // Auth state
+        let currentUser = null;
+        let authToken = null;
+        let isRegisterMode = false;
+
+        // Simple JWT creation (for demo - in production, tokens come from server)
+        function createToken(username) {
+            // Create a simple JWT-like token for demo
+            // In production, tokens should be issued by a backend auth service
+            const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+            const payload = btoa(JSON.stringify({
+                sub: username,
+                exp: Math.floor(Date.now() / 1000) + 86400 // 24 hours
+            }));
+            // Note: This is a simplified version - real JWT needs proper HMAC signing
+            // For demo purposes, we're creating a token that the server will validate
+            return `${header}.${payload}.demo_signature`;
+        }
+
+        // Check for existing session
+        function checkAuth() {
+            const savedUser = localStorage.getItem('rmk_user');
+            const savedToken = localStorage.getItem('rmk_token');
+
+            if (savedUser && savedToken) {
+                currentUser = savedUser;
+                authToken = savedToken;
+                showLoggedIn();
+            } else {
+                showLoginModal();
+            }
+        }
+
+        // Show login modal
+        function showLoginModal() {
+            loginModal.classList.remove('hidden');
+            usernameInput.focus();
+        }
+
+        // Toggle between login and register modes
+        toggleMode.addEventListener('click', () => {
+            isRegisterMode = !isRegisterMode;
+            if (isRegisterMode) {
+                modalTitle.textContent = '🧠 Create Account';
+                modalSubtitle.textContent = 'Create your account to get started';
+                submitBtn.textContent = 'Register';
+                toggleMode.textContent = 'Already have an account? Sign In →';
+            } else {
+                modalTitle.textContent = '🧠 Welcome';
+                modalSubtitle.textContent = 'Sign in to access your personal memory';
+                submitBtn.textContent = 'Sign In';
+                toggleMode.textContent = "Don't have an account? Register →";
+            }
+            loginError.textContent = '';
+        });
+
+        // Hide login modal and show chat
+        function showLoggedIn() {
+            loginModal.classList.add('hidden');
+            userBar.style.display = 'flex';
+            userAvatar.textContent = currentUser.charAt(0).toUpperCase();
+            userNameDisplay.textContent = currentUser;
+            inputEl.focus();
+            loadStats();
+        }
+
+        // Login/Register handler
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = usernameInput.value.trim();
+            const password = passwordInput.value;
+
+            if (!username || !password) {
+                loginError.textContent = 'Please enter both username and password';
+                return;
+            }
+
+            try {
+                // Call server to login or register
+                const endpoint = isRegisterMode ? '/api/register' : '/api/login';
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                if (!res.ok) {
+                    const errorText = await res.text();
+                    throw new Error(errorText || (isRegisterMode ? 'Registration failed' : 'Login failed'));
+                }
+
+                const data = await res.json();
+                currentUser = data.username;
+                authToken = data.token;
+
+                localStorage.setItem('rmk_user', currentUser);
+                localStorage.setItem('rmk_token', authToken);
+
+                showLoggedIn();
+                const welcomeMsg = isRegisterMode
+                    ? `Welcome, ${username}! Your account has been created. Your memories will be stored under your profile.`
+                    : `Welcome back, ${username}!`;
+                addMessage(welcomeMsg, 'assistant');
+            } catch (error) {
+                loginError.textContent = error.message || (isRegisterMode ? 'Registration failed. Please try again.' : 'Invalid username or password.');
+            }
+        });
+
+        // Anonymous login
+        anonymousBtn.addEventListener('click', () => {
+            currentUser = 'anonymous';
+            authToken = null; // No token = anonymous access
+            localStorage.removeItem('rmk_user');
+            localStorage.removeItem('rmk_token');
+            loginModal.classList.add('hidden');
+            userBar.style.display = 'none';
+            inputEl.focus();
+            loadStats();
+        });
+
+        // Logout handler
+        logoutBtn.addEventListener('click', () => {
+            currentUser = null;
+            authToken = null;
+            localStorage.removeItem('rmk_user');
+            localStorage.removeItem('rmk_token');
+            userBar.style.display = 'none';
+
+            // Clear messages
+            messagesEl.innerHTML = '<div class="message assistant">Hello! Please sign in to access your personal memory.</div>';
+
+            showLoginModal();
+        });
 
         // Load stats
         async function loadStats() {
             try {
-                const res = await fetch('/api/stats');
+                const headers = { 'Content-Type': 'application/json' };
+                if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+
+                const res = await fetch('/api/stats', { headers });
                 const data = await res.json();
                 document.getElementById('entityCount').textContent = data.Entity_count || 0;
                 document.getElementById('factCount').textContent = data.Fact_count || 0;
@@ -474,9 +829,14 @@
             addThinking();
 
             try {
+                const headers = { 'Content-Type': 'application/json' };
+                if (authToken) {
+                    headers['Authorization'] = `Bearer ${authToken}`;
+                }
+
                 const res = await fetch('/api/chat', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers,
                     body: JSON.stringify({ message: text })
                 });
 
@@ -502,8 +862,9 @@
         });
 
         // Initial load
-        loadStats();
-        inputEl.focus();
+        checkAuth();
+
+
     </script>
 </body>
 

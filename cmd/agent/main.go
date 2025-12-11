@@ -24,8 +24,9 @@ func main() {
 	// Load configuration
 	cfg := agent.Config{
 		NATSAddress:     getEnv("NATS_URL", "nats://localhost:4322"),
-		MemoryKernelURL: getEnv("MEMORY_KERNEL_URL", "http://localhost:9000"),
+		MemoryKernelURL: getEnv("MEMORY_KERNEL_URL", "http://127.0.0.1:9000"),
 		AIServicesURL:   getEnv("AI_SERVICES_URL", "http://localhost:8000"),
+		RedisAddress:    getEnv("REDIS_ADDRESS", "127.0.0.1:6479"),
 		ResponseTimeout: 60 * time.Second,
 	}
 

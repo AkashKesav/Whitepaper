@@ -103,6 +103,31 @@ func New(cfg Config, logger *zap.Logger) (*Kernel, error) {
 	return k, nil
 }
 
+// CreateGroup creates a new group
+func (k *Kernel) CreateGroup(ctx context.Context, name, description, ownerID string) (string, error) {
+	return k.graphClient.CreateGroup(ctx, name, description, ownerID)
+}
+
+// ListUserGroups returns groups the user is a member of
+func (k *Kernel) ListUserGroups(ctx context.Context, userID string) ([]graph.Group, error) {
+	return k.graphClient.ListUserGroups(ctx, userID)
+}
+
+// IsGroupAdmin checks if a user is an admin of a group
+func (k *Kernel) IsGroupAdmin(ctx context.Context, groupNamespace, userID string) (bool, error) {
+	return k.graphClient.IsGroupAdmin(ctx, groupNamespace, userID)
+}
+
+// AddGroupMember adds a user to a group
+func (k *Kernel) AddGroupMember(ctx context.Context, groupID, username string) error {
+	return k.graphClient.AddGroupMember(ctx, groupID, username)
+}
+
+// EnsureUserNode creates a User node in DGraph if it doesn't exist
+func (k *Kernel) EnsureUserNode(ctx context.Context, username string) error {
+	return k.graphClient.EnsureUserNode(ctx, username)
+}
+
 // Start initializes and starts all kernel components
 func (k *Kernel) Start() error {
 	k.mu.Lock()
@@ -257,13 +282,40 @@ func (k *Kernel) Stop() error {
 func (k *Kernel) runIngestionLoop() {
 	defer k.wg.Done()
 
+	// Add panic recovery
+	defer func() {
+		if r := recover(); r != nil {
+			k.logger.Error("Panic in ingestion loop", zap.Any("panic", r))
+		}
+	}()
+
 	k.logger.Info("Starting ingestion loop")
+
+	if k.jetStream == nil {
+		k.logger.Error("JetStream context is nil, cannot subscribe")
+		return
+	}
 
 	// Subscribe to transcript events
 	sub, err := k.jetStream.Subscribe("transcripts.*", func(msg *nats.Msg) {
+		// Add panic recovery for the callback goroutine
+		defer func() {
+			if r := recover(); r != nil {
+				k.logger.Error("Panic in NATS callback", zap.Any("panic", r),
+					zap.Stack("stacktrace"))
+			}
+		}()
+
 		k.logger.Info("=== RECEIVED NATS MESSAGE ===",
 			zap.String("subject", msg.Subject),
 			zap.Int("data_len", len(msg.Data)))
+
+		// Safety check for nil ingestion pipeline
+		if k.ingestionPipeline == nil {
+			k.logger.Error("Ingestion pipeline is nil, cannot process message")
+			msg.Nak()
+			return
+		}
 
 		if err := k.ingestionPipeline.Process(k.ctx, msg.Data); err != nil {
 			k.logger.Error("Failed to process transcript",
@@ -320,8 +372,8 @@ func (k *Kernel) runDecayLoop() {
 
 	k.logger.Info("Starting decay loop")
 
-	// Run decay once per hour
-	ticker := time.NewTicker(1 * time.Hour)
+	// Run decay every 1 minute (for testing - originally 1 hour)
+	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	for {
@@ -379,13 +431,13 @@ func (k *Kernel) GetStats(ctx context.Context) (map[string]interface{}, error) {
 	}
 
 	// Get recent insights
-	insights, err := k.queryBuilder.GetInsights(ctx, 10)
+	insights, err := k.queryBuilder.GetInsights(ctx, "", 10)
 	if err == nil {
 		stats["recent_insights"] = len(insights)
 	}
 
 	// Get patterns
-	patterns, err := k.queryBuilder.GetPatterns(ctx, 0.5, 10)
+	patterns, err := k.queryBuilder.GetPatterns(ctx, "", 0.5, 10)
 	if err == nil {
 		stats["active_patterns"] = len(patterns)
 	}

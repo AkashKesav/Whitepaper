@@ -11,7 +11,9 @@ class SynthesisSLM:
 
     def __init__(self, router: LLMRouter):
         self.router = router
-        self.provider = None
+        # Use Kimi K2 for superior long-context reasoning and synthesis
+        self.provider = "nvidia"
+        self.model = "moonshotai/kimi-k2-instruct-0905"  # Kimi K2 for deep reasoning
 
     async def synthesize(
         self,
@@ -86,7 +88,7 @@ Now answer the query using the facts above.
 Return JSON:
 {{"brief": "your answer using the facts", "confidence": 0.0-1.0}}"""
 
-        result = await self.router.extract_json(prompt, provider=self.provider)
+        result = await self.router.extract_json(prompt, provider=self.provider, model=self.model)
         
         if result and "brief" in result:
             return result
@@ -127,7 +129,7 @@ Return JSON:
   "confidence": 0.0-1.0
 }}"""
 
-        result = await self.router.extract_json(prompt, provider=self.provider)
+        result = await self.router.extract_json(prompt, provider=self.provider, model=self.model)
         
         if result and "has_insight" in result:
             return result

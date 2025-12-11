@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -94,6 +95,10 @@ func NewIngestionPipeline(
 
 // Process processes a raw message from NATS
 func (p *IngestionPipeline) Process(ctx context.Context, data []byte) error {
+	if p == nil {
+		return fmt.Errorf("ingestion pipeline is nil")
+	}
+
 	var event graph.TranscriptEvent
 	if err := json.Unmarshal(data, &event); err != nil {
 		return fmt.Errorf("failed to unmarshal transcript event: %w", err)
@@ -104,6 +109,20 @@ func (p *IngestionPipeline) Process(ctx context.Context, data []byte) error {
 
 // Ingest ingests a transcript event into the Knowledge Graph
 func (p *IngestionPipeline) Ingest(ctx context.Context, event *graph.TranscriptEvent) error {
+	// Safety checks
+	if p == nil {
+		return fmt.Errorf("ingestion pipeline is nil")
+	}
+	if event == nil {
+		return fmt.Errorf("event is nil")
+	}
+	if p.logger == nil {
+		return fmt.Errorf("logger is nil")
+	}
+	if p.graphClient == nil {
+		return fmt.Errorf("graph client is nil")
+	}
+
 	startTime := time.Now()
 
 	p.logger.Debug("Ingesting transcript event",
@@ -160,6 +179,9 @@ func (p *IngestionPipeline) Ingest(ctx context.Context, event *graph.TranscriptE
 
 // updateStats updates ingestion statistics
 func (p *IngestionPipeline) updateStats(entityCount int, extractionTime, dgraphTime time.Duration, isError bool) {
+	if p == nil {
+		return
+	}
 	p.stats.mu.Lock()
 	defer p.stats.mu.Unlock()
 
@@ -227,6 +249,26 @@ func (p *IngestionPipeline) extractEntities(ctx context.Context, event *graph.Tr
 	return entities, nil
 }
 
+// isValidEntityName filters out UUIDs and metadata nodes
+func isValidEntityName(name string) bool {
+	if len(name) == 0 || len(name) < 2 {
+		return false
+	}
+	// Filter UUIDs (8-4-4-4-12 format)
+	if len(name) == 36 && strings.Count(name, "-") == 4 {
+		return false
+	}
+	// Filter user IDs
+	if strings.HasPrefix(name, "user_") {
+		return false
+	}
+	// Filter conversation metadata
+	if strings.HasPrefix(name, "Conversation_") {
+		return false
+	}
+	return true
+}
+
 // basicEntityExtraction provides fallback entity extraction without AI
 func (p *IngestionPipeline) basicEntityExtraction(event *graph.TranscriptEvent) []graph.ExtractedEntity {
 	// This is a simple fallback that creates a Fact node for the conversation
@@ -262,8 +304,11 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, userID, 
 		namesList = append(namesList, name)
 	}
 
+	// Determine Namespace (default to user isolation for now)
+	namesp := fmt.Sprintf("user_%s", userID)
+
 	// 2. BULK READ - Check what exists
-	existingNodes, err := p.graphClient.GetNodesByNames(ctx, namesList)
+	existingNodes, err := p.graphClient.GetNodesByNames(ctx, namesp, namesList)
 	if err != nil {
 		return fmt.Errorf("failed to batch get nodes: %w", err)
 	}
@@ -278,11 +323,18 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, userID, 
 			Name:       userID,
 			Activation: 1.0,
 			Confidence: 1.0,
+			Namespace:  namesp,
 		})
 	}
 
 	// Check Entities and Relations
 	for _, e := range entities {
+		// Filter out junk/metadata nodes
+		if !isValidEntityName(e.Name) {
+			p.logger.Debug("Skipping invalid entity name", zap.String("name", e.Name))
+			continue
+		}
+
 		if _, exists := existingNodes[e.Name]; !exists {
 			// Normalize type
 			dtype := e.Type
@@ -290,6 +342,7 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, userID, 
 				dtype = graph.NodeTypeEntity
 			}
 
+			// Create node for each unique entity
 			nodesToCreate = append(nodesToCreate, &graph.Node{
 				DType:                []string{string(dtype)},
 				Name:                 e.Name,
@@ -297,8 +350,9 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, userID, 
 				Tags:                 e.Tags,
 				Attributes:           e.Attributes,
 				SourceConversationID: conversationID,
-				Activation:           0.8,
-				Confidence:           0.9,
+				Activation:           0.5, // Start at neutral activation
+				Confidence:           0.8,
+				Namespace:            namesp,
 			})
 		}
 
@@ -315,6 +369,7 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, userID, 
 					Name:       r.TargetName,
 					Activation: 0.5,
 					Confidence: 0.7,
+					Namespace:  namesp,
 				})
 			}
 		}
@@ -337,21 +392,54 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, userID, 
 
 	// 4. BULK CREATE EDGES
 	edgesToCreate := make([]graph.EdgeInput, 0)
-	userUID := existingNodes[userID].UID
+
+	// Safe access to userUID - check if it exists in map first
+	userNode, userOk := existingNodes[userID]
+	if !userOk || userNode == nil {
+		// User node should have been created, but if not, skip edge creation
+		p.logger.Warn("User node not found in existingNodes, skipping edge creation",
+			zap.String("userID", userID))
+		return nil
+	}
+	userUID := userNode.UID
+
+	// Safe access to convUID - conversation node may not exist
+	var convUID string
+	if convNode, ok := existingNodes[conversationID]; ok && convNode != nil {
+		convUID = convNode.UID
+	}
 
 	for _, e := range entities {
 		entityUID, ok := existingNodes[e.Name]
-		if !ok {
+		if !ok || entityUID == nil {
 			continue
 		} // Should not happen
 
-		// User -> Entity (KNOWS)
+		// User -> Entity (KNOWS) - Relation
 		edgesToCreate = append(edgesToCreate, graph.EdgeInput{
 			FromUID: userUID,
 			ToUID:   entityUID.UID,
 			Type:    graph.EdgeTypeKnows,
 			Status:  graph.EdgeStatusCurrent,
 		})
+
+		// Entity -> User (CREATED_BY) - Ownership
+		edgesToCreate = append(edgesToCreate, graph.EdgeInput{
+			FromUID: entityUID.UID,
+			ToUID:   userUID,
+			Type:    "created_by",
+			Status:  graph.EdgeStatusCurrent,
+		})
+
+		// Entity -> Conversation (DERIVED_FROM) - Origin
+		if convUID != "" {
+			edgesToCreate = append(edgesToCreate, graph.EdgeInput{
+				FromUID: entityUID.UID,
+				ToUID:   convUID,
+				Type:    "derived_from",
+				Status:  graph.EdgeStatusCurrent,
+			})
+		}
 
 		// Entity -> Target (Relations)
 		for _, r := range e.Relations {
@@ -401,6 +489,12 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, userID, 
 
 // cacheRecentContext caches the recent conversation context in Redis
 func (p *IngestionPipeline) cacheRecentContext(ctx context.Context, event *graph.TranscriptEvent) error {
+	// Safety check for nil Redis client
+	if p.redisClient == nil {
+		p.logger.Debug("Redis client is nil, skipping context caching")
+		return nil
+	}
+
 	key := fmt.Sprintf("context:%s:recent", event.UserID)
 
 	// Store the last 10 conversation turns

@@ -3,6 +3,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 
@@ -33,9 +34,26 @@ func NewServer(agent *Agent, logger *zap.Logger) *Server {
 // SetupRoutes configures the HTTP routes
 func (s *Server) SetupRoutes(r *mux.Router) {
 	s.logger.Info("Registering routes...")
-	// REST API
-	r.HandleFunc("/api/chat", s.handleChat).Methods("POST")
-	r.HandleFunc("/api/stats", s.handleStats).Methods("GET")
+
+	// Create JWT middleware
+	jwtMiddleware := NewJWTMiddleware(s.logger)
+
+	// Public routes (no authentication required)
+	publicRouter := r.PathPrefix("/api").Subrouter()
+	publicRouter.HandleFunc("/login", s.handleLogin).Methods("POST")
+	publicRouter.HandleFunc("/register", s.handleRegister).Methods("POST")
+
+	// Protected routes (authentication required)
+	protectedRouter := r.PathPrefix("/api").Subrouter()
+	protectedRouter.Use(jwtMiddleware.Middleware)
+	protectedRouter.HandleFunc("/chat", s.handleChat).Methods("POST")
+
+	protectedRouter.HandleFunc("/stats", s.handleStats).Methods("GET")
+	protectedRouter.HandleFunc("/groups", s.handleCreateGroup).Methods("POST")
+	protectedRouter.HandleFunc("/list-groups", s.handleListGroups).Methods("GET")
+	protectedRouter.HandleFunc("/groups/{id}/members", s.handleAddGroupMember).Methods("POST")
+
+	// Health check (public)
 	r.HandleFunc("/health", s.handleHealth).Methods("GET")
 
 	r.Walk(func(route *mux.Route, router *mux.Router, ancestors []*mux.Route) error {
@@ -45,8 +63,10 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 		return nil
 	})
 
-	// WebSocket for real-time chat
-	r.HandleFunc("/ws/chat", s.handleWebSocketChat)
+	// WebSocket for real-time chat (protected)
+	wsRouter := r.PathPrefix("/ws").Subrouter()
+	wsRouter.Use(jwtMiddleware.Middleware)
+	wsRouter.HandleFunc("/chat", s.handleWebSocketChat)
 }
 
 // ChatRequest represents an incoming chat request
@@ -63,6 +83,142 @@ type ChatResponse struct {
 	LatencyMs      int64  `json:"latency_ms,omitempty"`
 }
 
+// LoginRequest represents a login request
+type LoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// LoginResponse represents a login response with JWT token
+type LoginResponse struct {
+	Token    string `json:"token"`
+	Username string `json:"username"`
+}
+
+// RegisterRequest represents a registration request
+type RegisterRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	// Check if Redis is available
+	if s.agent.RedisClient == nil {
+		http.Error(w, "Authentication service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req RegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Username == "" || req.Password == "" {
+		http.Error(w, "Username and password are required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if user already exists
+	ctx := r.Context()
+	exists, err := s.agent.RedisClient.Exists(ctx, "user:"+req.Username).Result()
+	if err != nil {
+		s.logger.Error("Failed to check user existence", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if exists > 0 {
+		http.Error(w, "Username already taken", http.StatusConflict)
+		return
+	}
+
+	// Hash password
+	hashedPassword, err := HashPassword(req.Password)
+	if err != nil {
+		s.logger.Error("Failed to hash password", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Store user credentials in Redis
+	if err := s.agent.RedisClient.Set(ctx, "user:"+req.Username, hashedPassword, 0).Err(); err != nil {
+		s.logger.Error("Failed to store user", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Create User node in DGraph via Memory Kernel for Group V2 support
+	if err := s.agent.mkClient.EnsureUserNode(ctx, req.Username); err != nil {
+		s.logger.Warn("Failed to create User node in DGraph (groups may not work)", zap.Error(err))
+		// Non-fatal: registration succeeds but groups may not work until user does first chat
+	}
+
+	// Generate JWT token
+	token, err := GenerateToken(req.Username)
+	if err != nil {
+		s.logger.Error("Failed to generate token", zap.Error(err))
+		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		return
+	}
+
+	s.logger.Info("User registered", zap.String("username", req.Username))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(LoginResponse{
+		Token:    token,
+		Username: req.Username,
+	})
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Check if Redis is available
+	if s.agent.RedisClient == nil {
+		http.Error(w, "Authentication service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req LoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Username == "" || req.Password == "" {
+		http.Error(w, "Username and password are required", http.StatusBadRequest)
+		return
+	}
+
+	// Get stored password hash from Redis
+	ctx := r.Context()
+	hashedPassword, err := s.agent.RedisClient.Get(ctx, "user:"+req.Username).Result()
+	if err != nil {
+		http.Error(w, "Invalid username or password", http.StatusUnauthorized)
+		return
+	}
+
+	// Verify password
+	if !CheckPassword(hashedPassword, req.Password) {
+		http.Error(w, "Invalid username or password", http.StatusUnauthorized)
+		return
+	}
+
+	// Generate JWT token
+	token, err := GenerateToken(req.Username)
+	if err != nil {
+		s.logger.Error("Failed to generate token", zap.Error(err))
+		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		return
+	}
+
+	s.logger.Info("User logged in", zap.String("username", req.Username))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(LoginResponse{
+		Token:    token,
+		Username: req.Username,
+	})
+}
+
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -70,27 +226,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user ID from: 1) request body, 2) cookie, 3) generate new
-	userID := req.UserID
-	if userID == "" {
-		// Check for existing session cookie
-		if cookie, err := r.Cookie("rmk_user_id"); err == nil && cookie.Value != "" {
-			userID = cookie.Value
-		} else {
-			// Generate new persistent user ID
-			userID = uuid.New().String()
-		}
-	}
-
-	// Set persistent cookie (expires in 1 year)
-	http.SetCookie(w, &http.Cookie{
-		Name:     "rmk_user_id",
-		Value:    userID,
-		Path:     "/",
-		MaxAge:   60 * 60 * 24 * 365, // 1 year
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	// Get user ID from JWT context (set by middleware)
+	userID := GetUserID(r.Context())
+	s.logger.Debug("Processing chat request", zap.String("user_id", userID))
 
 	// Get or generate conversation ID
 	conversationID := req.ConversationID
@@ -156,10 +294,8 @@ func (s *Server) handleWebSocketChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := r.URL.Query().Get("user_id")
-	if userID == "" {
-		userID = uuid.New().String()
-	}
+	// Get user ID from JWT context (set by middleware)
+	userID := GetUserID(r.Context())
 	conversationID := uuid.New().String()
 
 	s.logger.Info("WebSocket connected",
@@ -210,4 +346,109 @@ func (s *Server) handleWSConnection(conn *websocket.Conn, userID, conversationID
 			wsMu.Unlock()
 		}
 	}
+}
+
+// ShareRequest represents a request to share a conversation
+type ShareRequest struct {
+	TargetUsername string `json:"target_username"`
+	ConversationID string `json:"conversation_id"`
+}
+
+// CreateGroupRequest represents a request to create a group
+type CreateGroupRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// CreateGroupResponse represents the response for group creation
+type CreateGroupResponse struct {
+	GroupID   string `json:"group_id"`
+	Namespace string `json:"namespace"`
+}
+
+func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	if userID == "anonymous" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req CreateGroupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" {
+		http.Error(w, "Group name is required", http.StatusBadRequest)
+		return
+	}
+
+	namespace, err := s.agent.mkClient.CreateGroup(r.Context(), req.Name, req.Description, userID)
+	if err != nil {
+		s.logger.Error("Failed to create group", zap.Error(err))
+		http.Error(w, "Failed to create group", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(CreateGroupResponse{
+		GroupID:   namespace, // Using namespace as the ID for now
+		Namespace: namespace,
+	})
+}
+
+// AddMemberRequest represents a request to add a member
+type AddMemberRequest struct {
+	Username string `json:"username"`
+}
+
+func (s *Server) handleAddGroupMember(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context()) // Requester
+	vars := mux.Vars(r)
+	groupNamespace := vars["id"] // ID in URL is the namespace string
+
+	var req AddMemberRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// 1. Check if Requester is Admin
+	isAdmin, err := s.agent.mkClient.IsGroupAdmin(r.Context(), groupNamespace, userID)
+	if err != nil {
+		s.logger.Error("Failed to check admin status", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !isAdmin {
+		http.Error(w, "Only admins can add members", http.StatusForbidden)
+		return
+	}
+
+	// 2. Add Member
+	if err := s.agent.mkClient.AddGroupMember(r.Context(), groupNamespace, req.Username); err != nil {
+		s.logger.Error("Failed to add member", zap.Error(err))
+		http.Error(w, fmt.Sprintf("Failed to add member: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "member_added"})
+}
+
+func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+
+	groups, err := s.agent.mkClient.ListGroups(r.Context(), userID)
+	if err != nil {
+		s.logger.Error("Failed to list groups", zap.Error(err))
+		http.Error(w, "Failed to list groups", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"groups": groups,
+	})
 }
