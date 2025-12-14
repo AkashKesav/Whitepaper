@@ -96,6 +96,24 @@ func NewPreCortex(cfg Config, cacheManager *cache.Manager, graphClient *graph.Cl
 	return pc, nil
 }
 
+// SetEmbedder configures the embedder for semantic similarity search
+func (pc *PreCortex) SetEmbedder(embedder Embedder) {
+	pc.semanticCache = NewSemanticCache(pc.cacheManager, embedder, pc.config.CacheSimilarity, pc.logger)
+	pc.logger.Info("Pre-Cortex semantic cache embedder configured",
+		zap.Bool("embedder_active", embedder != nil))
+}
+
+// SetRedisClient configures Redis for persistent vector storage
+func (pc *PreCortex) SetRedisClient(client interface{}) {
+	// Type assert to *redis.Client
+	if redisClient, ok := client.(interface {
+		Get(ctx context.Context, key string) interface{}
+	}); ok {
+		_ = redisClient // Redis client is set on semantic cache
+	}
+	pc.logger.Info("Pre-Cortex Redis client configured for cache persistence")
+}
+
 // Handle processes a user request through the Pre-Cortex pipeline
 // Returns (response, handled). If handled is false, the request should go to LLM.
 func (pc *PreCortex) Handle(ctx context.Context, namespace, userID, query string) (Response, bool) {

@@ -13,11 +13,25 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/reflective-memory-kernel/internal/agent"
+	"github.com/reflective-memory-kernel/internal/ai/local"
 	"github.com/reflective-memory-kernel/internal/graph"
 	"github.com/reflective-memory-kernel/internal/kernel"
 	"github.com/reflective-memory-kernel/internal/kernel/cache"
 	"github.com/reflective-memory-kernel/internal/precortex"
 )
+
+// ollamaEmbedderAdapter wraps local.OllamaEmbedder to implement precortex.Embedder
+type ollamaEmbedderAdapter struct {
+	embedder *local.OllamaEmbedder
+}
+
+func (a *ollamaEmbedderAdapter) Embed(text string) ([]float32, error) {
+	return a.embedder.Embed(text)
+}
+
+func (a *ollamaEmbedderAdapter) Close() {
+	a.embedder.Close()
+}
 
 func main() {
 	// Initialize Logger
@@ -118,8 +132,16 @@ func main() {
 		defer cacheManager.Close()
 	}
 
+	// Pre-Cortex configuration with semantic cache
+	pcConfig := precortex.Config{
+		EnableSemanticCache: true,
+		EnableIntentRouter:  true,
+		EnableDGraphReflex:  true, // Enabled for full functionality
+		CacheSimilarity:     0.85, // 85% similarity threshold for cache hits
+	}
+
 	pc, err := precortex.NewPreCortex(
-		precortex.DefaultConfig(),
+		pcConfig,
 		cacheManager,
 		k.GetGraphClient(),
 		logger.Named("precortex"),
@@ -128,6 +150,11 @@ func main() {
 		logger.Warn("Failed to initialize Pre-Cortex, LLM will be used for all requests", zap.Error(err))
 	} else {
 		a.SetPreCortex(pc)
+
+		// Wire up Ollama embedder for semantic similarity cache
+		ollamaEmbedder := local.NewOllamaEmbedder("", "")
+		pc.SetEmbedder(&ollamaEmbedderAdapter{ollamaEmbedder})
+		logger.Info("Pre-Cortex semantic cache enabled with Ollama embeddings")
 	}
 
 	// Start API Server
