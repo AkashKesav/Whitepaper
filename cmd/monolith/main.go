@@ -1,0 +1,180 @@
+package main
+
+import (
+	"context"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/gorilla/handlers"
+	"github.com/gorilla/mux"
+	"go.uber.org/zap"
+
+	"github.com/reflective-memory-kernel/internal/agent"
+	"github.com/reflective-memory-kernel/internal/graph"
+	"github.com/reflective-memory-kernel/internal/kernel"
+	"github.com/reflective-memory-kernel/internal/kernel/cache"
+	"github.com/reflective-memory-kernel/internal/precortex"
+)
+
+func main() {
+	// Initialize Logger
+	logger, _ := zap.NewDevelopment()
+	defer logger.Sync()
+
+	logger.Info("Starting Monolith (Unified Agent + Kernel)...")
+
+	// 1. Initialize Kernel (Reflective Memory)
+	kernelCfg := kernel.DefaultConfig()
+	// Override defaults with Env Vars if needed (simplified for MVP)
+	if dgraph := os.Getenv("DGRAPH_ADDRESS"); dgraph != "" {
+		kernelCfg.DGraphAddress = dgraph
+	}
+	if redis := os.Getenv("REDIS_ADDRESS"); redis != "" {
+		kernelCfg.RedisAddress = redis
+	}
+	if nats := os.Getenv("NATS_URL"); nats != "" {
+		kernelCfg.NATSAddress = nats
+	}
+	if ai := os.Getenv("AI_SERVICES_URL"); ai != "" {
+		kernelCfg.AIServicesURL = ai
+	}
+
+	k, err := kernel.New(kernelCfg, logger.Named("kernel"))
+	if err != nil {
+		logger.Fatal("Failed to initialize Kernel", zap.Error(err))
+	}
+
+	// 2. Initialize Agent (Consciousness)
+	agentCfg := agent.DefaultConfig()
+	if aiURL := os.Getenv("AI_SERVICES_URL"); aiURL != "" {
+		agentCfg.AIServicesURL = aiURL
+	}
+	if redisAddr := os.Getenv("REDIS_ADDRESS"); redisAddr != "" {
+		agentCfg.RedisAddress = redisAddr
+	}
+	// Since we are monolithic, Agent can talk to Kernel API directly via localhost
+	// IF we kept the HTTP client. BUT we want zero-copy for Ingestion.
+	// For Consultation (Read), we currently still use HTTP (agent -> mkClient -> HTTP -> Kernel).
+	// TODO: Optimize Consultation to be zero-copy too (Phase 3.5)
+
+	a, err := agent.New(agentCfg, logger.Named("agent"))
+	if err != nil {
+		logger.Fatal("Failed to initialize Agent", zap.Error(err))
+	}
+
+	// 3. Unification: Zero-Copy Bridge
+	// Create buffered channel for transcripts
+	ingestChan := make(chan *graph.TranscriptEvent, 1000)
+
+	// Configure Agent to use this channel
+	a.SetIngestChannel(ingestChan)
+
+	// Start Bridge Goroutine
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		logger.Info("Zero-Copy Bridge Active: Agent -> Kernel")
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event := <-ingestChan:
+				// Direct function call across memory space
+				if err := k.IngestEvent(ctx, event); err != nil {
+					logger.Error("Bridge: Failed to ingest event", zap.Error(err))
+				}
+			}
+		}
+	}()
+
+	// 4. Start Services
+
+	// Start Kernel Background Loops
+	if err := k.Start(); err != nil {
+		logger.Fatal("Failed to start Kernel", zap.Error(err))
+	}
+	defer k.Stop()
+
+	// Start Agent Internals (Connects to Redis, NATS, initializes mkClient)
+	if err := a.Start(); err != nil {
+		logger.Fatal("Failed to start Agent", zap.Error(err))
+	}
+	defer a.Stop()
+
+	// NOW configure Agent to use Kernel directly (Zero-Copy Consultation)
+	// MUST be called AFTER a.Start() since mkClient is initialized there
+	a.SetKernel(k)
+
+	// 5. Initialize Pre-Cortex (Cognitive Firewall for 90% cost reduction)
+	logger.Info("Initializing Pre-Cortex cognitive firewall...")
+	cacheManager, err := cache.NewManager(cache.DefaultConfig(), logger.Named("cache"))
+	if err != nil {
+		logger.Warn("Failed to initialize cache manager, Pre-Cortex will work without caching", zap.Error(err))
+	} else {
+		defer cacheManager.Close()
+	}
+
+	pc, err := precortex.NewPreCortex(
+		precortex.DefaultConfig(),
+		cacheManager,
+		k.GetGraphClient(),
+		logger.Named("precortex"),
+	)
+	if err != nil {
+		logger.Warn("Failed to initialize Pre-Cortex, LLM will be used for all requests", zap.Error(err))
+	} else {
+		a.SetPreCortex(pc)
+	}
+
+	// Start API Server
+	router := mux.NewRouter()
+	server := agent.NewServer(a, logger.Named("server"))
+	server.SetupRoutes(router)
+
+	// Add CORS
+	corsObj := handlers.CORS(
+		handlers.AllowedOrigins([]string{"*"}),
+		handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}),
+		handlers.AllowedHeaders([]string{"Content-Type", "Authorization"}),
+	)
+
+	apiPort := "0.0.0.0:9090"
+	if p := os.Getenv("PORT"); p != "" {
+		apiPort = ":" + p
+	}
+
+	srv := &http.Server{
+		Handler:      corsObj(router),
+		Addr:         apiPort,
+		WriteTimeout: 15 * time.Second,
+		ReadTimeout:  15 * time.Second,
+	}
+
+	// Graceful Shutdown
+	go func() {
+		logger.Info("Monolith API listening", zap.String("addr", apiPort))
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal("Server startup failed", zap.Error(err))
+		}
+	}()
+
+	// Wait for Signal
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	<-c
+
+	logger.Info("Shutting down Monolith...")
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("API shutdown error", zap.Error(err))
+	}
+
+	// Kernel & Agent Stop() called by defers
+}

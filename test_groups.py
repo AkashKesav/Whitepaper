@@ -2,7 +2,7 @@ import requests
 import time
 import uuid
 
-BASE_URL = "http://127.0.0.1:3000/api"
+BASE_URL = "http://127.0.0.1:9090/api"
 
 def register_user(username, password):
     resp = requests.post(f"{BASE_URL}/register", json={

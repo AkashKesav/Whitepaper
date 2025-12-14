@@ -194,6 +194,7 @@ type Group struct {
 type TranscriptEvent struct {
 	ID                string            `json:"id,omitempty"`
 	UserID            string            `json:"user_id,omitempty"`
+	Namespace         string            `json:"namespace,omitempty"` // NEW: Context isolation
 	ConversationID    string            `json:"conversation_id,omitempty"`
 	Timestamp         time.Time         `json:"timestamp,omitempty"`
 	UserQuery         string            `json:"user_query,omitempty"`
@@ -224,6 +225,7 @@ type ExtractedRelation struct {
 // ConsultationRequest represents a query from the FEA to the Memory Kernel
 type ConsultationRequest struct {
 	UserID          string   `json:"user_id,omitempty"`
+	Namespace       string   `json:"namespace,omitempty"` // NEW: Context isolation
 	Query           string   `json:"query,omitempty"`
 	Context         string   `json:"context,omitempty"`
 	MaxResults      int      `json:"max_results,omitempty"`

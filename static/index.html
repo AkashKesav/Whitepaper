@@ -537,6 +537,128 @@
             color: #a855f7;
             font-weight: 600;
         }
+
+        /* App Shell Layout */
+        .app-shell {
+            display: flex;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .sidebar {
+            width: 280px;
+            background: rgba(13, 13, 26, 0.4);
+            backdrop-filter: blur(10px);
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            gap: 20px;
+            z-index: 10;
+        }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        /* Sidebar Elements */
+        .sidebar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-bottom: 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .sidebar-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #e4e4f0;
+        }
+
+        .add-group-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            color: #a5b4fc;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+
+        .add-group-btn:hover {
+            background: rgba(99, 102, 241, 0.2);
+            color: #fff;
+        }
+
+        .nav-section {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .nav-section h3 {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #6b7280;
+            margin-bottom: 8px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: #9ca3af;
+            text-decoration: none;
+        }
+
+        .nav-item:hover {
+            background: rgba(255, 255, 255, 0.05);
+            color: #e4e4f0;
+        }
+
+        .nav-item.active {
+            background: linear-gradient(90deg, rgba(99, 102, 241, 0.2) 0%, rgba(99, 102, 241, 0) 100%);
+            color: #fff;
+            border-left: 3px solid #6366f1;
+        }
+
+        .nav-icon {
+            width: 20px;
+            height: 20px;
+            opacity: 0.7;
+        }
+
+        .nav-item.active .nav-icon {
+            opacity: 1;
+            color: #818cf8;
+        }
+
+        /* Update container override */
+        .container {
+            max-width: none;
+            margin: 0;
+            height: auto;
+            display: block;
+            padding: 0;
+        }
     </style>
 </head>
 
@@ -573,47 +695,130 @@
 
 
 
-    <div class="container">
-        <div class="header">
-            <div class="user-bar" id="userBar" style="display: none;">
-                <div class="user-avatar" id="userAvatar">?</div>
-                <span class="user-name" id="userNameDisplay">User</span>
-                <button class="logout-btn" id="logoutBtn">Logout</button>
+    <!-- Create Group Modal -->
+    <div class="modal-overlay hidden" id="createGroupModal">
+        <div class="login-modal">
+            <h2>Create Group</h2>
+            <div class="form-group">
+                <label>Group Name</label>
+                <input type="text" id="groupNameInput" placeholder="Enter group name" required>
             </div>
-            <h1>🧠 Reflective Memory Kernel</h1>
-            <p>Your AI assistant with persistent memory</p>
-            <div class="status-indicator">
-                <span class="status-dot"></span>
-                Online • Memories Active
-            </div>
+            <button class="login-btn" id="confirmCreateGroupBtn">Create</button>
+            <button class="logout-btn" style="margin-top: 10px; width: 100%; border: none; background: transparent;"
+                id="cancelCreateGroupBtn">Cancel</button>
         </div>
+    </div>
 
-        <div class="chat-container">
-            <div class="messages" id="messages">
-                <div class="message assistant">
-                    Hello! I'm your AI assistant with long-term memory. Tell me something about yourself, and I'll
-                    remember it. Try saying things like "My favorite color is blue" or ask me "What do you know about
-                    me?"
-                </div>
+    <!-- Manage Members Modal -->
+    <div class="modal-overlay hidden" id="manageMembersModal">
+        <div class="login-modal" style="max-width: 500px;">
+            <h2>Manage Members</h2>
+            <div id="membersList"
+                style="max-height: 200px; overflow-y: auto; margin-bottom: 20px; display: flex; flex-direction: column; gap: 8px;">
+                <!-- Members injected here -->
             </div>
 
-            <div class="input-area">
-                <div class="input-wrapper">
-                    <input type="text" id="messageInput" placeholder="Type a message..." autocomplete="off">
+            <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 20px;">
+                <h3 style="font-size: 0.9rem; color: #a5b4fc; margin-bottom: 10px;">Create Subuser</h3>
+                <div class="form-group">
+                    <input type="text" id="subuserUser" placeholder="Username" style="margin-bottom: 8px;">
+                    <input type="password" id="subuserPass" placeholder="Password">
                 </div>
-                <button id="sendBtn">
-                    Send
+                <button class="login-btn" id="createSubuserBtn">Create & Add Subuser</button>
+            </div>
+
+            <button class="logout-btn" style="margin-top: 20px; width: 100%; border: none; background: transparent;"
+                id="closeManageMembersBtn">Close</button>
+        </div>
+    </div>
+
+    <div class="app-shell">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <span class="sidebar-title">Memory Kernel</span>
+                <button class="add-group-btn" id="createGroupBtn" title="Create Group">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+                        <path d="M12 5v14M5 12h14" />
                     </svg>
                 </button>
             </div>
+
+            <div class="nav-section">
+                <div class="nav-item active" id="navPrivate">
+                    <span class="nav-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                            <circle cx="12" cy="7" r="4" />
+                        </svg>
+                    </span>
+                    <span>My Memory</span>
+                </div>
+            </div>
+
+            <div class="nav-section">
+                <h3>Groups</h3>
+                <div id="groupsList" style="display: flex; flex-direction: column; gap: 4px;">
+                    <!-- Group items will be injected here -->
+                    <div style="padding: 10px; color: #6b7280; font-size: 0.8rem; text-align: center;">Loading groups...
+                    </div>
+                </div>
+            </div>
         </div>
 
-        <div class="stats">
-            <div class="stat">📊 Entities: <span class="stat-value" id="entityCount">--</span></div>
-            <div class="stat">💾 Facts: <span class="stat-value" id="factCount">--</span></div>
-            <div class="stat">⚡ Avg Response: <span class="stat-value" id="avgTime">--</span></div>
+        <!-- Main Content -->
+        <div class="main-content">
+            <div class="header">
+                <div class="user-bar" id="userBar" style="display: none;">
+                    <div class="user-avatar" id="userAvatar">?</div>
+                    <span class="user-name" id="userNameDisplay">User</span>
+                    <button class="logout-btn" id="logoutBtn">Logout</button>
+                </div>
+                <h1 id="chatTitle">🧠 Reflective Memory Kernel</h1>
+                <p id="chatSubtitle">Your AI assistant with persistent memory</p>
+
+                <!-- Group Actions Toolbar (Initially Hidden) -->
+                <div id="groupActions" style="display: none; justify-content: center; gap: 10px; margin-top: 10px;">
+                    <button id="groupMembersBtn" class="logout-btn"
+                        style="color: #a5b4fc; border-color: #a5b4fc;">Manage Members</button>
+                    <button id="groupDeleteBtn" class="logout-btn" style="color: #fca5a5; border-color: #fca5a5;">Delete
+                        Group</button>
+                </div>
+
+                <div class="status-indicator">
+                    <span class="status-dot"></span>
+                    Online • <span id="contextIndicator">Private Memory</span> Active
+                </div>
+            </div>
+
+            <div class="chat-container">
+                <div class="messages" id="messages">
+                    <div class="message assistant">
+                        Hello! I'm your AI assistant with long-term memory. Tell me something about yourself, and I'll
+                        remember it.
+                    </div>
+                </div>
+
+                <div class="input-area">
+                    <div class="input-wrapper">
+                        <input type="text" id="messageInput" placeholder="Type a message..." autocomplete="off">
+                    </div>
+                    <button id="sendBtn">
+                        Send
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <div class="stats">
+                <div class="stat">📊 Entities: <span class="stat-value" id="entityCount">--</span></div>
+                <div class="stat">💾 Facts: <span class="stat-value" id="factCount">--</span></div>
+                <div class="stat">⚡ Avg Response: <span class="stat-value" id="avgTime">--</span></div>
+            </div>
         </div>
     </div>
 
@@ -643,7 +848,9 @@
         // Auth state
         let currentUser = null;
         let authToken = null;
+
         let isRegisterMode = false;
+        let currentContext = { type: 'private', id: null, name: 'My Memory' };
 
         // Simple JWT creation (for demo - in production, tokens come from server)
         function createToken(username) {
@@ -704,6 +911,7 @@
             userNameDisplay.textContent = currentUser;
             inputEl.focus();
             loadStats();
+            loadGroups();
         }
 
         // Login/Register handler
@@ -834,10 +1042,16 @@
                     headers['Authorization'] = `Bearer ${authToken}`;
                 }
 
+                const payload = { message: text };
+                if (currentContext.type === 'group') {
+                    payload.context_type = 'group';
+                    payload.context_id = currentContext.id;
+                }
+
                 const res = await fetch('/api/chat', {
                     method: 'POST',
                     headers,
-                    body: JSON.stringify({ message: text })
+                    body: JSON.stringify(payload)
                 });
 
                 const data = await res.json();
@@ -862,6 +1076,259 @@
         });
 
         // Initial load
+        // checkAuth will be called at the very end
+
+        // ==========================================
+        // GROUP CHAT V2 LOGIC
+        // ==========================================
+
+        const navPrivate = document.getElementById('navPrivate');
+        const groupsList = document.getElementById('groupsList');
+        const groupActions = document.getElementById('groupActions');
+        const chatTitle = document.getElementById('chatTitle');
+        const chatSubtitle = document.getElementById('chatSubtitle');
+        const contextIndicator = document.getElementById('contextIndicator');
+        const createGroupBtn = document.getElementById('createGroupBtn');
+        const createGroupModal = document.getElementById('createGroupModal');
+        const confirmCreateGroupBtn = document.getElementById('confirmCreateGroupBtn');
+        const cancelCreateGroupBtn = document.getElementById('cancelCreateGroupBtn');
+        const groupNameInput = document.getElementById('groupNameInput');
+
+        // Manage Members Elements
+        const manageMembersModal = document.getElementById('manageMembersModal');
+        const membersList = document.getElementById('membersList');
+        const subuserUser = document.getElementById('subuserUser');
+        const subuserPass = document.getElementById('subuserPass');
+        const createSubuserBtn = document.getElementById('createSubuserBtn');
+        const closeManageMembersBtn = document.getElementById('closeManageMembersBtn');
+        const groupMembersBtn = document.getElementById('groupMembersBtn');
+        const groupDeleteBtn = document.getElementById('groupDeleteBtn');
+
+        // Context Switching
+        function switchContext(type, id, name) {
+            currentContext = { type, id, name };
+
+            // UI Updates
+            if (type === 'private') {
+                navPrivate.classList.add('active');
+                document.querySelectorAll('.group-item').forEach(el => el.classList.remove('active'));
+                chatTitle.textContent = '🧠 Reflective Memory Kernel';
+                chatSubtitle.textContent = 'Your AI assistant with persistent memory';
+                groupActions.style.display = 'none';
+                contextIndicator.textContent = 'Private Memory';
+                userAvatar.style.background = 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)';
+            } else {
+                navPrivate.classList.remove('active');
+                document.querySelectorAll('.group-item').forEach(el => {
+                    el.classList.toggle('active', el.dataset.id === id);
+                });
+                chatTitle.textContent = `👥 ${name}`;
+                chatSubtitle.textContent = 'Group Memory Access';
+                groupActions.style.display = 'flex';
+                contextIndicator.textContent = name;
+                userAvatar.style.background = 'linear-gradient(135deg, #ec4899 0%, #a855f7 100%)';
+            }
+
+            // Clear chat (simulation for UI)
+            messagesEl.innerHTML = '';
+            const welcome = type === 'private'
+                ? "Hello! I'm your AI assistant with long-term memory."
+                : `You are now in group "${name}". I share memory with all group members here.`;
+            addMessage(welcome, 'assistant');
+        }
+
+        // Fetch Groups
+        async function loadGroups() {
+            if (!authToken) return;
+            try {
+                const res = await fetch('/api/groups', {
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                const data = await res.json();
+                renderGroups(data.groups || []);
+            } catch (e) {
+                console.error("Failed to load groups", e);
+            }
+        }
+
+        function renderGroups(groups) {
+            groupsList.innerHTML = '';
+            groups.forEach(group => {
+                const div = document.createElement('div');
+                div.className = 'nav-item group-item';
+                div.dataset.id = group.id;
+                div.innerHTML = `
+                    <span class="nav-icon">#</span>
+                    <span>${group.name}</span>
+                `;
+                div.addEventListener('click', () => switchContext('group', group.id, group.name));
+                groupsList.appendChild(div);
+            });
+
+            // Re-apply active state if needed
+            if (currentContext.type === 'group') {
+                const activeEl = document.querySelector(`.group-item[dataset-id="${currentContext.id}"]`);
+                if (activeEl) activeEl.classList.add('active');
+            }
+        }
+
+        // Create Group
+        createGroupBtn.addEventListener('click', () => {
+            createGroupModal.classList.remove('hidden');
+            groupNameInput.focus();
+        });
+
+        cancelCreateGroupBtn.addEventListener('click', () => {
+            createGroupModal.classList.add('hidden');
+        });
+
+        confirmCreateGroupBtn.addEventListener('click', async () => {
+            const name = groupNameInput.value.trim();
+            if (!name) return;
+
+            try {
+                const res = await fetch('/api/groups', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${authToken}`
+                    },
+                    body: JSON.stringify({ name })
+                });
+                if (res.ok) {
+                    createGroupModal.classList.add('hidden');
+                    groupNameInput.value = '';
+                    loadGroups();
+                    // Setup Subuser for Admin? (It's separate flow)
+                } else {
+                    alert('Failed to create group');
+                }
+            } catch (e) {
+                alert('Error creating group');
+            }
+        });
+
+        // Delete Group
+        groupDeleteBtn.addEventListener('click', async () => {
+            if (currentContext.type !== 'group') return;
+            if (!confirm('Are you sure you want to delete this group? This cannot be undone.')) return;
+
+            try {
+                const res = await fetch(`/api/groups/${currentContext.id}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                if (res.ok) {
+                    switchContext('private', null, '');
+                    loadGroups();
+                } else {
+                    alert('Failed to delete group (Admin only)');
+                }
+            } catch (e) { console.error(e); }
+        });
+
+        // Manage Members
+        groupMembersBtn.addEventListener('click', async () => {
+            if (currentContext.type !== 'group') return;
+            manageMembersModal.classList.remove('hidden');
+            loadMembers(currentContext.id);
+        });
+
+        closeManageMembersBtn.addEventListener('click', () => {
+            manageMembersModal.classList.add('hidden');
+        });
+
+        async function loadMembers(groupID) {
+            membersList.innerHTML = 'Loading...';
+            try {
+                // Determine membership from... context? 
+                // We actually don't have a direct "Get Members" endpoint in the Agent?
+                // Wait, I implemented `GetAllNodes` but not a "List Group Members" endpoint in Server.go.
+                // Oh no. I implemented `POST /groups/{id}/subusers`, `DELETE .../members/{user}`.
+                // But I missed `GET /groups/{id}/members`.
+                // Actually server.go `handleListGroups` returns group list.
+                // The `Group` struct in `mkclient.go` has `Members []string`.
+                // SO I can find the members from the Group List data!
+
+                // Let's refetch groups to get latest members
+                const res = await fetch('/api/groups', {
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                const data = await res.json();
+                const group = data.groups.find(g => g.id === groupID);
+
+                refreshMembersList(group);
+
+            } catch (e) {
+                membersList.innerHTML = 'Error loading members';
+            }
+        }
+
+        function refreshMembersList(group) {
+            if (!group || !group.members) {
+                membersList.innerHTML = 'No members info';
+                return;
+            }
+            membersList.innerHTML = '';
+            group.members.forEach(member => {
+                const div = document.createElement('div');
+                div.style.cssText = 'display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.05); padding: 8px; border-radius: 6px;';
+                div.innerHTML = `
+                    <span>${member}</span>
+                    <button class="rm-btn" style="color: #f87171; background: none; border: none; cursor: pointer;">✕</button>
+                 `;
+                div.querySelector('.rm-btn').onclick = () => removeMember(group.id, member);
+                membersList.appendChild(div);
+            });
+        }
+
+        async function removeMember(groupID, username) {
+            if (!confirm(`Remove ${username}?`)) return;
+            try {
+                const res = await fetch(`/api/groups/${groupID}/members/${username}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                if (res.ok) {
+                    loadMembers(groupID);
+                } else {
+                    alert('Failed to remove member');
+                }
+            } catch (e) { alert('Error'); }
+        }
+
+        // Create Subuser
+        createSubuserBtn.addEventListener('click', async () => {
+            const username = subuserUser.value.trim();
+            const password = subuserPass.value.trim();
+            if (!username || !password) return;
+
+            try {
+                const res = await fetch(`/api/groups/${currentContext.id}/subusers`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${authToken}`
+                    },
+                    body: JSON.stringify({ username, password })
+                });
+                if (res.ok) {
+                    subuserUser.value = '';
+                    subuserPass.value = '';
+                    loadMembers(currentContext.id);
+                    alert('Subuser created and added!');
+                } else {
+                    const txt = await res.text();
+                    alert('Failed: ' + txt);
+                }
+            } catch (e) { alert('Error'); }
+        });
+
+        // Navigation
+        navPrivate.addEventListener('click', () => switchContext('private', null, ''));
+
+        // Initial check updated within checkAuth
+
         checkAuth();
 
 

@@ -19,7 +19,9 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"github.com/reflective-memory-kernel/internal/ai/local"
 	"github.com/reflective-memory-kernel/internal/graph"
+	"github.com/reflective-memory-kernel/internal/kernel/wisdom"
 )
 
 // IngestionStats holds metrics about ingestion performance
@@ -37,10 +39,13 @@ type IngestionStats struct {
 
 // IngestionPipeline handles the ingestion of transcript events into the Knowledge Graph
 type IngestionPipeline struct {
-	graphClient   *graph.Client
-	jetStream     nats.JetStreamContext
+	graphClient *graph.Client
+	jetStream   nats.JetStreamContext
+
 	redisClient   *redis.Client
 	aiServicesURL string
+	localEmbedder local.LocalEmbedder
+	wisdomManager *wisdom.WisdomManager
 
 	batchSize     int
 	flushInterval time.Duration
@@ -77,6 +82,8 @@ func NewIngestionPipeline(
 	jetStream nats.JetStreamContext,
 	redisClient *redis.Client,
 	aiServicesURL string,
+	localEmbedder local.LocalEmbedder,
+	wisdomManager *wisdom.WisdomManager,
 	batchSize int,
 	flushInterval time.Duration,
 	logger *zap.Logger,
@@ -86,6 +93,8 @@ func NewIngestionPipeline(
 		jetStream:     jetStream,
 		redisClient:   redisClient,
 		aiServicesURL: aiServicesURL,
+		localEmbedder: localEmbedder,
+		wisdomManager: wisdomManager,
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
 		logger:        logger,
@@ -129,52 +138,63 @@ func (p *IngestionPipeline) Ingest(ctx context.Context, event *graph.TranscriptE
 		zap.String("conversation_id", event.ConversationID),
 		zap.String("user_id", event.UserID))
 
-	// Step 1: Extract entities using the AI service
-	extractionStart := time.Now()
-	entities, err := p.extractEntities(ctx, event)
-	if err != nil {
-		p.logger.Warn("Entity extraction failed, using basic extraction",
-			zap.Error(err))
-		// Fall back to basic extraction
-		entities = p.basicEntityExtraction(event)
+	// Step 1: Hot Path - Local Embedding (Replacing External AI)
+	embedStart := time.Now()
+
+	// Use local embedder if available
+	if p.localEmbedder != nil {
+		vec, err := p.localEmbedder.Embed(event.UserQuery)
+		if err != nil {
+			p.logger.Error("Local embedding failed", zap.Error(err))
+		} else {
+			p.logger.Info("Generated local embedding (Hot Path)",
+				zap.Int("dims", len(vec)),
+				zap.Duration("latency", time.Since(embedStart)))
+			// TODO: Store vector in Redis/RingBuffer (Hot Store)
+		}
+	} else {
+		p.logger.Warn("Local embedder is nil, skipping Hot Path embedding")
 	}
-	extractionDuration := time.Since(extractionStart)
+
+	extractionDuration := time.Since(embedStart)
+
+	// Phase 2 Optimization: Hand off to Cold Path (Wisdom Layer)
+	if p.wisdomManager != nil {
+		p.wisdomManager.AddEvent(*event)
+		p.logger.Info("Event queued for Wisdom Layer (Cold Path)")
+	} else {
+		p.logger.Warn("Wisdom Manager is nil, event will NOT be persisted to graph")
+	}
+
+	// Phase 1 Optimization: Skip External Entity Extraction and DGraph Writes for raw chat
+	// We rely on Phase 2 "Cold Path" Batcher to summarize and write to DGraph later.
+	// For now, checks are removed to ensure <10ms latency.
+
+	entities := []graph.ExtractedEntity{} // Empty entities
 	event.ExtractedEntities = entities
 
-	// DEBUG: Log extracted entities
-	for i, e := range entities {
-		p.logger.Info("Extracted entity",
-			zap.Int("index", i),
-			zap.String("name", e.Name),
-			zap.String("type", string(e.Type)),
-			zap.String("description", e.Description))
-	}
-
-	// Step 2: Batch process all entities and relationships
-	dgraphStart := time.Now()
-	if err := p.processBatchedEntities(ctx, event.UserID, event.ConversationID, entities); err != nil {
-		p.logger.Error("Failed to batch process entities", zap.Error(err))
-		p.updateStats(0, extractionDuration, time.Duration(0), true)
-		return err
-	}
-	dgraphDuration := time.Since(dgraphStart)
-
-	// Step 3: Cache recent context in Redis for fast access
+	// Step 3: Cache recent context in Redis for fast access (Hot Context)
+	// We still need the raw message in Redis for the Agent to see "Recent Chat"
 	if err := p.cacheRecentContext(ctx, event); err != nil {
 		p.logger.Warn("Failed to cache context", zap.Error(err))
 	}
 
 	totalDuration := time.Since(startTime)
-	p.updateStats(len(entities), extractionDuration, dgraphDuration, false)
+	// We pass 0 for dgraph time as we skipped it
+	p.updateStats(0, extractionDuration, 0, false)
 
-	p.logger.Info("Transcript event ingested successfully",
+	p.logger.Info("Transcript processed (Hot Path)",
 		zap.String("conversation_id", event.ConversationID),
-		zap.Int("entities_extracted", len(entities)),
-		zap.Duration("extraction_time", extractionDuration),
-		zap.Duration("dgraph_time", dgraphDuration),
 		zap.Duration("total_time", totalDuration))
 
 	return nil
+}
+
+// IngestDirect handles direct ingestion from the Monolith (Zero-Copy)
+func (p *IngestionPipeline) IngestDirect(ctx context.Context, event *graph.TranscriptEvent) error {
+	p.logger.Debug("Direct ingestion received (Zero-Copy)",
+		zap.String("conversation_id", event.ConversationID))
+	return p.Ingest(ctx, event)
 }
 
 // updateStats updates ingestion statistics
@@ -286,7 +306,7 @@ func (p *IngestionPipeline) basicEntityExtraction(event *graph.TranscriptEvent) 
 }
 
 // processBatchedEntities handles the 3-step batched ingestion: Read -> Write Nodes -> Write Edges
-func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, userID, conversationID string, entities []graph.ExtractedEntity) error {
+func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, namespace, userID, conversationID string, entities []graph.ExtractedEntity) error {
 	// 1. COLLECT ALL UNIQUE NAMES
 	// We need to check existence for the User, all extracted Entities, and any Relation Targets
 	uniqueNames := make(map[string]bool)
@@ -304,8 +324,8 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, userID, 
 		namesList = append(namesList, name)
 	}
 
-	// Determine Namespace (default to user isolation for now)
-	namesp := fmt.Sprintf("user_%s", userID)
+	// Namespace passed in
+	namesp := namespace
 
 	// 2. BULK READ - Check what exists
 	existingNodes, err := p.graphClient.GetNodesByNames(ctx, namesp, namesList)
@@ -495,7 +515,12 @@ func (p *IngestionPipeline) cacheRecentContext(ctx context.Context, event *graph
 		return nil
 	}
 
-	key := fmt.Sprintf("context:%s:recent", event.UserID)
+	// Use Namespace for context key if available, else user ID
+	ns := event.Namespace
+	if ns == "" {
+		ns = fmt.Sprintf("user_%s", event.UserID)
+	}
+	key := fmt.Sprintf("context:%s:recent", ns)
 
 	// Store the last 10 conversation turns
 	data, err := json.Marshal(event)

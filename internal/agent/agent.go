@@ -5,15 +5,17 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"github.com/reflective-memory-kernel/internal/graph"
-	"github.com/reflective-memory-kernel/internal/kernel"
+	"github.com/reflective-memory-kernel/internal/precortex"
 )
 
 // Config holds configuration for the Front-End Agent
@@ -44,11 +46,15 @@ type Agent struct {
 	js          nats.JetStreamContext
 	mkClient    *MKClient
 	aiClient    *AIClient
-	RedisClient *redis.Client // Exposed for user authentication
+	RedisClient *redis.Client        // Exposed for user authentication
+	preCortex   *precortex.PreCortex // Cognitive firewall for cost reduction
 
 	// Active conversations
 	conversations map[string]*Conversation
 	convMu        sync.RWMutex
+
+	// Direct Ingestion (Zero-Copy)
+	ingestChan chan *graph.TranscriptEvent
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -133,13 +139,63 @@ func (a *Agent) Stop() error {
 	return nil
 }
 
+// SetIngestChannel enables direct ingestion mode (Zero-Copy)
+func (a *Agent) SetIngestChannel(ch chan *graph.TranscriptEvent) {
+	a.ingestChan = ch
+	a.logger.Info("Direct Ingestion Channel configured (Zero-Copy enabled)")
+}
+
+// SetKernel enables direct consultation mode (Zero-Copy)
+func (a *Agent) SetKernel(k MemoryKernel) {
+	if a.mkClient != nil {
+		a.mkClient.SetDirectKernel(k)
+		a.logger.Info("Direct Kernel access configured (Zero-Copy enabled)")
+	}
+}
+
+// SetPreCortex configures the Pre-Cortex cognitive firewall for cost reduction
+func (a *Agent) SetPreCortex(pc *precortex.PreCortex) {
+	a.preCortex = pc
+	a.logger.Info("Pre-Cortex cognitive firewall configured (90% cost reduction enabled)")
+}
+
 // Chat handles a user message and returns a response
-func (a *Agent) Chat(ctx context.Context, userID, conversationID, message string) (string, error) {
+func (a *Agent) Chat(ctx context.Context, userID, conversationID, namespace, message string) (string, error) {
 	startTime := time.Now()
 
 	a.logger.Debug("Processing chat message",
 		zap.String("user_id", userID),
+		zap.String("namespace", namespace),
 		zap.String("message", message))
+
+	// --- PRE-CORTEX: Try to handle locally first (90% cost reduction) ---
+	if a.preCortex != nil {
+		pcResponse, handled := a.preCortex.Handle(ctx, namespace, userID, message)
+		if handled {
+			latency := time.Since(startTime)
+			a.logger.Info("Pre-Cortex handled request",
+				zap.Duration("latency", latency),
+				zap.Bool("handled", true))
+
+			// Record turn and stream transcript
+			conv := a.getOrCreateConversation(userID, conversationID)
+			conv.mu.Lock()
+			conv.Turns = append(conv.Turns, Turn{
+				Timestamp: time.Now(),
+				UserQuery: message,
+				Response:  pcResponse.Text,
+				Latency:   latency,
+			})
+			conv.mu.Unlock()
+
+			// Stream transcript (still learn from Pre-Cortex interactions)
+			go a.streamTranscript(userID, conversationID, namespace, message, pcResponse.Text)
+
+			return pcResponse.Text, nil
+		}
+	}
+
+	// --- CONTINUE TO LLM (Pre-Cortex did not handle) ---
 
 	// Get or create conversation
 	conv := a.getOrCreateConversation(userID, conversationID)
@@ -147,6 +203,7 @@ func (a *Agent) Chat(ctx context.Context, userID, conversationID, message string
 	// Step 1: Consult Memory Kernel for context (async-aware)
 	consultReq := &graph.ConsultationRequest{
 		UserID:          userID,
+		Namespace:       namespace, // Pass namespace to MK
 		Query:           message,
 		MaxResults:      5,
 		IncludeInsights: true,
@@ -186,7 +243,7 @@ func (a *Agent) Chat(ctx context.Context, userID, conversationID, message string
 
 	response, err := a.aiClient.GenerateResponse(ctx, message, contextBrief, proactiveAlerts)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to generate response: %w", err)
 	}
 
 	latency := time.Since(startTime)
@@ -202,27 +259,79 @@ func (a *Agent) Chat(ctx context.Context, userID, conversationID, message string
 	conv.mu.Unlock()
 
 	// Step 4: Stream transcript to Memory Kernel (async, non-blocking)
-	go a.streamTranscript(userID, conversationID, message, response)
+	go a.streamTranscript(userID, conversationID, namespace, message, response)
 
 	a.logger.Info("Chat response generated",
 		zap.Duration("latency", latency),
 		zap.Bool("had_context", mkResponse != nil))
 
+	// Step 5: Save to Pre-Cortex semantic cache for future reuse
+	if a.preCortex != nil {
+		a.preCortex.SaveToCache(ctx, namespace, message, response)
+	}
+
 	return response, nil
 }
 
+// Speculate triggers a speculative lookup (fire and forget usually)
+func (a *Agent) Speculate(ctx context.Context, userID, namespace, partialMessage string) {
+	if len(partialMessage) < 5 {
+		return
+	}
+
+	// Create consultation request
+	req := &graph.ConsultationRequest{
+		UserID:    userID,
+		Namespace: namespace,
+		Query:     partialMessage,
+	}
+
+	// Async call to Kernel
+	go func() {
+		if err := a.mkClient.Speculate(context.Background(), req); err != nil {
+			a.logger.Debug("Speculation failed", zap.Error(err))
+		}
+	}()
+}
+
 // streamTranscript asynchronously sends the conversation to the Memory Kernel
-func (a *Agent) streamTranscript(userID, conversationID, userQuery, response string) {
-	event := &graph.TranscriptEvent{
+func (a *Agent) streamTranscript(userID, conversationID, namespace, userQuery, aiResponse string) {
+	event := graph.TranscriptEvent{
+		ID:             uuid.New().String(),
 		UserID:         userID,
+		Namespace:      namespace, // Pass namespace to Ingestion
 		ConversationID: conversationID,
 		Timestamp:      time.Now(),
 		UserQuery:      userQuery,
-		AIResponse:     response,
+		AIResponse:     aiResponse,
+	}
+	// ... rest of function (unchanged usually)
+	// Zero-Copy Path: Send directly to Kernel via channel if configured
+	if a.ingestChan != nil {
+		select {
+		case a.ingestChan <- &event:
+			a.logger.Debug("Transcript sent via direct channel")
+			return
+		default:
+			a.logger.Warn("Ingest channel full, falling back to NATS/Dropping")
+		}
 	}
 
-	if err := kernel.PublishTranscript(a.js, event); err != nil {
-		a.logger.Warn("Failed to stream transcript", zap.Error(err))
+	// Legacy Path: NATS
+	if a.natsConn == nil {
+		a.logger.Warn("NATS connection is nil, and no direct channel configured. Transcript lost.")
+		return
+	}
+
+	data, err := json.Marshal(event)
+	if err != nil {
+		a.logger.Error("Failed to marshal transcript event", zap.Error(err))
+		return
+	}
+
+	subject := fmt.Sprintf("transcripts.%s", userID)
+	if err := a.natsConn.Publish(subject, data); err != nil {
+		a.logger.Error("Failed to publish transcript event", zap.Error(err))
 	}
 }
 

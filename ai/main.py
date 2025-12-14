@@ -118,6 +118,17 @@ class ExpandQueryResponse(BaseModel):
     entity_names: list[str]
 
 
+# Batch summarization for Wisdom Layer
+class SummarizeBatchRequest(BaseModel):
+    text: str
+    type: Optional[str] = "crystallize"
+
+
+class SummarizeBatchResponse(BaseModel):
+    summary: str
+    entities: list[ExtractedEntity]
+
+
 # Endpoints
 @app.post("/extract", response_model=list[ExtractedEntity])
 async def extract_entities(request: ExtractionRequest):
@@ -130,6 +141,60 @@ async def extract_entities(request: ExtractionRequest):
         )
         return entities
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/summarize_batch", response_model=SummarizeBatchResponse)
+async def summarize_batch(request: SummarizeBatchRequest):
+    """Summarize a batch of conversation text and extract entities.
+    
+    Used by the Wisdom Layer (Cold Path) to crystallize conversations into
+    high-density knowledge nodes.
+    """
+    try:
+        print(f"DEBUG /summarize_batch: processing {len(request.text)} chars", flush=True)
+        
+        # Parse conversation text into turns (format: "User: ...\nAI: ...\n")
+        all_entities = []
+        lines = request.text.strip().split('\n')
+        
+        user_query = ""
+        ai_response = ""
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith("User:"):
+                # If we have a complete pair, process it
+                if user_query and ai_response:
+                    entities = await app.state.extraction.extract(user_query, ai_response)
+                    all_entities.extend(entities)
+                user_query = line[5:].strip()
+                ai_response = ""
+            elif line.startswith("AI:"):
+                ai_response = line[3:].strip()
+        
+        # Process the last pair
+        if user_query and ai_response:
+            entities = await app.state.extraction.extract(user_query, ai_response)
+            all_entities.extend(entities)
+        
+        # Generate summary from extracted entities
+        if all_entities:
+            summary_parts = [f"{e.get('name', 'Unknown')}: {e.get('description', '')}" for e in all_entities]
+            summary = "Key facts: " + "; ".join(summary_parts[:5])  # Limit to 5
+        else:
+            summary = "No significant entities extracted from this conversation batch."
+        
+        print(f"DEBUG /summarize_batch: extracted {len(all_entities)} entities", flush=True)
+        
+        return SummarizeBatchResponse(
+            summary=summary,
+            entities=[ExtractedEntity(**e) for e in all_entities]
+        )
+    except Exception as e:
+        import traceback
+        print(f"SUMMARIZE_BATCH ERROR: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

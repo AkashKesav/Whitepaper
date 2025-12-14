@@ -68,14 +68,31 @@ func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.Consultatio
 		RequestID: uuid.New().String(),
 	}
 
-	// STEP 1: Get facts matching the query terms
-	facts, err := h.getUserKnowledge(ctx, req.UserID, req.Query)
-	if err != nil {
-		h.logger.Warn("Failed to get user knowledge", zap.Error(err))
+	// Step 0: Determine Namespace
+	namespace := req.Namespace
+	if namespace == "" {
+		namespace = fmt.Sprintf("user_%s", req.UserID)
+	}
+
+	// STEP 0.5: Check Speculative Cache (Time Travel)
+	var facts []graph.Node
+	var err error
+
+	cachedFacts, cacheErr := h.checkSpeculationCache(ctx, req.UserID, req.Query)
+	if cacheErr == nil && cachedFacts != nil {
+		h.logger.Info("Hit speculative cache (Time Travel successful)", zap.Int("facts", len(cachedFacts)))
+		facts = cachedFacts
+	} else {
+		// STEP 1: Get facts matching the query terms (Cache Miss)
+		facts, err = h.getUserKnowledge(ctx, namespace, req.Query)
+		if err != nil {
+			h.logger.Warn("Failed to get user knowledge", zap.Error(err))
+		}
 	}
 	response.RelevantFacts = facts
 
 	h.logger.Info("Retrieved user knowledge",
+		zap.String("namespace", namespace),
 		zap.Int("facts_count", len(facts)))
 
 	// STEP 2: Format facts directly into a brief (no external AI call)
@@ -117,11 +134,11 @@ func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.Consultatio
 // - High activation nodes (frequently accessed)
 // - Recent nodes (newly added within last hour)
 // This ensures both relevant AND fresh memories are considered
-func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, userID string, queryText string) ([]graph.Node, error) {
+func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace string, queryText string) ([]graph.Node, error) {
 	h.logger.Info("Fetching knowledge with hybrid approach", zap.String("query", queryText))
 
 	// Hybrid query: top 50 by activation + top 50 by recency
-	namespace := fmt.Sprintf("user_%s", userID)
+	// namespace passed in
 
 	query := `query HybridKnowledge($namespace: string) {
 		by_activation(func: has(name), first: 50, orderdesc: activation) @filter(eq(namespace, $namespace)) {
@@ -309,7 +326,10 @@ func (h *ConsultationHandler) findRelevantFacts(ctx context.Context, req *graph.
 		zap.Int("max_results", maxResults))
 
 	// Search by text
-	namespace := fmt.Sprintf("user_%s", req.UserID)
+	namespace := req.Namespace
+	if namespace == "" {
+		namespace = fmt.Sprintf("user_%s", req.UserID)
+	}
 	nodes, err := h.queryBuilder.SearchByText(ctx, namespace, req.Query, maxResults)
 	if err != nil {
 		h.logger.Warn("Text search failed", zap.Error(err))
@@ -390,7 +410,10 @@ func (h *ConsultationHandler) findRelevantFacts(ctx context.Context, req *graph.
 // getRelevantInsights retrieves insights that may be relevant to the query
 func (h *ConsultationHandler) getRelevantInsights(ctx context.Context, req *graph.ConsultationRequest) ([]graph.Insight, error) {
 	// Get recent insights
-	namespace := fmt.Sprintf("user_%s", req.UserID)
+	namespace := req.Namespace
+	if namespace == "" {
+		namespace = fmt.Sprintf("user_%s", req.UserID)
+	}
 	insights, err := h.queryBuilder.GetInsights(ctx, namespace, 5)
 	if err != nil {
 		return nil, err
@@ -403,7 +426,10 @@ func (h *ConsultationHandler) getRelevantInsights(ctx context.Context, req *grap
 
 // checkPatterns checks for patterns that might be relevant (proactive assistance)
 func (h *ConsultationHandler) checkPatterns(ctx context.Context, req *graph.ConsultationRequest) ([]graph.Pattern, []string) {
-	namespace := fmt.Sprintf("user_%s", req.UserID)
+	namespace := req.Namespace
+	if namespace == "" {
+		namespace = fmt.Sprintf("user_%s", req.UserID)
+	}
 	patterns, err := h.queryBuilder.GetPatterns(ctx, namespace, 0.7, 5)
 	if err != nil {
 		h.logger.Warn("Failed to get patterns", zap.Error(err))
@@ -554,4 +580,91 @@ func (h *ConsultationHandler) updateAccessedNodes(ctx context.Context, query str
 				zap.String("query", query))
 		}
 	}
+}
+
+// Speculate performs a pre-fetch for a partial query and caches the result
+func (h *ConsultationHandler) Speculate(ctx context.Context, req *graph.ConsultationRequest) error {
+	if len(req.Query) < 5 {
+		// Too short to speculate
+		return nil
+	}
+
+	h.logger.Debug("Speculating on partial query", zap.String("query", req.Query))
+
+	namespace := req.Namespace
+	if namespace == "" {
+		namespace = fmt.Sprintf("user_%s", req.UserID)
+	}
+
+	// Just perform text search for speed (Hot Path)
+	// We don't do full hybrid search or getting user-related nodes to save resources
+	facts, err := h.queryBuilder.SearchByText(ctx, namespace, req.Query, 5)
+	if err != nil {
+		return err
+	}
+
+	if len(facts) > 0 {
+		h.logger.Debug("Speculation found facts", zap.Int("count", len(facts)))
+		return h.saveSpeculation(ctx, req.UserID, req.Query, facts)
+	}
+
+	return nil
+}
+
+// saveSpeculation saves the speculation result to Redis
+func (h *ConsultationHandler) saveSpeculation(ctx context.Context, userID, query string, facts []graph.Node) error {
+	key := fmt.Sprintf("speculation:%s:latest", userID)
+
+	data := struct {
+		Query string       `json:"query"`
+		Facts []graph.Node `json:"facts"`
+	}{
+		Query: query,
+		Facts: facts,
+	}
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	// Cache for 10 seconds (typing context is fleeing)
+	return h.redisClient.Set(ctx, key, jsonData, 10*time.Second).Err()
+}
+
+// checkSpeculationCache checks if we have a valid speculation for the current query
+func (h *ConsultationHandler) checkSpeculationCache(ctx context.Context, userID, currentQuery string) ([]graph.Node, error) {
+	key := fmt.Sprintf("speculation:%s:latest", userID)
+
+	val, err := h.redisClient.Get(ctx, key).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil // Miss
+		}
+		return nil, err
+	}
+
+	var cached struct {
+		Query string       `json:"query"`
+		Facts []graph.Node `json:"facts"`
+	}
+	if err := json.Unmarshal([]byte(val), &cached); err != nil {
+		return nil, err
+	}
+
+	// Check if cached query is relevant to current query
+	// Ideally, cached query ("Hello w") should be a prefix of current ("Hello world")
+	// Or vice-versa if user deleted chars, but usually we care about forward typing.
+	// We also accept if they are very close.
+
+	// transform to lower
+	curr := strings.ToLower(currentQuery)
+	prev := strings.ToLower(cached.Query)
+
+	if strings.HasPrefix(curr, prev) {
+		// Hit!
+		return cached.Facts, nil
+	}
+
+	return nil, nil
 }

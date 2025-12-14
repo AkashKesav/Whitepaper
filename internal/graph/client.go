@@ -88,10 +88,12 @@ func NewClient(ctx context.Context, cfg ClientConfig, logger *zap.Logger) (*Clie
 // initSchema sets up the DGraph schema for the Knowledge Graph
 func (c *Client) initSchema(ctx context.Context) error {
 	schema := `
-		# Node types
-		# Group Management (V2)
+		# Edges
 		group_has_admin: [uid] @reverse .
 		group_has_member: [uid] @reverse .
+		
+		# Node types
+		# Group Management (V2)
 		
 		type Group {
 			name
@@ -177,6 +179,7 @@ func (c *Client) initSchema(ctx context.Context) error {
 		tags: [string] @index(term) .
 		entity_type: string @index(exact) .
 		namespace: string @index(exact) .
+		created_by: string @index(exact) .
 		
 		# Temporal predicates
 		created_at: datetime @index(hour) .
@@ -1030,6 +1033,141 @@ func (c *Client) AddGroupMember(ctx context.Context, groupNamespace, username st
 	return nil
 }
 
+// RemoveGroupMember removes a user from a group
+func (c *Client) RemoveGroupMember(ctx context.Context, groupID, username string) error {
+	// Find Group UID (groupID is namespace/logical ID usually, but here likely passed as proper UID or namespace?)
+	// Wait, Kernel passes "groupID". CreateGroup returns "namespace".
+	// Let's assume input is "groupNamespace" for consistency with AddGroupMember.
+	// We need to resolve it.
+
+	q := `query FindGroup($ns: string) {
+		g(func: eq(namespace, $ns)) @filter(type(Group)) {
+			uid
+		}
+	}`
+	resp, err := c.Query(ctx, q, map[string]string{"$ns": groupID})
+	if err != nil {
+		return fmt.Errorf("failed to query group: %w", err)
+	}
+
+	var res struct {
+		G []struct {
+			UID string `json:"uid"`
+		} `json:"g"`
+	}
+	json.Unmarshal(resp, &res)
+	if len(res.G) == 0 {
+		return fmt.Errorf("group %s not found", groupID)
+	}
+	groupUID := res.G[0].UID
+
+	// Find User
+	userNode, err := c.FindNodeByName(ctx, username, NodeTypeUser)
+	if err != nil || userNode == nil {
+		return fmt.Errorf("user %s not found", username)
+	}
+
+	// Delete Edge: <GroupUID> <group_has_member> <UserUID>
+	nquad := fmt.Sprintf(`<%s> <group_has_member> <%s> .`, groupUID, userNode.UID)
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		DelNquads: []byte(nquad),
+		CommitNow: true,
+	}
+
+	if _, err := txn.Mutate(ctx, mu); err != nil {
+		return fmt.Errorf("failed to remove member: %w", err)
+	}
+	return nil
+}
+
+// DeleteGroup deletes a group (and its edges automatically due to DGraph behavior on node deletion? No, usually explicitly needed)
+// For safety, we just delete the node.
+func (c *Client) DeleteGroup(ctx context.Context, groupID string) error {
+	// groupID is namespace
+	q := `query FindGroup($ns: string) {
+		g(func: eq(namespace, $ns)) @filter(type(Group)) {
+			uid
+		}
+	}`
+	resp, err := c.Query(ctx, q, map[string]string{"$ns": groupID})
+	if err != nil {
+		return err
+	}
+	var res struct {
+		G []struct {
+			UID string `json:"uid"`
+		} `json:"g"`
+	}
+	json.Unmarshal(resp, &res)
+	if len(res.G) == 0 {
+		return nil // Already gone
+	}
+
+	d := map[string]string{"uid": res.G[0].UID}
+	db, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+
+	mu := &api.Mutation{
+		DeleteJson: db,
+		CommitNow:  true,
+	}
+
+	_, err = c.dg.NewTxn().Mutate(ctx, mu)
+	return err
+}
+
+// ShareToGroup shares a conversation ID with a group
+func (c *Client) ShareToGroup(ctx context.Context, conversationID, groupID string) error {
+	// 1. Find Group
+	q := `query FindGroup($ns: string) {
+		g(func: eq(namespace, $ns)) @filter(type(Group)) {
+			uid
+		}
+	}`
+	resp, err := c.Query(ctx, q, map[string]string{"$ns": groupID})
+	if err != nil {
+		return err
+	}
+	var res struct {
+		G []struct {
+			UID string `json:"uid"`
+		} `json:"g"`
+	}
+	json.Unmarshal(resp, &res)
+	if len(res.G) == 0 {
+		return fmt.Errorf("group %s not found", groupID)
+	}
+	groupUID := res.G[0].UID
+
+	// 2. Create Shared Record
+	// For "Quantum" speed, we just write a new SharedConversation node linked to the group
+	blankNode := fmt.Sprintf("_:share_%d", time.Now().UnixNano())
+	var nquads strings.Builder
+
+	nquads.WriteString(fmt.Sprintf(`%s <dgraph.type> "SharedConversation" .
+`, blankNode))
+	nquads.WriteString(fmt.Sprintf(`%s <conversation_id> %q .
+`, blankNode, conversationID))
+	nquads.WriteString(fmt.Sprintf(`%s <shared_with> <%s> .
+`, blankNode, groupUID))
+	nquads.WriteString(fmt.Sprintf(`%s <shared_at> "%s"^^<xs:dateTime> .
+`, blankNode, time.Now().Format(time.RFC3339)))
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquads.String()),
+		CommitNow: true,
+	}
+
+	_, err = c.dg.NewTxn().Mutate(ctx, mu)
+	return err
+}
+
 // ListUserGroups returns groups the user is a member of (V2)
 // NOTE: This intentionally steps OUTSIDE the strict namespace filter for discovery.
 func (c *Client) ListUserGroups(ctx context.Context, userID string) ([]Group, error) {
@@ -1100,4 +1238,62 @@ func (c *Client) IsGroupAdmin(ctx context.Context, groupNamespace, userID string
 	}
 
 	return len(res.G) > 0, nil
+}
+
+// IngestWisdomBatch batch creates summary nodes and entities for the Wisdom Layer
+func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summary string, entities []ExtractedEntity) error {
+	var nquads strings.Builder
+
+	// 1. Create Summary Node (Unique logical fact per batch timestamp for now)
+	summaryNode := fmt.Sprintf("_:summary_%d", time.Now().UnixNano())
+
+	nquads.WriteString(fmt.Sprintf(`%s <dgraph.type> "Fact" .
+`, summaryNode))
+	nquads.WriteString(fmt.Sprintf(`%s <name> "Batch Summary" .
+`, summaryNode))
+	nquads.WriteString(fmt.Sprintf(`%s <description> %q .
+`, summaryNode, summary))
+	nquads.WriteString(fmt.Sprintf(`%s <fact_value> %q .
+`, summaryNode, summary)) // Use fact_value as main content
+	nquads.WriteString(fmt.Sprintf(`%s <namespace> %q .
+`, summaryNode, namespace))
+	nquads.WriteString(fmt.Sprintf(`%s <created_at> "%s"^^<xs:dateTime> .
+`, summaryNode, time.Now().Format(time.RFC3339)))
+	nquads.WriteString(fmt.Sprintf(`%s <status> "crystallized" .
+`, summaryNode))
+
+	// 2. Process Entities
+	// We need to link them to the summary and creating them if missing
+	for i, e := range entities {
+		// Entity Node
+		entityNode := fmt.Sprintf("_:entity_%d", i)
+
+		nquads.WriteString(fmt.Sprintf(`%s <dgraph.type> "Entity" .
+`, entityNode))
+		nquads.WriteString(fmt.Sprintf(`%s <name> %q .
+`, entityNode, e.Name))
+		nquads.WriteString(fmt.Sprintf(`%s <namespace> %q .
+`, entityNode, namespace))
+
+		// Link Entity -> Summary (Derived From)
+		nquads.WriteString(fmt.Sprintf(`%s <synthesized_from> %s .
+`, entityNode, summaryNode))
+	}
+
+	c.logger.Debug("Writing Wisdom Batch", zap.String("namespace", namespace))
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquads.String()),
+		CommitNow: true,
+	}
+
+	_, err := txn.Mutate(ctx, mu)
+	if err != nil {
+		return fmt.Errorf("failed to ingest wisdom batch: %w", err)
+	}
+
+	return nil
 }

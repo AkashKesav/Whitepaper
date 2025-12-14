@@ -1,0 +1,41 @@
+# Build stage - Simple Alpine build (no CGO needed for Ollama)
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /app
+
+# Install minimal build dependencies
+RUN apk add --no-cache git
+
+# Copy go mod files
+COPY go.mod go.sum* ./
+RUN go mod download
+
+# Copy source
+COPY . .
+
+# Build Unified Monolith (CGO disabled - using Ollama for embeddings)
+RUN CGO_ENABLED=0 GOOS=linux go build -o /monolith ./cmd/monolith
+
+# Runtime stage - Minimal Alpine
+FROM alpine:3.19
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    curl
+
+WORKDIR /app
+
+# Copy binary
+COPY --from=builder /monolith /app/monolith
+
+# Copy static assets
+COPY static/ /app/static/
+
+# Expose port
+EXPOSE 9090
+
+ENV PORT=9090
+
+CMD ["/app/monolith"]

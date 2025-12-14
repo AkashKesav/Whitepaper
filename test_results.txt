@@ -1,0 +1,55 @@
+﻿[INFO] ============================================================
+[INFO] EXHAUSTIVE CHAT SYSTEM TEST SUITE
+[INFO] ============================================================
+[INFO] Server health: OK
+
+[INFO] 
+============================================================
+[INFO] TEST 1: Basic Chat Request/Response
+[INFO] ============================================================
+[INFO] Response: Nice to chat with you! However, I don't see any relevant information in the MEMORY CONTEXT about my ...
+[INFO] Latency: 1368ms
+python : Traceback (most recent call last):
+At line:1 char:1
++ python test_thorough.py 2>&1 | Out-File -Encoding 
+utf8 test_results.t ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceb 
+   ack (most recent call last)::String) [], Remote  
+  Exception
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "C:\Users\Akash 
+Kesav\Documents\Whitepaper\test_thorough.py", line 
+355, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Akash 
+Kesav\Documents\Whitepaper\test_thorough.py", line 
+333, in main
+    test_basic_chat()
+    ~~~~~~~~~~~~~~~^^
+  File "C:\Users\Akash 
+Kesav\Documents\Whitepaper\test_thorough.py", line 
+82, in test_basic_chat
+    test_pass("Basic Chat")
+    ~~~~~~~~~^^^^^^^^^^^^^^
+  File "C:\Users\Akash 
+Kesav\Documents\Whitepaper\test_thorough.py", line 
+35, in test_pass
+    log(f"\u2705 PASS: {name}", "PASS")
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Akash 
+Kesav\Documents\Whitepaper\test_thorough.py", line 
+30, in log
+    print(f"[{level}] {msg}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python313\Lib\encodings\cp1252.py", line 
+19, in encode
+    return codecs.charmap_encode(input,self.errors,e
+ncoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode 
+character '\u2705' in position 7: character maps to 
+<undefined>

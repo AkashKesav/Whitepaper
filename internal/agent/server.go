@@ -2,6 +2,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -38,22 +39,30 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 	// Create JWT middleware
 	jwtMiddleware := NewJWTMiddleware(s.logger)
 
-	// Public routes (no authentication required)
-	publicRouter := r.PathPrefix("/api").Subrouter()
-	publicRouter.HandleFunc("/login", s.handleLogin).Methods("POST")
-	publicRouter.HandleFunc("/register", s.handleRegister).Methods("POST")
+	// API Router
+	api := r.PathPrefix("/api").Subrouter()
 
-	// Protected routes (authentication required)
-	protectedRouter := r.PathPrefix("/api").Subrouter()
-	protectedRouter.Use(jwtMiddleware.Middleware)
-	protectedRouter.HandleFunc("/chat", s.handleChat).Methods("POST")
+	// Public routes
+	api.HandleFunc("/login", s.handleLogin).Methods("POST")
+	api.HandleFunc("/register", s.handleRegister).Methods("POST")
 
-	protectedRouter.HandleFunc("/stats", s.handleStats).Methods("GET")
-	protectedRouter.HandleFunc("/groups", s.handleCreateGroup).Methods("POST")
-	protectedRouter.HandleFunc("/list-groups", s.handleListGroups).Methods("GET")
-	protectedRouter.HandleFunc("/groups/{id}/members", s.handleAddGroupMember).Methods("POST")
+	// Protected routes (Wrap with Middleware manually to avoid subrouter conflict)
+	protect := func(h http.HandlerFunc) http.Handler {
+		return jwtMiddleware.Middleware(h)
+	}
 
-	// Health check (public)
+	api.Handle("/chat", protect(s.handleChat)).Methods("POST")
+	api.Handle("/stats", protect(s.handleStats)).Methods("GET")
+
+	// Groups
+	api.Handle("/groups", protect(s.handleCreateGroup)).Methods("POST")
+	api.Handle("/list-groups", protect(s.handleListGroups)).Methods("GET")
+	api.Handle("/groups/{id}/members", protect(s.handleAddGroupMember)).Methods("POST")
+	api.Handle("/groups/{id}/members/{username}", protect(s.handleRemoveGroupMember)).Methods("DELETE")
+	api.Handle("/groups/{id}", protect(s.handleDeleteGroup)).Methods("DELETE")
+	api.Handle("/groups/{id}/subusers", protect(s.handleCreateSubuser)).Methods("POST")
+
+	// Health check (public, on root router or api?)
 	r.HandleFunc("/health", s.handleHealth).Methods("GET")
 
 	r.Walk(func(route *mux.Route, router *mux.Router, ancestors []*mux.Route) error {
@@ -65,8 +74,12 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 
 	// WebSocket for real-time chat (protected)
 	wsRouter := r.PathPrefix("/ws").Subrouter()
-	wsRouter.Use(jwtMiddleware.Middleware)
-	wsRouter.HandleFunc("/chat", s.handleWebSocketChat)
+	// wsRouter.Use(jwtMiddleware.Middleware) // WS middleware might differ, but assuming same
+	// Gorilla Mux Middleware on WS might interfere with Upgrade?
+	// Usually safe if passing header.
+	// For now, let's just handle it. Note: WS usually needs query param token if headers not supported by client lib.
+	// But let's assume standard Header.
+	wsRouter.Handle("/chat", protect(s.handleWebSocketChat))
 }
 
 // ChatRequest represents an incoming chat request
@@ -74,6 +87,8 @@ type ChatRequest struct {
 	UserID         string `json:"user_id"`
 	ConversationID string `json:"conversation_id,omitempty"`
 	Message        string `json:"message"`
+	ContextType    string `json:"context_type,omitempty"` // "user" or "group"
+	ContextID      string `json:"context_id,omitempty"`   // UserID or GroupID
 }
 
 // ChatResponse represents a chat response
@@ -230,27 +245,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	userID := GetUserID(r.Context())
 	s.logger.Debug("Processing chat request", zap.String("user_id", userID))
 
+	// Determine Namespace
+	namespace := fmt.Sprintf("user_%s", userID) // Default to private
+	if req.ContextType == "group" && req.ContextID != "" {
+		namespace = req.ContextID
+	}
+
 	// Get or generate conversation ID
 	conversationID := req.ConversationID
 	if conversationID == "" {
-		// Check for session cookie for conversation continuity
-		if cookie, err := r.Cookie("rmk_conversation_id"); err == nil && cookie.Value != "" {
-			conversationID = cookie.Value
-		} else {
-			conversationID = uuid.New().String()
-		}
+		conversationID = uuid.New().String()
 	}
 
-	// Set conversation cookie (session-based, persists until browser closes)
-	http.SetCookie(w, &http.Cookie{
-		Name:     "rmk_conversation_id",
-		Value:    conversationID,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
-
-	response, err := s.agent.Chat(r.Context(), userID, conversationID, req.Message)
+	response, err := s.agent.Chat(r.Context(), userID, conversationID, namespace, req.Message)
 	if err != nil {
 		s.logger.Error("Chat failed", zap.Error(err))
 		http.Error(w, "Failed to generate response", http.StatusInternalServerError)
@@ -284,7 +291,9 @@ type WSMessage struct {
 }
 
 type WSChatPayload struct {
-	Message string `json:"message"`
+	Message     string `json:"message"`
+	ContextType string `json:"context_type,omitempty"`
+	ContextID   string `json:"context_id,omitempty"`
 }
 
 func (s *Server) handleWebSocketChat(w http.ResponseWriter, r *http.Request) {
@@ -325,7 +334,14 @@ func (s *Server) handleWSConnection(conn *websocket.Conn, userID, conversationID
 				continue
 			}
 
-			response, err := s.agent.Chat(nil, userID, conversationID, payload.Message)
+			// Determine Namespace
+			namespace := fmt.Sprintf("user_%s", userID)
+			if payload.ContextType == "group" && payload.ContextID != "" {
+				namespace = payload.ContextID
+			}
+
+			// Use context.Background() for async WS handler
+			response, err := s.agent.Chat(context.Background(), userID, conversationID, namespace, payload.Message)
 			if err != nil {
 				s.logger.Error("Chat failed", zap.Error(err))
 				continue
@@ -339,6 +355,26 @@ func (s *Server) handleWSConnection(conn *websocket.Conn, userID, conversationID
 				},
 			})
 			wsMu.Unlock()
+
+		case "typing":
+			var payload struct {
+				Message     string `json:"message"`
+				ContextType string `json:"context_type"`
+				ContextID   string `json:"context_id"`
+			}
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				continue
+			}
+
+			// Determine Namespace
+			namespace := fmt.Sprintf("user_%s", userID)
+			if payload.ContextType == "group" && payload.ContextID != "" {
+				namespace = payload.ContextID
+			}
+
+			// Trigger Speculation (Time Travel)
+			s.logger.Debug("Received typing event", zap.String("msg", payload.Message))
+			s.agent.Speculate(context.Background(), userID, namespace, payload.Message)
 
 		case "ping":
 			wsMu.Lock()
@@ -451,4 +487,105 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"groups": groups,
 	})
+}
+
+func (s *Server) handleRemoveGroupMember(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	vars := mux.Vars(r)
+	groupID := vars["id"]
+	targetUser := vars["username"]
+
+	// Check Admin
+	isAdmin, err := s.agent.mkClient.IsGroupAdmin(r.Context(), groupID, userID)
+	if err != nil {
+		s.logger.Error("Failed to check admin status", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	// Allow removing self (leave group) or Admin removing others
+	if !isAdmin && userID != targetUser {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	if err := s.agent.mkClient.RemoveGroupMember(r.Context(), groupID, targetUser); err != nil {
+		s.logger.Error("Failed to remove member", zap.Error(err))
+		http.Error(w, "Failed to remove member", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	vars := mux.Vars(r)
+	groupID := vars["id"]
+
+	isAdmin, err := s.agent.mkClient.IsGroupAdmin(r.Context(), groupID, userID)
+	if err != nil || !isAdmin {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	if err := s.agent.mkClient.DeleteGroup(r.Context(), groupID); err != nil {
+		s.logger.Error("Failed to delete group", zap.Error(err))
+		http.Error(w, "Failed to delete group", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+type CreateSubuserRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (s *Server) handleCreateSubuser(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context()) // Requesting Admin
+	vars := mux.Vars(r)
+	groupID := vars["id"]
+
+	// 1. Verify Admin
+	isAdmin, err := s.agent.mkClient.IsGroupAdmin(r.Context(), groupID, userID)
+	if err != nil || !isAdmin {
+		http.Error(w, "Forbidden: Only admins can create subusers", http.StatusForbidden)
+		return
+	}
+
+	var req CreateSubuserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// 2. Register User (Redis)
+	// Check existence
+	ctx := r.Context()
+	exists, err := s.agent.RedisClient.Exists(ctx, "user:"+req.Username).Result()
+	if exists > 0 {
+		http.Error(w, "Username already taken", http.StatusConflict)
+		return // Or handle as "Add existing user" if desired, but request implies creation
+	}
+
+	hashedPassword, _ := HashPassword(req.Password)
+	if err := s.agent.RedisClient.Set(ctx, "user:"+req.Username, hashedPassword, 0).Err(); err != nil {
+		http.Error(w, "Failed to create user", http.StatusInternalServerError)
+		return
+	}
+
+	// 3. Ensure User Node in Graph
+	if err := s.agent.mkClient.EnsureUserNode(ctx, req.Username); err != nil {
+		s.logger.Error("Failed to ensure user node", zap.Error(err))
+		// Continue? If node missing, AddMember might fail or auto-create.
+	}
+
+	// 4. Add to Group
+	if err := s.agent.mkClient.AddGroupMember(ctx, groupID, req.Username); err != nil {
+		s.logger.Error("Failed to add subuser to group", zap.Error(err))
+		http.Error(w, "User created but failed to join group", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"status": "subuser_created", "username": req.Username})
 }

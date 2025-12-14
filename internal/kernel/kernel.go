@@ -4,6 +4,7 @@ package kernel
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -11,7 +12,9 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"github.com/reflective-memory-kernel/internal/ai/local"
 	"github.com/reflective-memory-kernel/internal/graph"
+	"github.com/reflective-memory-kernel/internal/kernel/wisdom"
 	"github.com/reflective-memory-kernel/internal/reflection"
 )
 
@@ -40,6 +43,10 @@ type Config struct {
 	// Ingestion configuration
 	IngestionBatchSize     int
 	IngestionFlushInterval time.Duration
+
+	// Wisdom configuration
+	WisdomBatchSize     int
+	WisdomFlushInterval time.Duration
 }
 
 // DefaultConfig returns sensible defaults
@@ -57,6 +64,8 @@ func DefaultConfig() Config {
 		MaxReflectionBatch:     100,
 		IngestionBatchSize:     50,
 		IngestionFlushInterval: 10 * time.Second,
+		WisdomBatchSize:        50,
+		WisdomFlushInterval:    30 * time.Second,
 	}
 }
 
@@ -77,6 +86,10 @@ type Kernel struct {
 
 	// Ingestion pipeline
 	ingestionPipeline *IngestionPipeline
+	localEmbedder     local.LocalEmbedder
+
+	// Wisdom manager (Cold Path)
+	wisdomManager *wisdom.WisdomManager
 
 	// Consultation handler
 	consultationHandler *ConsultationHandler
@@ -126,6 +139,26 @@ func (k *Kernel) AddGroupMember(ctx context.Context, groupID, username string) e
 // EnsureUserNode creates a User node in DGraph if it doesn't exist
 func (k *Kernel) EnsureUserNode(ctx context.Context, username string) error {
 	return k.graphClient.EnsureUserNode(ctx, username)
+}
+
+// RemoveGroupMember removes a user from a group
+func (k *Kernel) RemoveGroupMember(ctx context.Context, groupID, username string) error {
+	return k.graphClient.RemoveGroupMember(ctx, groupID, username)
+}
+
+// DeleteGroup deletes a group
+func (k *Kernel) DeleteGroup(ctx context.Context, groupID string) error {
+	return k.graphClient.DeleteGroup(ctx, groupID)
+}
+
+// ShareToGroup shares a conversation with a group
+func (k *Kernel) ShareToGroup(ctx context.Context, conversationID, groupID string) error {
+	return k.graphClient.ShareToGroup(ctx, conversationID, groupID)
+}
+
+// GetGraphClient returns the graph client for external use (e.g., Pre-Cortex)
+func (k *Kernel) GetGraphClient() *graph.Client {
+	return k.graphClient
 }
 
 // Start initializes and starts all kernel components
@@ -204,12 +237,32 @@ func (k *Kernel) Start() error {
 	}
 	k.reflectionEngine = reflection.NewEngine(reflectionCfg, k.logger)
 
+	// Initialize Wisdom Manager (Cold Path)
+	wisdomCfg := wisdom.Config{
+		BatchSize:     k.config.WisdomBatchSize,
+		FlushInterval: k.config.WisdomFlushInterval,
+		AIServiceURL:  k.config.AIServicesURL,
+	}
+	k.wisdomManager = wisdom.NewManager(wisdomCfg, k.graphClient, k.logger)
+
+	// Initialize Local AI (Hot Path) - Using Ollama for embeddings
+	ollamaEmbedder := local.NewOllamaEmbedder("", "") // Uses OLLAMA_URL env var
+
+	// Try to ensure the embedding model is available
+	if err := ollamaEmbedder.EnsureModel(); err != nil {
+		k.logger.Warn("Failed to ensure Ollama embedding model (will retry on first use)", zap.Error(err))
+	}
+	k.localEmbedder = ollamaEmbedder
+	k.logger.Info("Ollama embedder initialized (Hot Path enabled)")
+
 	// Initialize ingestion pipeline
 	k.ingestionPipeline = NewIngestionPipeline(
 		k.graphClient,
 		k.jetStream,
 		k.redisClient,
 		k.config.AIServicesURL,
+		k.localEmbedder,
+		k.wisdomManager,
 		k.config.IngestionBatchSize,
 		k.config.IngestionFlushInterval,
 		k.logger,
@@ -229,6 +282,8 @@ func (k *Kernel) Start() error {
 	go k.runIngestionLoop()
 	go k.runReflectionLoop()
 	go k.runDecayLoop()
+
+	k.wisdomManager.Start()
 
 	k.mu.Lock()
 	k.isRunning = true
@@ -268,6 +323,13 @@ func (k *Kernel) Stop() error {
 	}
 	if k.graphClient != nil {
 		k.graphClient.Close()
+	}
+	if k.localEmbedder != nil {
+		k.localEmbedder.Close()
+	}
+
+	if k.wisdomManager != nil {
+		k.wisdomManager.Stop()
 	}
 
 	k.mu.Lock()
@@ -395,6 +457,11 @@ func (k *Kernel) Consult(ctx context.Context, req *graph.ConsultationRequest) (*
 	return k.consultationHandler.Handle(ctx, req)
 }
 
+// Speculate performs a pre-fetch for a partial query
+func (k *Kernel) Speculate(ctx context.Context, req *graph.ConsultationRequest) error {
+	return k.consultationHandler.Speculate(ctx, req)
+}
+
 // IngestTranscript manually ingests a transcript (for testing)
 func (k *Kernel) IngestTranscript(ctx context.Context, event *graph.TranscriptEvent) error {
 	return k.ingestionPipeline.Ingest(ctx, event)
@@ -458,4 +525,13 @@ func (k *Kernel) GetStats(ctx context.Context) (map[string]interface{}, error) {
 	}
 
 	return stats, nil
+}
+
+// IngestEvent allows direct ingestion of events (Zero-Copy path)
+func (k *Kernel) IngestEvent(ctx context.Context, event *graph.TranscriptEvent) error {
+	if !k.isRunning {
+		return fmt.Errorf("kernel is not running")
+	}
+	// Delegate to pipeline's direct ingest
+	return k.ingestionPipeline.IngestDirect(ctx, event)
 }
