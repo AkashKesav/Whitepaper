@@ -34,6 +34,9 @@ type Config struct {
 	// AI Services configuration
 	AIServicesURL string
 
+	// Qdrant vector database configuration
+	QdrantURL string
+
 	// Reflection configuration
 	ReflectionInterval  time.Duration
 	ActivationDecayRate float64
@@ -58,6 +61,7 @@ func DefaultConfig() Config {
 		RedisPassword:          "",
 		RedisDB:                0,
 		AIServicesURL:          "http://localhost:8000",
+		QdrantURL:              "http://localhost:6333",
 		ReflectionInterval:     5 * time.Minute,
 		ActivationDecayRate:    0.05,
 		MinReflectionBatch:     10,
@@ -90,6 +94,9 @@ type Kernel struct {
 
 	// Wisdom manager (Cold Path)
 	wisdomManager *wisdom.WisdomManager
+
+	// Vector index for Hybrid RAG
+	vectorIndex *VectorIndex
 
 	// Consultation handler
 	consultationHandler *ConsultationHandler
@@ -154,6 +161,55 @@ func (k *Kernel) DeleteGroup(ctx context.Context, groupID string) error {
 // ShareToGroup shares a conversation with a group
 func (k *Kernel) ShareToGroup(ctx context.Context, conversationID, groupID string) error {
 	return k.graphClient.ShareToGroup(ctx, conversationID, groupID)
+}
+
+// ============================================================================
+// WORKSPACE COLLABORATION METHODS
+// ============================================================================
+
+// InviteToWorkspace invites a user to join a workspace
+func (k *Kernel) InviteToWorkspace(ctx context.Context, workspaceNS, inviterID, inviteeUsername, role string) (*graph.WorkspaceInvitation, error) {
+	return k.graphClient.InviteToWorkspace(ctx, workspaceNS, inviterID, inviteeUsername, role)
+}
+
+// AcceptInvitation accepts a pending invitation
+func (k *Kernel) AcceptInvitation(ctx context.Context, invitationUID, userID string) error {
+	return k.graphClient.AcceptInvitation(ctx, invitationUID, userID)
+}
+
+// DeclineInvitation declines a pending invitation
+func (k *Kernel) DeclineInvitation(ctx context.Context, invitationUID, userID string) error {
+	return k.graphClient.DeclineInvitation(ctx, invitationUID, userID)
+}
+
+// GetPendingInvitations gets all pending invitations for a user
+func (k *Kernel) GetPendingInvitations(ctx context.Context, userID string) ([]graph.WorkspaceInvitation, error) {
+	return k.graphClient.GetPendingInvitations(ctx, userID)
+}
+
+// CreateShareLink creates a shareable link for a workspace
+func (k *Kernel) CreateShareLink(ctx context.Context, workspaceNS, creatorID string, maxUses int, expiresAt *time.Time) (*graph.ShareLink, error) {
+	return k.graphClient.CreateShareLink(ctx, workspaceNS, creatorID, maxUses, expiresAt)
+}
+
+// JoinViaShareLink joins a workspace using a share link
+func (k *Kernel) JoinViaShareLink(ctx context.Context, token, userID string) (*graph.ShareLink, error) {
+	return k.graphClient.JoinViaShareLink(ctx, token, userID)
+}
+
+// RevokeShareLink revokes a share link
+func (k *Kernel) RevokeShareLink(ctx context.Context, token, userID string) error {
+	return k.graphClient.RevokeShareLink(ctx, token, userID)
+}
+
+// GetWorkspaceMembers gets all members of a workspace
+func (k *Kernel) GetWorkspaceMembers(ctx context.Context, workspaceNS string) ([]graph.WorkspaceMember, error) {
+	return k.graphClient.GetWorkspaceMembers(ctx, workspaceNS)
+}
+
+// IsWorkspaceMember checks if a user is a member of a workspace
+func (k *Kernel) IsWorkspaceMember(ctx context.Context, workspaceNS, userID string) (bool, error) {
+	return k.graphClient.IsWorkspaceMember(ctx, workspaceNS, userID)
 }
 
 // GetGraphClient returns the graph client for external use (e.g., Pre-Cortex)
@@ -237,15 +293,8 @@ func (k *Kernel) Start() error {
 	}
 	k.reflectionEngine = reflection.NewEngine(reflectionCfg, k.logger)
 
-	// Initialize Wisdom Manager (Cold Path)
-	wisdomCfg := wisdom.Config{
-		BatchSize:     k.config.WisdomBatchSize,
-		FlushInterval: k.config.WisdomFlushInterval,
-		AIServiceURL:  k.config.AIServicesURL,
-	}
-	k.wisdomManager = wisdom.NewManager(wisdomCfg, k.graphClient, k.logger)
-
 	// Initialize Local AI (Hot Path) - Using Ollama for embeddings
+	// Must be initialized before WisdomManager for Hybrid RAG
 	ollamaEmbedder := local.NewOllamaEmbedder("", "") // Uses OLLAMA_URL env var
 
 	// Try to ensure the embedding model is available
@@ -254,6 +303,23 @@ func (k *Kernel) Start() error {
 	}
 	k.localEmbedder = ollamaEmbedder
 	k.logger.Info("Ollama embedder initialized (Hot Path enabled)")
+
+	// Initialize Vector Index (Qdrant) for Hybrid RAG
+	// Must be initialized before WisdomManager for embedding storage
+	k.vectorIndex = NewVectorIndex(k.config.QdrantURL, k.logger)
+	if err := k.vectorIndex.Initialize(k.ctx); err != nil {
+		k.logger.Warn("Failed to initialize Qdrant vector index (will retry on first use)", zap.Error(err))
+	} else {
+		k.logger.Info("Qdrant vector index initialized (Hybrid RAG enabled)")
+	}
+
+	// Initialize Wisdom Manager (Cold Path) with Hybrid RAG support
+	wisdomCfg := wisdom.Config{
+		BatchSize:     k.config.WisdomBatchSize,
+		FlushInterval: k.config.WisdomFlushInterval,
+		AIServiceURL:  k.config.AIServicesURL,
+	}
+	k.wisdomManager = wisdom.NewManager(wisdomCfg, k.graphClient, k.localEmbedder, k.vectorIndex, k.logger)
 
 	// Initialize ingestion pipeline
 	k.ingestionPipeline = NewIngestionPipeline(
@@ -268,11 +334,13 @@ func (k *Kernel) Start() error {
 		k.logger,
 	)
 
-	// Initialize consultation handler
+	// Initialize consultation handler with Hybrid RAG support
 	k.consultationHandler = NewConsultationHandler(
 		k.graphClient,
 		k.queryBuilder,
 		k.redisClient,
+		k.vectorIndex,
+		k.localEmbedder,
 		k.config.AIServicesURL,
 		k.logger,
 	)

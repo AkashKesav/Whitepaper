@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -61,6 +62,17 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 	api.Handle("/groups/{id}/members/{username}", protect(s.handleRemoveGroupMember)).Methods("DELETE")
 	api.Handle("/groups/{id}", protect(s.handleDeleteGroup)).Methods("DELETE")
 	api.Handle("/groups/{id}/subusers", protect(s.handleCreateSubuser)).Methods("POST")
+
+	// Workspace Collaboration
+	api.Handle("/workspaces/{id}/invite", protect(s.handleInviteToWorkspace)).Methods("POST")
+	api.Handle("/workspaces/{id}/share-link", protect(s.handleCreateShareLink)).Methods("POST")
+	api.Handle("/workspaces/{id}/share-link/{token}", protect(s.handleRevokeShareLink)).Methods("DELETE")
+	api.Handle("/workspaces/{id}/members", protect(s.handleGetWorkspaceMembers)).Methods("GET")
+	api.Handle("/workspaces/{id}/members/{username}", protect(s.handleRemoveWorkspaceMember)).Methods("DELETE")
+	api.Handle("/invitations", protect(s.handleGetPendingInvitations)).Methods("GET")
+	api.Handle("/invitations/{id}/accept", protect(s.handleAcceptInvitation)).Methods("POST")
+	api.Handle("/invitations/{id}/decline", protect(s.handleDeclineInvitation)).Methods("POST")
+	api.Handle("/join/{token}", protect(s.handleJoinViaShareLink)).Methods("POST")
 
 	// Health check (public, on root router or api?)
 	r.HandleFunc("/health", s.handleHealth).Methods("GET")
@@ -588,4 +600,321 @@ func (s *Server) handleCreateSubuser(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"status": "subuser_created", "username": req.Username})
+}
+
+// ============================================================================
+// WORKSPACE COLLABORATION HANDLERS
+// ============================================================================
+
+// InviteRequest represents a request to invite a user to a workspace
+type InviteRequest struct {
+	Username string `json:"username"`
+	Role     string `json:"role"` // "admin" or "subuser"
+}
+
+// InviteResponse represents the response for an invitation
+type InviteResponse struct {
+	InvitationID string `json:"invitation_id"`
+	Status       string `json:"status"`
+	Message      string `json:"message"`
+}
+
+func (s *Server) handleInviteToWorkspace(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	vars := mux.Vars(r)
+	workspaceNS := vars["id"]
+
+	// Check if user is admin
+	isAdmin, err := s.agent.mkClient.IsGroupAdmin(r.Context(), workspaceNS, userID)
+	if err != nil {
+		s.logger.Error("Failed to check admin status", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !isAdmin {
+		http.Error(w, "Only admins can invite users", http.StatusForbidden)
+		return
+	}
+
+	var req InviteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Username == "" {
+		http.Error(w, "Username is required", http.StatusBadRequest)
+		return
+	}
+
+	// Default role to subuser
+	if req.Role == "" {
+		req.Role = "subuser"
+	}
+
+	invite, err := s.agent.mkClient.InviteToWorkspace(r.Context(), workspaceNS, userID, req.Username, req.Role)
+	if err != nil {
+		s.logger.Error("Failed to create invitation", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(InviteResponse{
+		InvitationID: invite.UID,
+		Status:       "pending",
+		Message:      fmt.Sprintf("Invitation sent to %s", req.Username),
+	})
+}
+
+func (s *Server) handleGetPendingInvitations(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+
+	invitations, err := s.agent.mkClient.GetPendingInvitations(r.Context(), userID)
+	if err != nil {
+		s.logger.Error("Failed to get invitations", zap.Error(err))
+		http.Error(w, "Failed to get invitations", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"invitations": invitations,
+	})
+}
+
+func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	vars := mux.Vars(r)
+	invitationID := vars["id"]
+
+	if err := s.agent.mkClient.AcceptInvitation(r.Context(), invitationID, userID); err != nil {
+		s.logger.Error("Failed to accept invitation", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "accepted",
+		"message": "You have joined the workspace",
+	})
+}
+
+func (s *Server) handleDeclineInvitation(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	vars := mux.Vars(r)
+	invitationID := vars["id"]
+
+	if err := s.agent.mkClient.DeclineInvitation(r.Context(), invitationID, userID); err != nil {
+		s.logger.Error("Failed to decline invitation", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "declined",
+	})
+}
+
+// CreateShareLinkRequest represents a request to create a share link
+type CreateShareLinkRequest struct {
+	MaxUses        int `json:"max_uses"`         // 0 = unlimited
+	ExpiresInHours int `json:"expires_in_hours"` // 0 = never
+}
+
+// ShareLinkResponse represents the response for a share link
+type ShareLinkResponse struct {
+	Token     string  `json:"token"`
+	URL       string  `json:"url"`
+	MaxUses   int     `json:"max_uses"`
+	ExpiresAt *string `json:"expires_at,omitempty"`
+}
+
+func (s *Server) handleCreateShareLink(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	vars := mux.Vars(r)
+	workspaceNS := vars["id"]
+
+	// Check if user is admin
+	isAdmin, err := s.agent.mkClient.IsGroupAdmin(r.Context(), workspaceNS, userID)
+	if err != nil {
+		s.logger.Error("Failed to check admin status", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !isAdmin {
+		http.Error(w, "Only admins can create share links", http.StatusForbidden)
+		return
+	}
+
+	var req CreateShareLinkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// Allow empty body (use defaults)
+		req = CreateShareLinkRequest{}
+	}
+
+	var expiresAt *time.Time
+	if req.ExpiresInHours > 0 {
+		t := time.Now().Add(time.Duration(req.ExpiresInHours) * time.Hour)
+		expiresAt = &t
+	}
+
+	link, err := s.agent.mkClient.CreateShareLink(r.Context(), workspaceNS, userID, req.MaxUses, expiresAt)
+	if err != nil {
+		s.logger.Error("Failed to create share link", zap.Error(err))
+		http.Error(w, "Failed to create share link", http.StatusInternalServerError)
+		return
+	}
+
+	resp := ShareLinkResponse{
+		Token:   link.Token,
+		URL:     fmt.Sprintf("/api/join/%s", link.Token),
+		MaxUses: link.MaxUses,
+	}
+	if link.ExpiresAt != nil {
+		expStr := link.ExpiresAt.Format(time.RFC3339)
+		resp.ExpiresAt = &expStr
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleJoinViaShareLink(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	if userID == "anonymous" {
+		http.Error(w, "Authentication required to join via share link", http.StatusUnauthorized)
+		return
+	}
+
+	vars := mux.Vars(r)
+	token := vars["token"]
+
+	link, err := s.agent.mkClient.JoinViaShareLink(r.Context(), token, userID)
+	if err != nil {
+		s.logger.Error("Failed to join via share link", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":       "joined",
+		"workspace_id": link.WorkspaceID,
+		"role":         link.Role,
+	})
+}
+
+func (s *Server) handleRevokeShareLink(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	vars := mux.Vars(r)
+	token := vars["token"]
+
+	if err := s.agent.mkClient.RevokeShareLink(r.Context(), token, userID); err != nil {
+		s.logger.Error("Failed to revoke share link", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "revoked",
+	})
+}
+
+func (s *Server) handleGetWorkspaceMembers(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	vars := mux.Vars(r)
+	workspaceNS := vars["id"]
+
+	// Check if user is a member
+	isMember, err := s.agent.mkClient.IsWorkspaceMember(r.Context(), workspaceNS, userID)
+	if err != nil {
+		s.logger.Error("Failed to check membership", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !isMember {
+		http.Error(w, "You are not a member of this workspace", http.StatusForbidden)
+		return
+	}
+
+	members, err := s.agent.mkClient.GetWorkspaceMembers(r.Context(), workspaceNS)
+	if err != nil {
+		s.logger.Error("Failed to get members", zap.Error(err))
+		http.Error(w, "Failed to get members", http.StatusInternalServerError)
+		return
+	}
+
+	// Convert to JSON-friendly format
+	var memberList []map[string]interface{}
+	for _, m := range members {
+		memberList = append(memberList, map[string]interface{}{
+			"username":  m.User.Name,
+			"role":      m.Role,
+			"joined_at": m.JoinedAt,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"members": memberList,
+	})
+}
+
+func (s *Server) handleRemoveWorkspaceMember(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	vars := mux.Vars(r)
+	workspaceNS := vars["id"]
+	targetUser := vars["username"]
+
+	// Check if user is admin OR trying to leave themselves
+	isAdmin, err := s.agent.mkClient.IsGroupAdmin(r.Context(), workspaceNS, userID)
+	if err != nil {
+		s.logger.Error("Failed to check admin status", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Allow removing self (leave workspace) or Admin removing others
+	if !isAdmin && userID != targetUser {
+		http.Error(w, "Only admins can remove other members", http.StatusForbidden)
+		return
+	}
+
+	// Prevent admin from removing themselves if they're the only admin
+	if userID == targetUser && isAdmin {
+		members, _ := s.agent.mkClient.GetWorkspaceMembers(r.Context(), workspaceNS)
+		adminCount := 0
+		for _, m := range members {
+			if m.Role == "admin" {
+				adminCount++
+			}
+		}
+		if adminCount <= 1 {
+			http.Error(w, "Cannot leave workspace: you are the only admin", http.StatusBadRequest)
+			return
+		}
+	}
+
+	if err := s.agent.mkClient.RemoveGroupMember(r.Context(), workspaceNS, targetUser); err != nil {
+		s.logger.Error("Failed to remove member", zap.Error(err))
+		http.Error(w, fmt.Sprintf("Failed to remove member: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	s.logger.Info("Member removed from workspace",
+		zap.String("workspace", workspaceNS),
+		zap.String("removed_user", targetUser),
+		zap.String("by", userID))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "removed",
+		"message": fmt.Sprintf("User %s removed from workspace", targetUser),
+	})
 }

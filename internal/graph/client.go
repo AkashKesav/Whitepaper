@@ -3,6 +3,8 @@ package graph
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -242,6 +244,37 @@ func (c *Client) initSchema(ctx context.Context) error {
 		edge_activation: float .
 		edge_confidence: float .
 
+		# Workspace Collaboration Types
+		type WorkspaceInvitation {
+			workspace_id
+			invitee_user_id
+			role
+			status
+			created_at
+			created_by
+		}
+
+		type ShareLink {
+			workspace_id
+			token
+			role
+			max_uses
+			current_uses
+			expires_at
+			is_active
+			created_at
+			created_by
+		}
+
+		# Workspace Collaboration Predicates
+		workspace_id: string @index(exact) .
+		invitee_user_id: string @index(exact) .
+		token: string @index(exact) .
+		max_uses: int .
+		current_uses: int .
+		expires_at: datetime .
+		is_active: bool @index(bool) .
+		role: string @index(exact) .
 
 	`
 
@@ -865,6 +898,44 @@ func (c *Client) Query(ctx context.Context, query string, vars map[string]string
 	return resp.Json, nil
 }
 
+// GetNodesByUIDs fetches multiple nodes by their UIDs in a single query
+// Used by Hybrid RAG to retrieve full node data after vector search
+func (c *Client) GetNodesByUIDs(ctx context.Context, uids []string) ([]Node, error) {
+	if len(uids) == 0 {
+		return nil, nil
+	}
+
+	// Build UID list for query
+	uidList := strings.Join(uids, ",")
+
+	query := fmt.Sprintf(`{
+		nodes(func: uid(%s)) {
+			uid
+			dgraph.type
+			name
+			description
+			tags
+			activation
+			created_at
+			namespace
+		}
+	}`, uidList)
+
+	resp, err := c.dg.NewReadOnlyTxn().Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get nodes by UIDs: %w", err)
+	}
+
+	var result struct {
+		Nodes []Node `json:"nodes"`
+	}
+	if err := json.Unmarshal(resp.Json, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal nodes: %w", err)
+	}
+
+	return result.Nodes, nil
+}
+
 // Mutate executes a raw DGraph mutation
 func (c *Client) Mutate(ctx context.Context, mutation *api.Mutation) (*api.Response, error) {
 	txn := c.dg.NewTxn()
@@ -1241,11 +1312,13 @@ func (c *Client) IsGroupAdmin(ctx context.Context, groupNamespace, userID string
 }
 
 // IngestWisdomBatch batch creates summary nodes and entities for the Wisdom Layer
-func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summary string, entities []ExtractedEntity) error {
+// Returns the UID of the created summary node for vector indexing
+func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summary string, entities []ExtractedEntity) (string, error) {
 	var nquads strings.Builder
 
 	// 1. Create Summary Node (Unique logical fact per batch timestamp for now)
-	summaryNode := fmt.Sprintf("_:summary_%d", time.Now().UnixNano())
+	summaryBlankID := fmt.Sprintf("summary_%d", time.Now().UnixNano())
+	summaryNode := "_:" + summaryBlankID
 
 	nquads.WriteString(fmt.Sprintf(`%s <dgraph.type> "Fact" .
 `, summaryNode))
@@ -1290,10 +1363,670 @@ func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summar
 		CommitNow: true,
 	}
 
-	_, err := txn.Mutate(ctx, mu)
+	resp, err := txn.Mutate(ctx, mu)
 	if err != nil {
-		return fmt.Errorf("failed to ingest wisdom batch: %w", err)
+		return "", fmt.Errorf("failed to ingest wisdom batch: %w", err)
 	}
 
+	// Extract the UID of the created summary node
+	summaryUID := ""
+	if uid, ok := resp.Uids[summaryBlankID]; ok {
+		summaryUID = uid
+	}
+
+	return summaryUID, nil
+}
+
+// ============================================================================
+// WORKSPACE COLLABORATION FUNCTIONS
+// ============================================================================
+
+// InviteToWorkspace creates a username-based invitation to join a workspace
+func (c *Client) InviteToWorkspace(ctx context.Context, workspaceNS, inviterID, inviteeUsername, role string) (*WorkspaceInvitation, error) {
+	// Validate role
+	if role != "admin" && role != "subuser" {
+		return nil, fmt.Errorf("invalid role: %s (must be 'admin' or 'subuser')", role)
+	}
+
+	// Check if invitee exists
+	inviteeNode, err := c.FindNodeByName(ctx, inviteeUsername, NodeTypeUser)
+	if err != nil || inviteeNode == nil {
+		return nil, fmt.Errorf("user %s not found", inviteeUsername)
+	}
+
+	// Check if already a member
+	isMember, err := c.IsWorkspaceMember(ctx, workspaceNS, inviteeUsername)
+	if err != nil {
+		return nil, err
+	}
+	if isMember {
+		return nil, fmt.Errorf("user %s is already a member of this workspace", inviteeUsername)
+	}
+
+	// Check for existing pending invitation
+	existingInvite, err := c.findPendingInvitation(ctx, workspaceNS, inviteeUsername)
+	if err == nil && existingInvite != nil {
+		return nil, fmt.Errorf("pending invitation already exists for user %s", inviteeUsername)
+	}
+
+	// Create invitation
+	blankNode := fmt.Sprintf("_:invite_%d", time.Now().UnixNano())
+	var nquads strings.Builder
+
+	nquads.WriteString(fmt.Sprintf(`%s <dgraph.type> "WorkspaceInvitation" .
+`, blankNode))
+	nquads.WriteString(fmt.Sprintf(`%s <workspace_id> %q .
+`, blankNode, workspaceNS))
+	nquads.WriteString(fmt.Sprintf(`%s <invitee_user_id> %q .
+`, blankNode, inviteeUsername))
+	nquads.WriteString(fmt.Sprintf(`%s <role> %q .
+`, blankNode, role))
+	nquads.WriteString(fmt.Sprintf(`%s <status> "pending" .
+`, blankNode))
+	nquads.WriteString(fmt.Sprintf(`%s <created_at> "%s"^^<xs:dateTime> .
+`, blankNode, time.Now().Format(time.RFC3339)))
+	nquads.WriteString(fmt.Sprintf(`%s <created_by> %q .
+`, blankNode, inviterID))
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquads.String()),
+		CommitNow: true,
+	}
+
+	resp, err := txn.Mutate(ctx, mu)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create invitation: %w", err)
+	}
+
+	inviteUID := ""
+	blankKey := blankNode[2:]
+	if uid, ok := resp.Uids[blankKey]; ok {
+		inviteUID = uid
+	}
+
+	c.logger.Info("Created workspace invitation",
+		zap.String("workspace", workspaceNS),
+		zap.String("invitee", inviteeUsername),
+		zap.String("role", role))
+
+	return &WorkspaceInvitation{
+		UID:           inviteUID,
+		WorkspaceID:   workspaceNS,
+		InviteeUserID: inviteeUsername,
+		Role:          role,
+		Status:        "pending",
+		CreatedAt:     time.Now(),
+		CreatedBy:     inviterID,
+	}, nil
+}
+
+// findPendingInvitation finds an existing pending invitation
+func (c *Client) findPendingInvitation(ctx context.Context, workspaceNS, username string) (*WorkspaceInvitation, error) {
+	query := `query FindInvite($ws: string, $user: string) {
+		invite(func: type(WorkspaceInvitation)) @filter(eq(workspace_id, $ws) AND eq(invitee_user_id, $user) AND eq(status, "pending")) {
+			uid
+			workspace_id
+			invitee_user_id
+			role
+			status
+			created_at
+			created_by
+		}
+	}`
+
+	resp, err := c.Query(ctx, query, map[string]string{
+		"$ws":   workspaceNS,
+		"$user": username,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Invite []WorkspaceInvitation `json:"invite"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+
+	if len(result.Invite) == 0 {
+		return nil, nil
+	}
+
+	return &result.Invite[0], nil
+}
+
+// IsWorkspaceMember checks if a user is a member (admin or subuser) of the workspace
+func (c *Client) IsWorkspaceMember(ctx context.Context, workspaceNS, userID string) (bool, error) {
+	userNode, err := c.FindNodeByName(ctx, userID, NodeTypeUser)
+	if err != nil || userNode == nil {
+		return false, nil
+	}
+
+	// NOTE: uid_in() requires a UID, not a string variable, so we embed the UID directly
+	query := fmt.Sprintf(`query IsMember($ns: string) {
+		g(func: eq(namespace, $ns)) @filter(type(Group) AND (uid_in(group_has_admin, %s) OR uid_in(group_has_member, %s))) {
+			uid
+		}
+	}`, userNode.UID, userNode.UID)
+
+	resp, err := c.Query(ctx, query, map[string]string{
+		"$ns": workspaceNS,
+	})
+	if err != nil {
+		return false, err
+	}
+
+	var res struct {
+		G []struct {
+			UID string `json:"uid"`
+		} `json:"g"`
+	}
+	if err := json.Unmarshal(resp, &res); err != nil {
+		return false, err
+	}
+
+	return len(res.G) > 0, nil
+}
+
+// AcceptInvitation accepts a pending invitation and adds user to workspace
+func (c *Client) AcceptInvitation(ctx context.Context, invitationUID, userID string) error {
+	// Get the invitation
+	invite, err := c.getInvitation(ctx, invitationUID)
+	if err != nil {
+		return err
+	}
+
+	// Verify this invitation is for this user
+	if invite.InviteeUserID != userID {
+		return fmt.Errorf("invitation is not for user %s", userID)
+	}
+
+	if invite.Status != "pending" {
+		return fmt.Errorf("invitation is not pending (status: %s)", invite.Status)
+	}
+
+	// Add user to workspace with appropriate role
+	if invite.Role == "admin" {
+		if err := c.addWorkspaceAdmin(ctx, invite.WorkspaceID, userID); err != nil {
+			return fmt.Errorf("failed to add admin: %w", err)
+		}
+	} else {
+		if err := c.AddGroupMember(ctx, invite.WorkspaceID, userID); err != nil {
+			return fmt.Errorf("failed to add member: %w", err)
+		}
+	}
+
+	// Update invitation status
+	nquad := fmt.Sprintf(`<%s> <status> "accepted" .`, invitationUID)
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquad),
+		CommitNow: true,
+	}
+
+	if _, err := txn.Mutate(ctx, mu); err != nil {
+		return fmt.Errorf("failed to update invitation status: %w", err)
+	}
+
+	c.logger.Info("Invitation accepted",
+		zap.String("invitation", invitationUID),
+		zap.String("user", userID))
+
 	return nil
+}
+
+// addWorkspaceAdmin adds a user as admin to a workspace
+func (c *Client) addWorkspaceAdmin(ctx context.Context, workspaceNS, userID string) error {
+	// Find group by namespace
+	q := `query FindGroup($ns: string) {
+		g(func: eq(namespace, $ns)) @filter(type(Group)) {
+			uid
+		}
+	}`
+	resp, err := c.Query(ctx, q, map[string]string{"$ns": workspaceNS})
+	if err != nil {
+		return err
+	}
+
+	var res struct {
+		G []struct {
+			UID string `json:"uid"`
+		} `json:"g"`
+	}
+	json.Unmarshal(resp, &res)
+	if len(res.G) == 0 {
+		return fmt.Errorf("group %s not found", workspaceNS)
+	}
+	groupUID := res.G[0].UID
+
+	// Find User
+	userNode, err := c.FindNodeByName(ctx, userID, NodeTypeUser)
+	if err != nil || userNode == nil {
+		return fmt.Errorf("user %s not found", userID)
+	}
+
+	nquad := fmt.Sprintf(`<%s> <group_has_admin> <%s> .`, groupUID, userNode.UID)
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquad),
+		CommitNow: true,
+	}
+
+	if _, err := txn.Mutate(ctx, mu); err != nil {
+		return fmt.Errorf("failed to add admin: %w", err)
+	}
+	return nil
+}
+
+// getInvitation retrieves an invitation by UID
+func (c *Client) getInvitation(ctx context.Context, invitationUID string) (*WorkspaceInvitation, error) {
+	query := `query GetInvite($uid: string) {
+		invite(func: uid($uid)) @filter(type(WorkspaceInvitation)) {
+			uid
+			workspace_id
+			invitee_user_id
+			role
+			status
+			created_at
+			created_by
+		}
+	}`
+
+	resp, err := c.Query(ctx, query, map[string]string{"$uid": invitationUID})
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Invite []WorkspaceInvitation `json:"invite"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+
+	if len(result.Invite) == 0 {
+		return nil, fmt.Errorf("invitation not found: %s", invitationUID)
+	}
+
+	return &result.Invite[0], nil
+}
+
+// DeclineInvitation declines a pending invitation
+func (c *Client) DeclineInvitation(ctx context.Context, invitationUID, userID string) error {
+	// Get the invitation
+	invite, err := c.getInvitation(ctx, invitationUID)
+	if err != nil {
+		return err
+	}
+
+	// Verify this invitation is for this user
+	if invite.InviteeUserID != userID {
+		return fmt.Errorf("invitation is not for user %s", userID)
+	}
+
+	if invite.Status != "pending" {
+		return fmt.Errorf("invitation is not pending (status: %s)", invite.Status)
+	}
+
+	// Update invitation status
+	nquad := fmt.Sprintf(`<%s> <status> "declined" .`, invitationUID)
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquad),
+		CommitNow: true,
+	}
+
+	if _, err := txn.Mutate(ctx, mu); err != nil {
+		return fmt.Errorf("failed to update invitation status: %w", err)
+	}
+
+	c.logger.Info("Invitation declined",
+		zap.String("invitation", invitationUID),
+		zap.String("user", userID))
+
+	return nil
+}
+
+// GetPendingInvitations returns all pending invitations for a user
+func (c *Client) GetPendingInvitations(ctx context.Context, userID string) ([]WorkspaceInvitation, error) {
+	query := `query GetInvites($user: string) {
+		invites(func: type(WorkspaceInvitation)) @filter(eq(invitee_user_id, $user) AND eq(status, "pending")) {
+			uid
+			workspace_id
+			invitee_user_id
+			role
+			status
+			created_at
+			created_by
+		}
+	}`
+
+	resp, err := c.Query(ctx, query, map[string]string{"$user": userID})
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Invites []WorkspaceInvitation `json:"invites"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+
+	return result.Invites, nil
+}
+
+// CreateShareLink generates a shareable link for a workspace
+func (c *Client) CreateShareLink(ctx context.Context, workspaceNS, creatorID string, maxUses int, expiresAt *time.Time) (*ShareLink, error) {
+	// Generate cryptographic token
+	token := generateSecureToken()
+
+	blankNode := fmt.Sprintf("_:sharelink_%d", time.Now().UnixNano())
+	var nquads strings.Builder
+
+	nquads.WriteString(fmt.Sprintf(`%s <dgraph.type> "ShareLink" .
+`, blankNode))
+	nquads.WriteString(fmt.Sprintf(`%s <workspace_id> %q .
+`, blankNode, workspaceNS))
+	nquads.WriteString(fmt.Sprintf(`%s <token> %q .
+`, blankNode, token))
+	nquads.WriteString(fmt.Sprintf(`%s <role> "subuser" .
+`, blankNode))
+	nquads.WriteString(fmt.Sprintf(`%s <max_uses> "%d"^^<xs:int> .
+`, blankNode, maxUses))
+	nquads.WriteString(fmt.Sprintf(`%s <current_uses> "0"^^<xs:int> .
+`, blankNode))
+	nquads.WriteString(fmt.Sprintf(`%s <is_active> "true"^^<xs:boolean> .
+`, blankNode))
+	nquads.WriteString(fmt.Sprintf(`%s <created_at> "%s"^^<xs:dateTime> .
+`, blankNode, time.Now().Format(time.RFC3339)))
+	nquads.WriteString(fmt.Sprintf(`%s <created_by> %q .
+`, blankNode, creatorID))
+
+	if expiresAt != nil {
+		nquads.WriteString(fmt.Sprintf(`%s <expires_at> "%s"^^<xs:dateTime> .
+`, blankNode, expiresAt.Format(time.RFC3339)))
+	}
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquads.String()),
+		CommitNow: true,
+	}
+
+	resp, err := txn.Mutate(ctx, mu)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create share link: %w", err)
+	}
+
+	linkUID := ""
+	blankKey := blankNode[2:]
+	if uid, ok := resp.Uids[blankKey]; ok {
+		linkUID = uid
+	}
+
+	c.logger.Info("Created share link",
+		zap.String("workspace", workspaceNS),
+		zap.String("token", token[:8]+"..."),
+		zap.Int("max_uses", maxUses))
+
+	return &ShareLink{
+		UID:         linkUID,
+		WorkspaceID: workspaceNS,
+		Token:       token,
+		Role:        "subuser",
+		MaxUses:     maxUses,
+		CurrentUses: 0,
+		ExpiresAt:   expiresAt,
+		IsActive:    true,
+		CreatedAt:   time.Now(),
+		CreatedBy:   creatorID,
+	}, nil
+}
+
+// generateSecureToken creates a cryptographically secure random token
+func generateSecureToken() string {
+	bytes := make([]byte, 32)
+	_, err := rand.Read(bytes)
+	if err != nil {
+		// Fallback to UUID if crypto/rand fails
+		return uuid.New().String() + uuid.New().String()
+	}
+	return base64.URLEncoding.EncodeToString(bytes)
+}
+
+// JoinViaShareLink allows an authenticated user to join a workspace using a share link
+func (c *Client) JoinViaShareLink(ctx context.Context, token, userID string) (*ShareLink, error) {
+	// Get the share link
+	link, err := c.getShareLink(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate the link
+	if !link.IsActive {
+		return nil, fmt.Errorf("share link has been revoked")
+	}
+	if link.ExpiresAt != nil && time.Now().After(*link.ExpiresAt) {
+		return nil, fmt.Errorf("share link has expired")
+	}
+	if link.MaxUses > 0 && link.CurrentUses >= link.MaxUses {
+		return nil, fmt.Errorf("share link usage limit reached")
+	}
+
+	// Check if already a member
+	isMember, err := c.IsWorkspaceMember(ctx, link.WorkspaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if isMember {
+		return nil, fmt.Errorf("you are already a member of this workspace")
+	}
+
+	// Add user to workspace as subuser
+	if err := c.AddGroupMember(ctx, link.WorkspaceID, userID); err != nil {
+		return nil, fmt.Errorf("failed to join workspace: %w", err)
+	}
+
+	// Increment usage count
+	nquad := fmt.Sprintf(`<%s> <current_uses> "%d"^^<xs:int> .`, link.UID, link.CurrentUses+1)
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquad),
+		CommitNow: true,
+	}
+
+	if _, err := txn.Mutate(ctx, mu); err != nil {
+		c.logger.Warn("Failed to increment share link usage", zap.Error(err))
+	}
+
+	c.logger.Info("User joined via share link",
+		zap.String("user", userID),
+		zap.String("workspace", link.WorkspaceID))
+
+	return link, nil
+}
+
+// getShareLink retrieves a share link by token
+func (c *Client) getShareLink(ctx context.Context, token string) (*ShareLink, error) {
+	query := `query GetLink($token: string) {
+		link(func: type(ShareLink)) @filter(eq(token, $token)) {
+			uid
+			workspace_id
+			token
+			role
+			max_uses
+			current_uses
+			expires_at
+			is_active
+			created_at
+			created_by
+		}
+	}`
+
+	resp, err := c.Query(ctx, query, map[string]string{"$token": token})
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Link []ShareLink `json:"link"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+
+	if len(result.Link) == 0 {
+		return nil, fmt.Errorf("share link not found")
+	}
+
+	return &result.Link[0], nil
+}
+
+// RevokeShareLink deactivates a share link
+func (c *Client) RevokeShareLink(ctx context.Context, token, userID string) error {
+	// Get the share link
+	link, err := c.getShareLink(ctx, token)
+	if err != nil {
+		return err
+	}
+
+	// Verify user is admin of the workspace
+	isAdmin, err := c.IsGroupAdmin(ctx, link.WorkspaceID, userID)
+	if err != nil {
+		return err
+	}
+	if !isAdmin {
+		return fmt.Errorf("only admins can revoke share links")
+	}
+
+	// Update is_active to false
+	nquad := fmt.Sprintf(`<%s> <is_active> "false"^^<xs:boolean> .`, link.UID)
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquad),
+		CommitNow: true,
+	}
+
+	if _, err := txn.Mutate(ctx, mu); err != nil {
+		return fmt.Errorf("failed to revoke share link: %w", err)
+	}
+
+	c.logger.Info("Share link revoked",
+		zap.String("token", token[:8]+"..."),
+		zap.String("by", userID))
+
+	return nil
+}
+
+// GetWorkspaceMembers returns all members of a workspace with their roles
+func (c *Client) GetWorkspaceMembers(ctx context.Context, workspaceNS string) ([]WorkspaceMember, error) {
+	query := `query GetMembers($ns: string) {
+		group(func: eq(namespace, $ns)) @filter(type(Group)) {
+			uid
+			name
+			group_has_admin {
+				uid
+				name
+				created_at
+			}
+			group_has_member {
+				uid
+				name
+				created_at
+			}
+		}
+	}`
+
+	resp, err := c.Query(ctx, query, map[string]string{"$ns": workspaceNS})
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Group []struct {
+			UID     string `json:"uid"`
+			Name    string `json:"name"`
+			Admins  []Node `json:"group_has_admin"`
+			Members []Node `json:"group_has_member"`
+		} `json:"group"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+
+	if len(result.Group) == 0 {
+		return nil, fmt.Errorf("workspace not found: %s", workspaceNS)
+	}
+
+	var members []WorkspaceMember
+
+	// Add admins
+	for _, admin := range result.Group[0].Admins {
+		members = append(members, WorkspaceMember{
+			User:     &admin,
+			Role:     "admin",
+			JoinedAt: admin.CreatedAt,
+		})
+	}
+
+	// Add subusers (members)
+	for _, member := range result.Group[0].Members {
+		members = append(members, WorkspaceMember{
+			User:     &member,
+			Role:     "subuser",
+			JoinedAt: member.CreatedAt,
+		})
+	}
+
+	return members, nil
+}
+
+// GetShareLinks returns all active share links for a workspace
+func (c *Client) GetShareLinks(ctx context.Context, workspaceNS string) ([]ShareLink, error) {
+	query := `query GetLinks($ws: string) {
+		links(func: type(ShareLink)) @filter(eq(workspace_id, $ws) AND eq(is_active, true)) {
+			uid
+			workspace_id
+			token
+			role
+			max_uses
+			current_uses
+			expires_at
+			is_active
+			created_at
+			created_by
+		}
+	}`
+
+	resp, err := c.Query(ctx, query, map[string]string{"$ws": workspaceNS})
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Links []ShareLink `json:"links"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+
+	return result.Links, nil
 }

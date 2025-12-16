@@ -138,6 +138,26 @@ func (p *IngestionPipeline) Ingest(ctx context.Context, event *graph.TranscriptE
 		zap.String("conversation_id", event.ConversationID),
 		zap.String("user_id", event.UserID))
 
+	// PERMISSION CHECK: For group namespaces, verify user is a member (write access)
+	namespace := event.Namespace
+	if namespace == "" {
+		namespace = fmt.Sprintf("user_%s", event.UserID)
+	}
+	if strings.HasPrefix(namespace, "group_") {
+		isMember, err := p.graphClient.IsWorkspaceMember(ctx, namespace, event.UserID)
+		if err != nil {
+			p.logger.Error("Failed to check workspace membership for write", zap.Error(err))
+			return fmt.Errorf("permission check failed: %w", err)
+		}
+		if !isMember {
+			p.logger.Warn("Write access denied: user is not a workspace member",
+				zap.String("user", event.UserID),
+				zap.String("workspace", namespace))
+			return fmt.Errorf("write access denied: not a member of workspace %s", namespace)
+		}
+		p.logger.Debug("Workspace write access verified", zap.String("namespace", namespace))
+	}
+
 	// Step 1: Hot Path - Local Embedding (Replacing External AI)
 	embedStart := time.Now()
 

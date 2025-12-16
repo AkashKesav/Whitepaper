@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"github.com/reflective-memory-kernel/internal/ai/local"
 	"github.com/reflective-memory-kernel/internal/graph"
 )
 
@@ -27,6 +28,10 @@ type ConsultationHandler struct {
 	redisClient   *redis.Client
 	aiServicesURL string
 	logger        *zap.Logger
+
+	// Hybrid RAG components
+	embedder    local.LocalEmbedder
+	vectorIndex *VectorIndex
 }
 
 // isUUIDLike checks if a string looks like a UUID (8-4-4-4-12 pattern)
@@ -44,6 +49,8 @@ func NewConsultationHandler(
 	graphClient *graph.Client,
 	queryBuilder *graph.QueryBuilder,
 	redisClient *redis.Client,
+	vectorIndex *VectorIndex,
+	embedder local.LocalEmbedder,
 	aiServicesURL string,
 	logger *zap.Logger,
 ) *ConsultationHandler {
@@ -53,6 +60,8 @@ func NewConsultationHandler(
 		redisClient:   redisClient,
 		aiServicesURL: aiServicesURL,
 		logger:        logger,
+		embedder:      embedder,
+		vectorIndex:   vectorIndex,
 	}
 }
 
@@ -72,6 +81,22 @@ func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.Consultatio
 	namespace := req.Namespace
 	if namespace == "" {
 		namespace = fmt.Sprintf("user_%s", req.UserID)
+	}
+
+	// PERMISSION CHECK: For group namespaces, verify user is a member
+	if strings.HasPrefix(namespace, "group_") {
+		isMember, err := h.graphClient.IsWorkspaceMember(ctx, namespace, req.UserID)
+		if err != nil {
+			h.logger.Error("Failed to check workspace membership", zap.Error(err))
+			return nil, fmt.Errorf("permission check failed: %w", err)
+		}
+		if !isMember {
+			h.logger.Warn("Access denied: user is not a workspace member",
+				zap.String("user", req.UserID),
+				zap.String("workspace", namespace))
+			return nil, fmt.Errorf("access denied: not a member of workspace %s", namespace)
+		}
+		h.logger.Debug("Workspace access verified", zap.String("namespace", namespace))
 	}
 
 	// STEP 0.5: Check Speculative Cache (Time Travel)
@@ -130,53 +155,14 @@ func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.Consultatio
 	return response, nil
 }
 
-// getUserKnowledge retrieves stored facts using hybrid approach:
-// - High activation nodes (frequently accessed)
-// - Recent nodes (newly added within last hour)
-// This ensures both relevant AND fresh memories are considered
+// getUserKnowledge retrieves stored facts using Hybrid RAG approach:
+// 1. Vector search for semantically similar nodes (NEW - Hybrid RAG)
+// 2. High activation nodes (frequently accessed)
+// 3. Recent nodes (newly added)
+// This ensures semantic relevance, importance, AND freshness are all considered
 func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace string, queryText string) ([]graph.Node, error) {
-	h.logger.Info("Fetching knowledge with hybrid approach", zap.String("query", queryText))
+	h.logger.Info("Fetching knowledge with Hybrid RAG approach", zap.String("query", queryText))
 
-	// Hybrid query: top 50 by activation + top 50 by recency
-	// namespace passed in
-
-	query := `query HybridKnowledge($namespace: string) {
-		by_activation(func: has(name), first: 50, orderdesc: activation) @filter(eq(namespace, $namespace)) {
-			uid
-			dgraph.type
-			name
-			description
-			tags
-			activation
-			created_at
-		}
-		by_recency(func: has(name), first: 50, orderdesc: created_at) @filter(eq(namespace, $namespace)) {
-			uid
-			dgraph.type
-			name
-			description
-			tags
-			activation
-			created_at
-		}
-	}`
-
-	resp, err := h.graphClient.Query(ctx, query, map[string]string{"$namespace": namespace})
-	if err != nil {
-		h.logger.Error("Query failed", zap.Error(err))
-		return nil, err
-	}
-
-	var result struct {
-		ByActivation []graph.Node `json:"by_activation"`
-		ByRecency    []graph.Node `json:"by_recency"`
-	}
-	if err := json.Unmarshal(resp, &result); err != nil {
-		h.logger.Error("Failed to unmarshal nodes", zap.Error(err))
-		return nil, err
-	}
-
-	// Merge and deduplicate, filter out User nodes and Conversation nodes
 	seen := make(map[string]bool)
 	var merged []graph.Node
 
@@ -204,7 +190,75 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace st
 		return true
 	}
 
-	// Add high-activation first (priority)
+	// STEP 1: Vector search for semantically similar nodes (Hybrid RAG)
+	if h.embedder != nil && h.vectorIndex != nil {
+		queryVec, err := h.embedder.Embed(queryText)
+		if err != nil {
+			h.logger.Warn("Failed to embed query for vector search", zap.Error(err))
+		} else if len(queryVec) > 0 {
+			uids, scores, err := h.vectorIndex.Search(ctx, namespace, queryVec, 20)
+			if err != nil {
+				h.logger.Warn("Vector search failed", zap.Error(err))
+			} else if len(uids) > 0 {
+				// Fetch full node data for vector search results
+				vectorNodes, err := h.graphClient.GetNodesByUIDs(ctx, uids)
+				if err != nil {
+					h.logger.Warn("Failed to fetch vector search results", zap.Error(err))
+				} else {
+					h.logger.Info("Vector search found candidates",
+						zap.Int("count", len(vectorNodes)),
+						zap.Float32("top_score", scores[0]))
+
+					// Add vector results first (highest priority - semantic match)
+					for _, node := range vectorNodes {
+						if !seen[node.UID] && isValidNode(node) {
+							seen[node.UID] = true
+							merged = append(merged, node)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// STEP 2: Get nodes by activation and recency (existing logic)
+	query := `query HybridKnowledge($namespace: string) {
+		by_activation(func: has(name), first: 50, orderdesc: activation) @filter(eq(namespace, $namespace)) {
+			uid
+			dgraph.type
+			name
+			description
+			tags
+			activation
+			created_at
+		}
+		by_recency(func: has(name), first: 50, orderdesc: created_at) @filter(eq(namespace, $namespace)) {
+			uid
+			dgraph.type
+			name
+			description
+			tags
+			activation
+			created_at
+		}
+	}`
+
+	resp, err := h.graphClient.Query(ctx, query, map[string]string{"$namespace": namespace})
+	if err != nil {
+		h.logger.Error("Query failed", zap.Error(err))
+		return merged, err // Return vector results if we have them
+	}
+
+	var result struct {
+		ByActivation []graph.Node `json:"by_activation"`
+		ByRecency    []graph.Node `json:"by_recency"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		h.logger.Error("Failed to unmarshal nodes", zap.Error(err))
+		return merged, err
+	}
+
+	// Add high-activation nodes (after vector results)
 	for _, node := range result.ByActivation {
 		if !seen[node.UID] && isValidNode(node) {
 			seen[node.UID] = true
@@ -220,10 +274,21 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace st
 		}
 	}
 
-	h.logger.Info("Fetched hybrid knowledge",
+	vectorCount := 0
+	if h.embedder != nil && h.vectorIndex != nil {
+		for _, node := range merged {
+			if seen[node.UID] {
+				vectorCount++
+				break // Count once for logging if vector was used
+			}
+		}
+	}
+
+	h.logger.Info("Fetched Hybrid RAG knowledge",
 		zap.Int("by_activation", len(result.ByActivation)),
 		zap.Int("by_recency", len(result.ByRecency)),
-		zap.Int("merged_filtered", len(merged)))
+		zap.Int("merged_filtered", len(merged)),
+		zap.Bool("vector_search_used", h.embedder != nil && h.vectorIndex != nil))
 
 	return merged, nil
 }

@@ -108,6 +108,9 @@ type Node struct {
 	SourceConversationID string  `json:"source_conversation_id,omitempty"`
 	Confidence           float64 `json:"confidence,omitempty"`
 	Namespace            string  `json:"namespace,omitempty"` // "user_<UUID>" or "group_<UUID>"
+
+	// Vector embedding for Hybrid RAG (768-dim from nomic-embed-text)
+	Embedding []float32 `json:"embedding,omitempty"`
 }
 
 // GetType returns the primary type of the node
@@ -184,10 +187,47 @@ type Group struct {
 	DType       []string  `json:"dgraph.type,omitempty"`
 	Name        string    `json:"name,omitempty"`
 	Description string    `json:"description,omitempty"`
+	Namespace   string    `json:"namespace,omitempty"`
 	CreatedBy   *Node     `json:"created_by,omitempty"`
-	Members     []Node    `json:"group_members,omitempty"`
+	Admins      []Node    `json:"group_has_admin,omitempty"`
+	Members     []Node    `json:"group_has_member,omitempty"`
 	CreatedAt   time.Time `json:"created_at,omitempty"`
 	UpdatedAt   time.Time `json:"updated_at,omitempty"`
+}
+
+// WorkspaceMember represents a user's membership in a workspace with role info
+type WorkspaceMember struct {
+	User      *Node     `json:"user,omitempty"`
+	Role      string    `json:"role,omitempty"` // "admin" or "subuser"
+	JoinedAt  time.Time `json:"joined_at,omitempty"`
+	InvitedBy string    `json:"invited_by,omitempty"`
+}
+
+// WorkspaceInvitation represents a pending username-based invitation
+type WorkspaceInvitation struct {
+	UID           string    `json:"uid,omitempty"`
+	DType         []string  `json:"dgraph.type,omitempty"`
+	WorkspaceID   string    `json:"workspace_id,omitempty"`    // Group namespace (e.g., "group_<UUID>")
+	InviteeUserID string    `json:"invitee_user_id,omitempty"` // Username of invitee
+	Role          string    `json:"role,omitempty"`            // "admin" or "subuser"
+	Status        string    `json:"status,omitempty"`          // "pending", "accepted", "declined"
+	CreatedAt     time.Time `json:"created_at,omitempty"`
+	CreatedBy     string    `json:"created_by,omitempty"` // Username of inviter
+}
+
+// ShareLink represents a shareable link for workspace access (requires authentication)
+type ShareLink struct {
+	UID         string     `json:"uid,omitempty"`
+	DType       []string   `json:"dgraph.type,omitempty"`
+	WorkspaceID string     `json:"workspace_id,omitempty"` // Group namespace
+	Token       string     `json:"token,omitempty"`        // Cryptographic token for URL
+	Role        string     `json:"role,omitempty"`         // Always "subuser" for share links
+	MaxUses     int        `json:"max_uses,omitempty"`     // 0 = unlimited
+	CurrentUses int        `json:"current_uses,omitempty"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"` // nil = never expires
+	IsActive    bool       `json:"is_active,omitempty"`
+	CreatedAt   time.Time  `json:"created_at,omitempty"`
+	CreatedBy   string     `json:"created_by,omitempty"` // Admin who created the link
 }
 
 // TranscriptEvent represents an ingested conversation event

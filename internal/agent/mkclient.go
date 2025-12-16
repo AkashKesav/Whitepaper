@@ -27,6 +27,17 @@ type MemoryKernel interface {
 	EnsureUserNode(ctx context.Context, username string) error
 	GetStats(ctx context.Context) (map[string]interface{}, error)
 	Speculate(ctx context.Context, req *graph.ConsultationRequest) error
+
+	// Workspace Collaboration Methods
+	InviteToWorkspace(ctx context.Context, workspaceNS, inviterID, inviteeUsername, role string) (*graph.WorkspaceInvitation, error)
+	AcceptInvitation(ctx context.Context, invitationUID, userID string) error
+	DeclineInvitation(ctx context.Context, invitationUID, userID string) error
+	GetPendingInvitations(ctx context.Context, userID string) ([]graph.WorkspaceInvitation, error)
+	CreateShareLink(ctx context.Context, workspaceNS, creatorID string, maxUses int, expiresAt *time.Time) (*graph.ShareLink, error)
+	JoinViaShareLink(ctx context.Context, token, userID string) (*graph.ShareLink, error)
+	RevokeShareLink(ctx context.Context, token, userID string) error
+	GetWorkspaceMembers(ctx context.Context, workspaceNS string) ([]graph.WorkspaceMember, error)
+	IsWorkspaceMember(ctx context.Context, workspaceNS, userID string) (bool, error)
 }
 
 // MKClient is a client for consulting the Memory Kernel
@@ -390,6 +401,82 @@ func (c *MKClient) EnsureUserNode(ctx context.Context, username string) error {
 	}
 
 	return nil
+}
+
+// ============================================================================
+// WORKSPACE COLLABORATION WRAPPER METHODS
+// ============================================================================
+
+// InviteToWorkspace invites a user to join a workspace
+func (c *MKClient) InviteToWorkspace(ctx context.Context, workspaceNS, inviterID, inviteeUsername, role string) (*graph.WorkspaceInvitation, error) {
+	if c.directKernel != nil {
+		return c.directKernel.InviteToWorkspace(ctx, workspaceNS, inviterID, inviteeUsername, role)
+	}
+	return nil, fmt.Errorf("HTTP mode not supported for InviteToWorkspace")
+}
+
+// AcceptInvitation accepts a pending invitation
+func (c *MKClient) AcceptInvitation(ctx context.Context, invitationUID, userID string) error {
+	if c.directKernel != nil {
+		return c.directKernel.AcceptInvitation(ctx, invitationUID, userID)
+	}
+	return fmt.Errorf("HTTP mode not supported for AcceptInvitation")
+}
+
+// DeclineInvitation declines a pending invitation
+func (c *MKClient) DeclineInvitation(ctx context.Context, invitationUID, userID string) error {
+	if c.directKernel != nil {
+		return c.directKernel.DeclineInvitation(ctx, invitationUID, userID)
+	}
+	return fmt.Errorf("HTTP mode not supported for DeclineInvitation")
+}
+
+// GetPendingInvitations gets all pending invitations for a user
+func (c *MKClient) GetPendingInvitations(ctx context.Context, userID string) ([]graph.WorkspaceInvitation, error) {
+	if c.directKernel != nil {
+		return c.directKernel.GetPendingInvitations(ctx, userID)
+	}
+	return nil, fmt.Errorf("HTTP mode not supported for GetPendingInvitations")
+}
+
+// CreateShareLink creates a shareable link for a workspace
+func (c *MKClient) CreateShareLink(ctx context.Context, workspaceNS, creatorID string, maxUses int, expiresAt *time.Time) (*graph.ShareLink, error) {
+	if c.directKernel != nil {
+		return c.directKernel.CreateShareLink(ctx, workspaceNS, creatorID, maxUses, expiresAt)
+	}
+	return nil, fmt.Errorf("HTTP mode not supported for CreateShareLink")
+}
+
+// JoinViaShareLink joins a workspace using a share link
+func (c *MKClient) JoinViaShareLink(ctx context.Context, token, userID string) (*graph.ShareLink, error) {
+	if c.directKernel != nil {
+		return c.directKernel.JoinViaShareLink(ctx, token, userID)
+	}
+	return nil, fmt.Errorf("HTTP mode not supported for JoinViaShareLink")
+}
+
+// RevokeShareLink revokes a share link
+func (c *MKClient) RevokeShareLink(ctx context.Context, token, userID string) error {
+	if c.directKernel != nil {
+		return c.directKernel.RevokeShareLink(ctx, token, userID)
+	}
+	return fmt.Errorf("HTTP mode not supported for RevokeShareLink")
+}
+
+// GetWorkspaceMembers gets all members of a workspace
+func (c *MKClient) GetWorkspaceMembers(ctx context.Context, workspaceNS string) ([]graph.WorkspaceMember, error) {
+	if c.directKernel != nil {
+		return c.directKernel.GetWorkspaceMembers(ctx, workspaceNS)
+	}
+	return nil, fmt.Errorf("HTTP mode not supported for GetWorkspaceMembers")
+}
+
+// IsWorkspaceMember checks if a user is a member of a workspace
+func (c *MKClient) IsWorkspaceMember(ctx context.Context, workspaceNS, userID string) (bool, error) {
+	if c.directKernel != nil {
+		return c.directKernel.IsWorkspaceMember(ctx, workspaceNS, userID)
+	}
+	return false, fmt.Errorf("HTTP mode not supported for IsWorkspaceMember")
 }
 
 // AIClient is a client for AI services
