@@ -13,6 +13,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// Embedder interface for generating embeddings
+type Embedder interface {
+	Embed(text string) ([]float32, error)
+}
+
+// VectorStorer interface for storing vectors in a vector database
+type VectorStorer interface {
+	Store(ctx context.Context, namespace, uid string, embedding []float32) error
+}
+
 // Config holds configuration for the Wisdom Worker
 type Config struct {
 	BatchSize     int
@@ -27,6 +37,10 @@ type WisdomManager struct {
 	logger      *zap.Logger
 	graphClient *graph.Client
 
+	// Embedder for Hybrid RAG
+	embedder     Embedder
+	vectorStorer VectorStorer
+
 	// Buffer
 	eventBuffer []graph.TranscriptEvent
 	mu          sync.Mutex
@@ -38,15 +52,17 @@ type WisdomManager struct {
 }
 
 // NewManager creates a new WisdomManager
-func NewManager(cfg Config, graphClient *graph.Client, logger *zap.Logger) *WisdomManager {
+func NewManager(cfg Config, graphClient *graph.Client, embedder Embedder, vectorStorer VectorStorer, logger *zap.Logger) *WisdomManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &WisdomManager{
-		config:      cfg,
-		logger:      logger,
-		graphClient: graphClient,
-		eventBuffer: make([]graph.TranscriptEvent, 0, cfg.BatchSize),
-		ctx:         ctx,
-		cancel:      cancel,
+		config:       cfg,
+		logger:       logger,
+		graphClient:  graphClient,
+		embedder:     embedder,
+		vectorStorer: vectorStorer,
+		eventBuffer:  make([]graph.TranscriptEvent, 0, cfg.BatchSize),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 }
 
@@ -161,10 +177,28 @@ func (wm *WisdomManager) processBatch(ctx context.Context, batch []graph.Transcr
 			zap.Duration("duration", time.Since(start)))
 
 		// 3. Write Phase (High Density)
-		if err := wm.graphClient.IngestWisdomBatch(ctx, ns, summary, entities); err != nil {
+		summaryUID, err := wm.graphClient.IngestWisdomBatch(ctx, ns, summary, entities)
+		if err != nil {
 			wm.logger.Error("Failed to persist wisdom batch", zap.String("namespace", ns), zap.Error(err))
-		} else {
-			wm.logger.Info("Wisdom Batch crystallized to DGraph", zap.String("namespace", ns))
+			continue
+		}
+		wm.logger.Info("Wisdom Batch crystallized to DGraph", zap.String("namespace", ns), zap.String("uid", summaryUID))
+
+		// 4. Generate and store embedding for Hybrid RAG
+		if wm.embedder != nil && wm.vectorStorer != nil && summaryUID != "" {
+			embedding, err := wm.embedder.Embed(summary)
+			if err != nil {
+				wm.logger.Warn("Failed to generate embedding for summary", zap.Error(err))
+			} else {
+				if err := wm.vectorStorer.Store(ctx, ns, summaryUID, embedding); err != nil {
+					wm.logger.Warn("Failed to store embedding in vector index", zap.Error(err))
+				} else {
+					wm.logger.Info("Stored summary embedding in Qdrant",
+						zap.String("namespace", ns),
+						zap.String("uid", summaryUID),
+						zap.Int("dims", len(embedding)))
+				}
+			}
 		}
 	}
 
