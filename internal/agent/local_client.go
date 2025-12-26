@@ -79,23 +79,23 @@ func (c *LocalKernelClient) IsGroupAdmin(ctx context.Context, groupNamespace, us
 // ============================================================================
 
 func (c *LocalKernelClient) FindNodeByName(ctx context.Context, name string, nodeType graph.NodeType) (*graph.Node, error) {
-	return c.k.GraphClient().FindNodeByName(ctx, name, nodeType)
+	return c.k.GetGraphClient().FindNodeByName(ctx, name, nodeType)
 }
 
 func (c *LocalKernelClient) SpreadActivation(ctx context.Context, opts graph.SpreadActivationOpts) ([]graph.ActivatedNode, error) {
-	return c.k.GraphClient().SpreadActivation(ctx, opts)
+	return c.k.GetGraphClient().SpreadActivation(ctx, opts)
 }
 
 func (c *LocalKernelClient) TraverseViaCommunity(ctx context.Context, opts graph.CommunityTraversalOpts) (*graph.CommunityResult, error) {
-	return c.k.GraphClient().TraverseViaCommunity(ctx, opts)
+	return c.k.GetGraphClient().TraverseViaCommunity(ctx, opts)
 }
 
 func (c *LocalKernelClient) QueryWithTemporalDecay(ctx context.Context, opts graph.TemporalQueryOpts) ([]graph.RankedNode, error) {
-	return c.k.GraphClient().QueryWithTemporalDecay(ctx, opts)
+	return c.k.GetGraphClient().QueryWithTemporalDecay(ctx, opts)
 }
 
 func (c *LocalKernelClient) ExpandFromNode(ctx context.Context, opts graph.ExpandOpts) (*graph.ExpandResult, error) {
-	return c.k.GraphClient().ExpandFromNode(ctx, opts)
+	return c.k.GetGraphClient().ExpandFromNode(ctx, opts)
 }
 
 // TriggerReflection triggers a reflection cycle on the kernel
@@ -105,5 +105,5 @@ func (c *LocalKernelClient) TriggerReflection(ctx context.Context) error {
 
 // GetSampleNodes returns sample nodes from the graph for visualization
 func (c *LocalKernelClient) GetSampleNodes(ctx context.Context, limit int) ([]graph.Node, error) {
-	return c.k.GraphClient().GetSampleNodes(ctx, limit)
+	return c.k.GetGraphClient().GetSampleNodes(ctx, limit)
 }

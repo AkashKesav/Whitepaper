@@ -16,6 +16,7 @@ import (
 type contextKey string
 
 const UserIDContextKey contextKey = "user_id"
+const UserRoleContextKey contextKey = "user_role"
 
 // JWTMiddleware validates JWT tokens and extracts user ID
 type JWTMiddleware struct {
@@ -83,8 +84,15 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 
 		m.logger.Debug("Authenticated user", zap.String("user_id", userID))
 
-		// Add user_id to context
+		// Extract role from claims (default to "user" if not present)
+		role, _ := claims["role"].(string)
+		if role == "" {
+			role = "user"
+		}
+
+		// Add user_id and role to context
 		ctx := context.WithValue(r.Context(), UserIDContextKey, userID)
+		ctx = context.WithValue(ctx, UserRoleContextKey, role)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -95,6 +103,14 @@ func GetUserID(ctx context.Context) string {
 		return id
 	}
 	return "anonymous"
+}
+
+// GetUserRole extracts user role from request context
+func GetUserRole(ctx context.Context) string {
+	if role, ok := ctx.Value(UserRoleContextKey).(string); ok {
+		return role
+	}
+	return "user"
 }
 
 // GetUserIDFromRequest is a helper for WebSocket handlers

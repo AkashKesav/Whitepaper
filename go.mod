@@ -1,6 +1,6 @@
 module github.com/reflective-memory-kernel
 
-go 1.25.1
+go 1.24.0
 
 require (
 	github.com/dgraph-io/dgo/v240 v240.0.0

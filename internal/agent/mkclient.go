@@ -38,6 +38,12 @@ type MemoryKernel interface {
 	RevokeShareLink(ctx context.Context, token, userID string) error
 	GetWorkspaceMembers(ctx context.Context, workspaceNS string) ([]graph.WorkspaceMember, error)
 	IsWorkspaceMember(ctx context.Context, workspaceNS, userID string) (bool, error)
+
+	// Graph traversal methods
+	GetGraphClient() *graph.Client
+
+	// Admin methods
+	TriggerReflection(ctx context.Context) error
 }
 
 // MKClient is a client for consulting the Memory Kernel
@@ -477,6 +483,70 @@ func (c *MKClient) IsWorkspaceMember(ctx context.Context, workspaceNS, userID st
 		return c.directKernel.IsWorkspaceMember(ctx, workspaceNS, userID)
 	}
 	return false, fmt.Errorf("HTTP mode not supported for IsWorkspaceMember")
+}
+
+// ============================================================================
+// GRAPH TRAVERSAL METHODS (Zero-Copy only - requires directKernel)
+// ============================================================================
+
+// FindNodeByName finds a node by its name and type
+func (c *MKClient) FindNodeByName(ctx context.Context, name string, nodeType graph.NodeType) (*graph.Node, error) {
+	if c.directKernel != nil {
+		return c.directKernel.GetGraphClient().FindNodeByName(ctx, name, nodeType)
+	}
+	return nil, fmt.Errorf("HTTP mode not supported for FindNodeByName")
+}
+
+// SpreadActivation performs spreading activation from a start node
+func (c *MKClient) SpreadActivation(ctx context.Context, opts graph.SpreadActivationOpts) ([]graph.ActivatedNode, error) {
+	if c.directKernel != nil {
+		return c.directKernel.GetGraphClient().SpreadActivation(ctx, opts)
+	}
+	return nil, fmt.Errorf("HTTP mode not supported for SpreadActivation")
+}
+
+// TraverseViaCommunity traverses the graph via community detection
+func (c *MKClient) TraverseViaCommunity(ctx context.Context, opts graph.CommunityTraversalOpts) (*graph.CommunityResult, error) {
+	if c.directKernel != nil {
+		return c.directKernel.GetGraphClient().TraverseViaCommunity(ctx, opts)
+	}
+	return nil, fmt.Errorf("HTTP mode not supported for TraverseViaCommunity")
+}
+
+// QueryWithTemporalDecay queries with temporal decay applied
+func (c *MKClient) QueryWithTemporalDecay(ctx context.Context, opts graph.TemporalQueryOpts) ([]graph.RankedNode, error) {
+	if c.directKernel != nil {
+		return c.directKernel.GetGraphClient().QueryWithTemporalDecay(ctx, opts)
+	}
+	return nil, fmt.Errorf("HTTP mode not supported for QueryWithTemporalDecay")
+}
+
+// ExpandFromNode expands outward from a starting node
+func (c *MKClient) ExpandFromNode(ctx context.Context, opts graph.ExpandOpts) (*graph.ExpandResult, error) {
+	if c.directKernel != nil {
+		return c.directKernel.GetGraphClient().ExpandFromNode(ctx, opts)
+	}
+	return nil, fmt.Errorf("HTTP mode not supported for ExpandFromNode")
+}
+
+// GetSampleNodes returns sample nodes for visualization
+func (c *MKClient) GetSampleNodes(ctx context.Context, limit int) ([]graph.Node, error) {
+	if c.directKernel != nil {
+		return c.directKernel.GetGraphClient().GetSampleNodes(ctx, limit)
+	}
+	return nil, fmt.Errorf("HTTP mode not supported for GetSampleNodes")
+}
+
+// ============================================================================
+// ADMIN METHODS
+// ============================================================================
+
+// TriggerReflection triggers a reflection cycle on the kernel
+func (c *MKClient) TriggerReflection(ctx context.Context) error {
+	if c.directKernel != nil {
+		return c.directKernel.TriggerReflection(ctx)
+	}
+	return fmt.Errorf("HTTP mode not supported for TriggerReflection")
 }
 
 // AIClient is a client for AI services

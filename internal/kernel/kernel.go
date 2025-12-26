@@ -15,6 +15,7 @@ import (
 	"github.com/reflective-memory-kernel/internal/ai/local"
 	"github.com/reflective-memory-kernel/internal/graph"
 	"github.com/reflective-memory-kernel/internal/kernel/wisdom"
+	"github.com/reflective-memory-kernel/internal/memory"
 	"github.com/reflective-memory-kernel/internal/reflection"
 )
 
@@ -97,6 +98,9 @@ type Kernel struct {
 
 	// Vector index for Hybrid RAG
 	vectorIndex *VectorIndex
+
+	// Hot Cache for recent messages (Hot Path)
+	hotCache *memory.HotCache
 
 	// Consultation handler
 	consultationHandler *ConsultationHandler
@@ -215,6 +219,16 @@ func (k *Kernel) IsWorkspaceMember(ctx context.Context, workspaceNS, userID stri
 // GetGraphClient returns the graph client for external use (e.g., Pre-Cortex)
 func (k *Kernel) GetGraphClient() *graph.Client {
 	return k.graphClient
+}
+
+// StoreInHotCache stores a conversation turn in the hot cache for immediate retrieval
+// This is the Hot Path - enables instant context for follow-up questions
+func (k *Kernel) StoreInHotCache(userID, query, response, convID string) error {
+	if k.hotCache == nil {
+		k.logger.Debug("Hot cache not initialized, skipping store")
+		return nil // Not an error - hot cache is optional
+	}
+	return k.hotCache.Store(userID, query, response, convID)
 }
 
 // Start initializes and starts all kernel components
