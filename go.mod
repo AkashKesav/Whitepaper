@@ -4,10 +4,7 @@ go 1.25.1
 
 require (
 	github.com/dgraph-io/dgo/v240 v240.0.0
-<<<<<<< HEAD
 	github.com/dgraph-io/ristretto v0.2.0
-=======
->>>>>>> 5f37bd4 (Major update: API timeout fixes, Vector-Native ingestion, Frontend integration)
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/handlers v1.5.2
