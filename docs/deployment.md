@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Deployment Guide
 
 Guide for deploying the Reflective Memory Kernel in various environments.
@@ -399,3 +400,239 @@ For production, enable TLS on:
 - Front-End Agent (via Ingress)
 - Inter-service communication (mTLS)
 - DGraph connections
+=======
+# Deployment
+
+## Quick Start with Docker Compose
+
+```bash
+# Start all services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop services
+docker-compose down
+```
+
+## Services
+
+| Service | Port | Image |
+|---------|------|-------|
+| memory-kernel | 9000 | Local build |
+| ai-services | 8000 | Local build |
+| dgraph-alpha | 8080, 9080 | dgraph/dgraph:latest |
+| dgraph-zero | 5080 | dgraph/dgraph:latest |
+| nats | 4222, 8222 | nats:latest |
+| redis | 6379 | redis:alpine |
+| postgres | 5432 | postgres:15 |
+
+## Docker Compose Configuration
+
+```yaml
+version: "3.8"
+
+services:
+  # DGraph Zero - Cluster Management
+  dgraph-zero:
+    image: dgraph/dgraph:latest
+    command: dgraph zero --my=dgraph-zero:5080
+    ports:
+      - "5080:5080"
+    volumes:
+      - dgraph_zero:/dgraph
+
+  # DGraph Alpha - Graph Database
+  dgraph-alpha:
+    image: dgraph/dgraph:latest
+    command: dgraph alpha --my=dgraph-alpha:7080 --zero=dgraph-zero:5080
+    ports:
+      - "8080:8080"
+      - "9080:9080"
+    volumes:
+      - dgraph_alpha:/dgraph
+    depends_on:
+      - dgraph-zero
+
+  # NATS - Message Queue
+  nats:
+    image: nats:latest
+    command: ["-js"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+
+  # Redis - Cache
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # PostgreSQL - User Auth
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: rmk
+      POSTGRES_PASSWORD: rmk_password
+      POSTGRES_DB: rmk
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # AI Services
+  ai-services:
+    build:
+      context: ./ai
+    ports:
+      - "8000:8000"
+    environment:
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Memory Kernel (Unified)
+  memory-kernel:
+    build:
+      context: .
+      dockerfile: Dockerfile.unified
+    ports:
+      - "3000:3000"
+      - "9000:9000"
+    environment:
+      - DGRAPH_URL=dgraph-alpha:9080
+      - NATS_URL=nats://nats:4222
+      - REDIS_URL=redis:6379
+      - AI_SERVICES_URL=http://ai-services:8000
+      - POSTGRES_URL=postgres://rmk:rmk_password@postgres:5432/rmk
+    depends_on:
+      - dgraph-alpha
+      - nats
+      - redis
+      - postgres
+      - ai-services
+
+volumes:
+  dgraph_zero:
+  dgraph_alpha:
+  redis_data:
+  postgres_data:
+```
+
+## Environment Variables
+
+Create `.env` file:
+
+```env
+# LLM Providers
+NVIDIA_API_KEY=nvapi-...
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-...
+
+# Infrastructure (defaults for Docker Compose)
+DGRAPH_URL=dgraph-alpha:9080
+NATS_URL=nats://nats:4222
+REDIS_URL=redis:6379
+AI_SERVICES_URL=http://ai-services:8000
+
+# PostgreSQL
+POSTGRES_URL=postgres://rmk:rmk_password@postgres:5432/rmk
+```
+
+## Building Images
+
+### Memory Kernel (Go)
+```dockerfile
+# Dockerfile.unified
+FROM golang:1.22-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -o unified_system ./cmd/unified
+
+FROM alpine:latest
+WORKDIR /app
+COPY --from=builder /app/unified_system .
+COPY static/ static/
+EXPOSE 3000 9000
+CMD ["./unified_system"]
+```
+
+### AI Services (Python)
+```dockerfile
+# ai/Dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8000
+CMD ["python", "main.py"]
+```
+
+## Health Checks
+
+```bash
+# Check all services
+curl http://localhost:3000/api/health  # Agent
+curl http://localhost:9000/api/health  # Kernel
+curl http://localhost:8000/health      # AI Services
+
+# DGraph health
+curl http://localhost:8080/health
+
+# NATS monitoring
+curl http://localhost:8222/varz
+```
+
+## Scaling
+
+### Horizontal Scaling
+- AI Services: Stateless, scale horizontally
+- Memory Kernel: Requires NATS for coordination
+- DGraph: Use DGraph cluster mode
+
+### Resource Requirements
+
+| Service | CPU | Memory | Storage |
+|---------|-----|--------|---------|
+| memory-kernel | 0.5 | 512MB | - |
+| ai-services | 1.0 | 1GB | - |
+| dgraph-alpha | 1.0 | 2GB | 10GB |
+| dgraph-zero | 0.25 | 256MB | 1GB |
+| nats | 0.25 | 128MB | 1GB |
+| redis | 0.25 | 256MB | 1GB |
+| postgres | 0.5 | 512MB | 5GB |
+
+## Production Considerations
+
+### Security
+- Enable TLS for all services
+- Use secrets management for API keys
+- Configure firewall rules
+- Enable DGraph ACLs
+
+### Monitoring
+- Export metrics to Prometheus
+- Configure alerting for service health
+- Log aggregation with ELK or similar
+
+### Backup
+- Regular DGraph backups
+- PostgreSQL daily backups
+- Redis RDB snapshots
+
+### High Availability
+- DGraph cluster with 3+ Alphas
+- NATS cluster mode
+- Redis Sentinel or Cluster
+- PostgreSQL replication
+>>>>>>> 5f37bd4 (Major update: API timeout fixes, Vector-Native ingestion, Frontend integration)

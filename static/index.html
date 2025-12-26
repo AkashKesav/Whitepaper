@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 <!DOCTYPE html>
 <html lang="en">
 
@@ -1335,4 +1336,113 @@
     </script>
 </body>
 
+=======
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reflective Memory Kernel</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="bg-orbs">
+        <div class="orb"></div>
+        <div class="orb"></div>
+        <div class="orb"></div>
+    </div>
+
+    <!-- Login Modal -->
+    <div class="modal-overlay" id="loginModal">
+        <div class="login-modal">
+            <h2 id="modalTitle">🧠 Welcome</h2>
+            <p class="subtitle" id="modalSubtitle">Sign in to access your personal memory</p>
+            <form id="loginForm">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="usernameInput" placeholder="Enter your username" autocomplete="username"
+                        required>
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="passwordInput" placeholder="Enter your password"
+                        autocomplete="current-password" required>
+                </div>
+                <!-- Demo credential hint -->
+                <div style="font-size: 0.75rem; color: #6b7280; text-align: center; margin-bottom: 10px;">
+                    (Any password works for demo)
+                </div>
+                <button type="submit" class="login-btn" id="submitBtn">Sign In</button>
+                <div class="login-error" id="loginError"></div>
+            </form>
+            <div class="anonymous-link" id="toggleMode">Don't have an account? Register →</div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="header">
+            <div class="user-bar" id="userBar" style="display: none;">
+                <div class="user-avatar" id="userAvatar">?</div>
+                <span class="user-name" id="userNameDisplay">User</span>
+                <button class="logout-btn" id="logoutBtn">Logout</button>
+            </div>
+            <h1>🧠 Reflective Memory Kernel</h1>
+            <p>Quantum Memory Architecture: Hot Path + Speculative Execution</p>
+            <div class="status-indicator">
+                <span class="status-dot"></span>
+                <span id="wsStatus">Connecting...</span>
+            </div>
+            <div id="debug-log"
+                style="font-size: 10px; color: cyan; max-height: 100px; overflow: auto; border: 1px solid #333; margin-top: 5px; padding: 5px;">
+                DEBUG LOG:</div>
+        </div>
+
+        <div class="chat-container">
+            <div class="messages" id="messages">
+                <div class="message assistant">
+                    Hello! I'm your AI assistant with long-term memory.
+                    <br><br>
+                    Try these features:
+                    <ul style="margin-left: 20px; margin-top: 10px;">
+                        <li><strong>Hot Path:</strong> Teach me something ("My favorite color is blue") and ask about it
+                            immediately.</li>
+                        <li><strong>Speculative:</strong> Type a question slowly... I'll prefetch the answer before you
+                            hit send!</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="input-area">
+                <div class="input-wrapper">
+                    <input type="text" id="messageInput" placeholder="Type a message..." autocomplete="off">
+                    <!-- Typing / Prefetch Indicator -->
+                    <div id="prefetchIndicator" class="prefetch-indicator hidden">
+                        ⚡ Prefetching context...
+                    </div>
+                </div>
+                <button id="sendBtn">
+                    Send
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <div class="stats">
+            <div class="stat">📊 Entities: <span class="stat-value" id="entityCount">--</span></div>
+            <div class="stat">💾 Facts: <span class="stat-value" id="factCount">--</span></div>
+            <div class="stat">⚡ Avg Response: <span class="stat-value" id="avgTime">--</span></div>
+            <div class="stat" style="margin-left: auto; color: #10b981;">⚡ Speculative Mode: <span
+                    class="stat-value">ON</span></div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+>>>>>>> 5f37bd4 (Major update: API timeout fixes, Vector-Native ingestion, Frontend integration)
 </html>

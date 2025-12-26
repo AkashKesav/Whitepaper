@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 // Package graph provides the DGraph client for the Knowledge Graph.
 package graph
 
@@ -2030,3 +2031,1254 @@ func (c *Client) GetShareLinks(ctx context.Context, workspaceNS string) ([]Share
 
 	return result.Links, nil
 }
+=======
+// Package graph provides the DGraph client for the Knowledge Graph.
+package graph
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/dgraph-io/dgo/v240"
+	"github.com/dgraph-io/dgo/v240/protos/api"
+	"github.com/google/uuid"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+)
+
+// Client wraps the DGraph client with connection pooling and helper methods
+type Client struct {
+	conn   *grpc.ClientConn
+	dg     *dgo.Dgraph
+	logger *zap.Logger
+	mu     sync.RWMutex
+}
+
+// ClientConfig holds configuration for the DGraph client
+type ClientConfig struct {
+	Address        string
+	MaxRetries     int
+	RetryInterval  time.Duration
+	RequestTimeout time.Duration
+}
+
+// DefaultClientConfig returns sensible defaults
+func DefaultClientConfig() ClientConfig {
+	return ClientConfig{
+		Address:        "localhost:9080",
+		MaxRetries:     5,
+		RetryInterval:  2 * time.Second,
+		RequestTimeout: 30 * time.Second,
+	}
+}
+
+// NewClient creates a new DGraph client with connection pooling
+func NewClient(ctx context.Context, cfg ClientConfig, logger *zap.Logger) (*Client, error) {
+	var conn *grpc.ClientConn
+	var err error
+
+	// Use request timeout for connection, default to 10 seconds
+	dialTimeout := cfg.RequestTimeout
+	if dialTimeout == 0 {
+		dialTimeout = 10 * time.Second
+	}
+
+	// gRPC options with keepalive and timeout
+	grpcOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(), // Wait for connection to be ready
+		// Add unary interceptor for call timeout
+		grpc.WithUnaryInterceptor(func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			// Create a timeout context for each call if none exists
+			if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
+			}
+			return invoker(ctx, method, req, reply, cc, opts...)
+		}),
+	}
+
+	// Retry connection with backoff
+	for i := 0; i < cfg.MaxRetries; i++ {
+		// Create a timeout context for each dial attempt
+		dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+		conn, err = grpc.DialContext(dialCtx, cfg.Address, grpcOpts...)
+		cancel() // Always cancel to release resources
+
+		if err == nil {
+			// Test connection with a simple health check
+			break
+		}
+		logger.Warn("Failed to connect to DGraph, retrying...",
+			zap.Int("attempt", i+1),
+			zap.Int("max_retries", cfg.MaxRetries),
+			zap.String("address", cfg.Address),
+			zap.Error(err))
+		time.Sleep(cfg.RetryInterval)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to DGraph after %d attempts: %w", cfg.MaxRetries, err)
+	}
+
+	dg := dgo.NewDgraphClient(api.NewDgraphClient(conn))
+
+	client := &Client{
+		conn:   conn,
+		dg:     dg,
+		logger: logger,
+	}
+
+	// Initialize schema
+	if err := client.initSchema(ctx); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+	}
+
+	logger.Info("DGraph client connected successfully", zap.String("address", cfg.Address))
+	return client, nil
+}
+
+// initSchema sets up the DGraph schema for the Knowledge Graph
+func (c *Client) initSchema(ctx context.Context) error {
+	schema := `
+		# Node types
+		# Group Management (V2)
+		group_has_admin: [uid] @reverse .
+		group_has_member: [uid] @reverse .
+		
+		type Group {
+			name
+			description
+			namespace
+			created_by
+			created_at
+			updated_at
+			group_has_admin
+			group_has_member
+		}
+
+		type User {
+			name
+			description
+			attributes
+			created_at
+			updated_at
+			last_accessed
+			activation
+			access_count
+		}
+
+		type Entity {
+			name
+			description
+			attributes
+			created_at
+			updated_at
+			last_accessed
+			activation
+			access_count
+			entity_type
+			tags
+		}
+
+		type Event {
+			name
+			description
+			attributes
+			created_at
+			updated_at
+			occurred_at
+			sentiment
+		}
+
+		type Insight {
+			name
+			description
+			insight_type
+			summary
+			action_suggestion
+			source_nodes
+			created_at
+			confidence
+		}
+
+		type Pattern {
+			name
+			description
+			pattern_type
+			trigger_nodes
+			frequency
+			confidence_score
+			predicted_action
+			created_at
+		}
+
+		type Fact {
+			name
+			description
+			fact_value
+			created_at
+			valid_from
+			valid_until
+			status
+		}
+
+		# Predicates with indexes
+		name: string @index(exact, term, fulltext) .
+		description: string @index(fulltext) .
+		attributes: [string] .
+		tags: [string] @index(term) .
+		entity_type: string @index(exact) .
+		namespace: string @index(exact) .
+		
+		# Temporal predicates
+		created_at: datetime @index(hour) .
+		updated_at: datetime @index(hour) .
+		last_accessed: datetime @index(hour) .
+		occurred_at: datetime @index(hour) .
+		valid_from: datetime .
+		valid_until: datetime .
+		
+		# Activation and prioritization
+		activation: float @index(float) .
+		access_count: int @index(int) .
+		traversal_cost: float .
+		
+		# Insight/Pattern specific
+		insight_type: string @index(exact) .
+		pattern_type: string @index(exact) .
+		summary: string @index(fulltext) .
+		action_suggestion: string .
+		predicted_action: string .
+		frequency: int @index(int) .
+		confidence: float @index(float) .
+		confidence_score: float @index(float) .
+		fact_value: string .
+		status: string @index(exact) .
+		sentiment: string @index(exact) .
+		
+		# Source tracking
+		source_conversation_id: string @index(exact) .
+		source_nodes: [uid] .
+		trigger_nodes: [uid] .
+		
+		# Group management
+		created_by: uid @reverse .
+		
+		# Relationship predicates (edges)
+		partner_is: uid @reverse .
+		family_member: [uid] @reverse .
+		friend_of: [uid] @reverse .
+		has_manager: uid @reverse .
+		works_on: [uid] @reverse .
+		works_at: uid @reverse .
+		colleague: [uid] @reverse .
+		likes: [uid] @reverse .
+		dislikes: [uid] @reverse .
+		is_allergic_to: [uid] @reverse .
+		prefers: [uid] @reverse .
+		has_interest: [uid] @reverse .
+		caused_by: [uid] @reverse .
+		blocked_by: [uid] @reverse .
+		results_in: [uid] @reverse .
+		contradicts: [uid] @reverse .
+		occurred_on: uid @reverse .
+		scheduled_at: datetime .
+		derived_from: [uid] @reverse .
+		synthesized_from: [uid] @reverse .
+		supersedes: uid @reverse .
+		knows: [uid] @reverse .
+		shared_with: [uid] @reverse .
+		
+		# Edge metadata predicates
+		edge_status: string @index(exact) .
+		edge_created_at: datetime .
+		edge_activation: float .
+		edge_confidence: float .
+
+
+	`
+
+	op := &api.Operation{Schema: schema}
+	if err := c.dg.Alter(ctx, op); err != nil {
+		return fmt.Errorf("failed to alter schema: %w", err)
+	}
+
+	c.logger.Info("DGraph schema initialized successfully")
+	return nil
+}
+
+// Close closes the DGraph connection
+func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+	return nil
+}
+
+// NewTxn creates a new transaction
+func (c *Client) NewTxn() *dgo.Txn {
+	return c.dg.NewTxn()
+}
+
+// NewReadOnlyTxn creates a new read-only transaction
+func (c *Client) NewReadOnlyTxn() *dgo.Txn {
+	return c.dg.NewReadOnlyTxn()
+}
+
+// CreateNode creates a new node in the graph using NQuad format for reliability
+func (c *Client) CreateNode(ctx context.Context, node *Node) (string, error) {
+	node.CreatedAt = time.Now()
+	node.UpdatedAt = time.Now()
+	node.LastAccessed = time.Now()
+
+	if node.Activation == 0 {
+		node.Activation = 0.5
+	}
+
+	// Generate a unique blank node ID
+	blankNode := fmt.Sprintf("_:node_%d", time.Now().UnixNano())
+
+	// Build NQuads for reliable mutation
+	var nquads strings.Builder
+
+	// Type (required)
+	nquads.WriteString(fmt.Sprintf(`%s <dgraph.type> "%s" .
+`, blankNode, node.GetType()))
+
+	// Name (required)
+	nquads.WriteString(fmt.Sprintf(`%s <name> %q .
+`, blankNode, node.Name))
+
+	// Namespace (critical for isolation)
+	if node.Namespace != "" {
+		nquads.WriteString(fmt.Sprintf(`%s <namespace> %q .
+`, blankNode, node.Namespace))
+	}
+
+	// Activation
+	nquads.WriteString(fmt.Sprintf(`%s <activation> "%f"^^<xs:double> .
+`, blankNode, node.Activation))
+
+	// Confidence
+	nquads.WriteString(fmt.Sprintf(`%s <confidence> "%f"^^<xs:double> .
+`, blankNode, node.Confidence))
+
+	// Timestamps
+	nquads.WriteString(fmt.Sprintf(`%s <created_at> "%s"^^<xs:dateTime> .
+`, blankNode, node.CreatedAt.Format(time.RFC3339)))
+	nquads.WriteString(fmt.Sprintf(`%s <updated_at> "%s"^^<xs:dateTime> .
+`, blankNode, node.UpdatedAt.Format(time.RFC3339)))
+	nquads.WriteString(fmt.Sprintf(`%s <last_accessed> "%s"^^<xs:dateTime> .
+`, blankNode, node.LastAccessed.Format(time.RFC3339)))
+
+	// Optional fields
+	if node.Description != "" {
+		nquads.WriteString(fmt.Sprintf(`%s <description> %q .
+`, blankNode, node.Description))
+	}
+	if node.SourceConversationID != "" {
+		nquads.WriteString(fmt.Sprintf(`%s <source_conversation_id> %q .
+`, blankNode, node.SourceConversationID))
+	}
+
+	for _, tag := range node.Tags {
+		nquads.WriteString(fmt.Sprintf(`%s <tags> %q .
+`, blankNode, tag))
+	}
+
+	c.logger.Debug("Creating node with NQuads",
+		zap.String("name", node.Name),
+		zap.String("type", string(node.GetType())),
+		zap.String("nquads", nquads.String()))
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquads.String()),
+		CommitNow: true,
+	}
+
+	resp, err := txn.Mutate(ctx, mu)
+	if err != nil {
+		c.logger.Error("CreateNode mutation failed",
+			zap.String("name", node.Name),
+			zap.Error(err))
+		return "", fmt.Errorf("failed to create node '%s': %w", node.Name, err)
+	}
+
+	// Extract the blank node ID suffix to find the UID
+	blankNodeKey := blankNode[2:] // Remove "_:" prefix
+	if uid, ok := resp.Uids[blankNodeKey]; ok {
+		c.logger.Info("Created node successfully",
+			zap.String("uid", uid),
+			zap.String("name", node.Name),
+			zap.String("type", string(node.GetType())))
+		return uid, nil
+	}
+
+	// If no UID returned, list what we got
+	c.logger.Error("No UID returned for node",
+		zap.String("name", node.Name),
+		zap.Any("returned_uids", resp.Uids))
+	return "", fmt.Errorf("no UID returned for node '%s'", node.Name)
+}
+
+// GetNode retrieves a node by UID
+func (c *Client) GetNode(ctx context.Context, uid string) (*Node, error) {
+	query := `query Node($uid: string) {
+		node(func: uid($uid)) {
+			uid
+			dgraph.type
+			name
+			description
+			attributes
+			created_at
+			updated_at
+			last_accessed
+			activation
+			access_count
+			source_conversation_id
+			confidence
+		}
+	}`
+
+	vars := map[string]string{"$uid": uid}
+	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, vars)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query node: %w", err)
+	}
+
+	var result struct {
+		Node []Node `json:"node"`
+	}
+	if err := json.Unmarshal(resp.Json, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal node: %w", err)
+	}
+
+	if len(result.Node) == 0 {
+		return nil, fmt.Errorf("node not found: %s", uid)
+	}
+
+	return &result.Node[0], nil
+}
+
+// UpdateNodeActivation updates a node's activation level
+func (c *Client) UpdateNodeActivation(ctx context.Context, uid string, activation float64) error {
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	update := map[string]interface{}{
+		"uid":           uid,
+		"activation":    activation,
+		"last_accessed": time.Now(),
+	}
+
+	updateJSON, err := json.Marshal(update)
+	if err != nil {
+		return fmt.Errorf("failed to marshal update: %w", err)
+	}
+
+	mu := &api.Mutation{
+		SetJson:   updateJSON,
+		CommitNow: true,
+	}
+
+	_, err = txn.Mutate(ctx, mu)
+	if err != nil {
+		return fmt.Errorf("failed to update activation: %w", err)
+	}
+
+	return nil
+}
+
+// IncrementAccessCount increments a node's access count and boosts activation
+func (c *Client) IncrementAccessCount(ctx context.Context, uid string, config ActivationConfig) error {
+	node, err := c.GetNode(ctx, uid)
+	if err != nil {
+		return err
+	}
+
+	newActivation := node.Activation + config.BoostPerAccess
+	if newActivation > config.MaxActivation {
+		newActivation = config.MaxActivation
+	}
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	update := map[string]interface{}{
+		"uid":           uid,
+		"activation":    newActivation,
+		"access_count":  node.AccessCount + 1,
+		"last_accessed": time.Now(),
+	}
+
+	updateJSON, err := json.Marshal(update)
+	if err != nil {
+		return fmt.Errorf("failed to marshal update: %w", err)
+	}
+
+	mu := &api.Mutation{
+		SetJson:   updateJSON,
+		CommitNow: true,
+	}
+
+	_, err = txn.Mutate(ctx, mu)
+	return err
+}
+
+// AddTags appends new tags to an existing node
+func (c *Client) AddTags(ctx context.Context, uid string, tags []string) error {
+	if len(tags) == 0 {
+		return nil
+	}
+
+	var nquads strings.Builder
+	for _, tag := range tags {
+		nquads.WriteString(fmt.Sprintf(`<%s> <tags> %q .
+`, uid, tag))
+	}
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquads.String()),
+		CommitNow: true,
+	}
+
+	_, err := txn.Mutate(ctx, mu)
+	if err != nil {
+		return fmt.Errorf("failed to add tags: %w", err)
+	}
+	return nil
+}
+
+// UpdateDescription updates the description of an existing node
+func (c *Client) UpdateDescription(ctx context.Context, uid string, description string) error {
+	if description == "" {
+		return nil
+	}
+
+	nquad := fmt.Sprintf(`<%s> <description> %q .`, uid, description)
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquad),
+		CommitNow: true,
+	}
+
+	_, err := txn.Mutate(ctx, mu)
+	if err != nil {
+		return fmt.Errorf("failed to update description: %w", err)
+	}
+	return nil
+}
+
+// FindNodeByName finds a node by its name and type
+func (c *Client) FindNodeByName(ctx context.Context, name string, nodeType NodeType) (*Node, error) {
+	query := fmt.Sprintf(`query FindNode($name: string) {
+		node(func: eq(name, $name)) @filter(type(%s)) {
+			uid
+			dgraph.type
+			name
+			description
+			attributes
+			created_at
+			updated_at
+			last_accessed
+			activation
+			access_count
+		}
+	}`, nodeType)
+
+	vars := map[string]string{"$name": name}
+	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, vars)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query node: %w", err)
+	}
+
+	var result struct {
+		Node []Node `json:"node"`
+	}
+	if err := json.Unmarshal(resp.Json, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal node: %w", err)
+	}
+
+	if len(result.Node) == 0 {
+		return nil, nil // Not found, not an error
+	}
+
+	return &result.Node[0], nil
+}
+
+// GetNodesByNames fetches multiple nodes by name in a single query, scoped to namespace
+func (c *Client) GetNodesByNames(ctx context.Context, namespace string, names []string) (map[string]*Node, error) {
+	if len(names) == 0 {
+		return make(map[string]*Node), nil
+	}
+
+	// Build filter string: eq(name, "n1") OR eq(name, "n2") ...
+	var filters []string
+	for _, name := range names {
+		filters = append(filters, fmt.Sprintf("eq(name, %q)", name))
+	}
+	filterStr := strings.Join(filters, " OR ")
+
+	query := fmt.Sprintf(`query FindNodes($namespace: string) {
+		nodes(func: has(name)) @filter((%s) AND eq(namespace, $namespace)) {
+			uid
+			dgraph.type
+			name
+			description
+			attributes
+			created_at
+			activation
+			namespace
+		}
+	}`, filterStr)
+	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, map[string]string{"$namespace": namespace})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query nodes batch: %w", err)
+	}
+
+	var result struct {
+		Nodes []Node `json:"nodes"`
+	}
+	if err := json.Unmarshal(resp.Json, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal nodes: %w", err)
+	}
+
+	nodeMap := make(map[string]*Node)
+	for i := range result.Nodes {
+		node := &result.Nodes[i]
+		nodeMap[node.Name] = node
+	}
+
+	// Also check for User nodes if requested (special case)
+	// Simple approach: Iterate names, check if "User" type exists in result
+	// Note: The above query filters by type(Entity), we might need type(User) too if mixed
+	// For now, robustly assume this is primarily for Entity nodes as per ingestion logic
+
+	return nodeMap, nil
+}
+
+// CreateEdge creates a relationship between two nodes
+func (c *Client) CreateEdge(ctx context.Context, fromUID, toUID string, edgeType EdgeType, status EdgeStatus) error {
+	predicateName := edgeTypeToPredicateName(edgeType)
+
+	// Check for functional constraint
+	if FunctionalEdges[edgeType] {
+		if err := c.archiveExistingFunctionalEdge(ctx, fromUID, edgeType); err != nil {
+			return fmt.Errorf("failed to archive existing edge: %w", err)
+		}
+	}
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	nquad := fmt.Sprintf(`<%s> <%s> <%s> .`, fromUID, predicateName, toUID)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquad),
+		CommitNow: true,
+	}
+
+	_, err := txn.Mutate(ctx, mu)
+	if err != nil {
+		return fmt.Errorf("failed to create edge: %w", err)
+	}
+
+	c.logger.Debug("Created edge",
+		zap.String("from", fromUID),
+		zap.String("to", toUID),
+		zap.String("type", string(edgeType)))
+
+	return nil
+}
+
+// archiveExistingFunctionalEdge archives any existing "current" edge for functional relationships
+func (c *Client) archiveExistingFunctionalEdge(ctx context.Context, fromUID string, edgeType EdgeType) error {
+	predicateName := edgeTypeToPredicateName(edgeType)
+
+	// Query for existing edges
+	query := fmt.Sprintf(`query ExistingEdge($uid: string) {
+		node(func: uid($uid)) {
+			%s {
+				uid
+			}
+		}
+	}`, predicateName)
+
+	vars := map[string]string{"$uid": fromUID}
+	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, vars)
+	if err != nil {
+		return err
+	}
+
+	var result map[string][]map[string]interface{}
+	if err := json.Unmarshal(resp.Json, &result); err != nil {
+		return err
+	}
+
+	// Delete existing edges if found
+	if nodes, ok := result["node"]; ok && len(nodes) > 0 {
+		txn := c.dg.NewTxn()
+		defer txn.Discard(ctx)
+
+		for _, existing := range nodes {
+			if edges, ok := existing[predicateName].([]interface{}); ok {
+				for _, edge := range edges {
+					if edgeMap, ok := edge.(map[string]interface{}); ok {
+						if existingUID, ok := edgeMap["uid"].(string); ok {
+							nquad := fmt.Sprintf(`<%s> <%s> <%s> .`, fromUID, predicateName, existingUID)
+							mu := &api.Mutation{
+								DelNquads: []byte(nquad),
+								CommitNow: true,
+							}
+							if _, err := txn.Mutate(ctx, mu); err != nil {
+								c.logger.Warn("Failed to delete existing edge",
+									zap.String("from", fromUID),
+									zap.String("to", existingUID),
+									zap.Error(err))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// CreateNodes batch creates multiple nodes in a single mutation
+func (c *Client) CreateNodes(ctx context.Context, nodes []*Node) (map[string]string, error) {
+	if len(nodes) == 0 {
+		return nil, nil
+	}
+
+	var nquads strings.Builder
+	// Map from temporary ID to node Name to resolve UIDs later
+	tempIDToName := make(map[string]string)
+
+	for i, node := range nodes {
+		node.CreatedAt = time.Now()
+		node.UpdatedAt = time.Now()
+		node.LastAccessed = time.Now()
+		if node.Activation == 0 {
+			node.Activation = 0.5
+		}
+
+		// Use a unique blank node for this batch
+		blankNode := fmt.Sprintf("_:node_%d_%d", time.Now().UnixNano(), i)
+		tempIDToName[blankNode[2:]] = node.Name // Store without "_:"
+
+		// Type
+		for _, dtype := range node.DType {
+			nquads.WriteString(fmt.Sprintf(`%s <dgraph.type> "%s" .
+`, blankNode, dtype))
+		}
+
+		// Name
+		nquads.WriteString(fmt.Sprintf(`%s <name> %q .
+`, blankNode, node.Name))
+
+		// Namespace
+		if node.Namespace != "" {
+			nquads.WriteString(fmt.Sprintf(`%s <namespace> %q .
+`, blankNode, node.Namespace))
+		}
+
+		// Metadata
+		nquads.WriteString(fmt.Sprintf(`%s <activation> "%f"^^<xs:double> .
+`, blankNode, node.Activation))
+		nquads.WriteString(fmt.Sprintf(`%s <confidence> "%f"^^<xs:double> .
+`, blankNode, node.Confidence))
+		nquads.WriteString(fmt.Sprintf(`%s <created_at> "%s"^^<xs:dateTime> .
+`, blankNode, node.CreatedAt.Format(time.RFC3339)))
+
+		// Description
+		if node.Description != "" {
+			nquads.WriteString(fmt.Sprintf(`%s <description> %q .
+`, blankNode, node.Description))
+		}
+
+		// Tags
+		for _, tag := range node.Tags {
+			nquads.WriteString(fmt.Sprintf(`%s <tags> %q .
+`, blankNode, tag))
+		}
+	}
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquads.String()),
+		CommitNow: true,
+	}
+
+	resp, err := txn.Mutate(ctx, mu)
+	if err != nil {
+		return nil, fmt.Errorf("batch create nodes failed: %w", err)
+	}
+
+	// Map returned UIDs back to names
+	nameToUID := make(map[string]string)
+	for blankID, realUID := range resp.Uids {
+		if name, ok := tempIDToName[blankID]; ok {
+			nameToUID[name] = realUID
+		}
+	}
+
+	return nameToUID, nil
+}
+
+// EdgeInput represents a single edge to be created in a batch
+type EdgeInput struct {
+	FromUID string
+	ToUID   string
+	Type    EdgeType
+	Status  EdgeStatus
+}
+
+// CreateEdges batch creates multiple edges in a single mutation
+func (c *Client) CreateEdges(ctx context.Context, edges []EdgeInput) error {
+	if len(edges) == 0 {
+		return nil
+	}
+
+	var nquads strings.Builder
+	for _, edge := range edges {
+		predicateName := edgeTypeToPredicateName(edge.Type)
+		nquads.WriteString(fmt.Sprintf(`<%s> <%s> <%s> .
+`, edge.FromUID, predicateName, edge.ToUID))
+	}
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquads.String()),
+		CommitNow: true,
+	}
+
+	_, err := txn.Mutate(ctx, mu)
+	if err != nil {
+		return fmt.Errorf("batch create edges failed: %w", err)
+	}
+
+	return nil
+}
+
+// edgeTypeToPredicateName converts EdgeType to DGraph predicate name
+func edgeTypeToPredicateName(edgeType EdgeType) string {
+	mapping := map[EdgeType]string{
+		EdgeTypePartnerIs:    "partner_is",
+		EdgeTypeFamilyMember: "family_member",
+		EdgeTypeFriendOf:     "friend_of",
+		EdgeTypeHasManager:   "has_manager",
+		EdgeTypeWorksOn:      "works_on",
+		EdgeTypeWorksAt:      "works_at",
+		EdgeTypeColleague:    "colleague",
+		EdgeTypeLikes:        "likes",
+		EdgeTypeDislikes:     "dislikes",
+		EdgeTypeIsAllergic:   "is_allergic_to",
+		EdgeTypePrefers:      "prefers",
+		EdgeTypeHasInterest:  "has_interest",
+		EdgeTypeCausedBy:     "caused_by",
+		EdgeTypeBlockedBy:    "blocked_by",
+		EdgeTypeResultsIn:    "results_in",
+		EdgeTypeContradicts:  "contradicts",
+		EdgeTypeOccurredOn:   "occurred_on",
+		EdgeTypeDerivedFrom:  "derived_from",
+		EdgeTypeSynthesized:  "synthesized_from",
+		EdgeTypeSupersedes:   "supersedes",
+		EdgeTypeKnows:        "knows",
+	}
+
+	if pred, ok := mapping[edgeType]; ok {
+		return pred
+	}
+	return string(edgeType)
+}
+
+// Query executes a raw DGraph query
+func (c *Client) Query(ctx context.Context, query string, vars map[string]string) ([]byte, error) {
+	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, vars)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Json, nil
+}
+
+// Mutate executes a raw DGraph mutation
+func (c *Client) Mutate(ctx context.Context, mutation *api.Mutation) (*api.Response, error) {
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+	return txn.Mutate(ctx, mutation)
+}
+
+// EnsureUserNode creates a User node in DGraph if it doesn't exist (idempotent)
+func (c *Client) EnsureUserNode(ctx context.Context, username string) error {
+	// Check if user already exists
+	existing, err := c.FindNodeByName(ctx, username, NodeTypeUser)
+	if err != nil {
+		return fmt.Errorf("failed to check user existence: %w", err)
+	}
+	if existing != nil {
+		return nil // Already exists
+	}
+
+	// Create new User node
+	now := time.Now().Format(time.RFC3339)
+	nquads := fmt.Sprintf(`
+		_:user <dgraph.type> "User" .
+		_:user <name> %q .
+		_:user <namespace> %q .
+		_:user <created_at> %q .
+		_:user <updated_at> %q .
+		_:user <activation> "0.5" .
+	`, username, fmt.Sprintf("user_%s", username), now, now)
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquads),
+		CommitNow: true,
+	}
+
+	_, err = txn.Mutate(ctx, mu)
+	if err != nil {
+		return fmt.Errorf("failed to create user node: %w", err)
+	}
+
+	c.logger.Info("Created User node in DGraph", zap.String("username", username))
+	return nil
+}
+
+// CreateGroup creates a new group (V2) with strict namespace isolation and admin hierarchy
+func (c *Client) CreateGroup(ctx context.Context, name, description, ownerID string) (string, error) {
+	// Find owner user
+	ownerNode, err := c.FindNodeByName(ctx, ownerID, NodeTypeUser)
+	if err != nil {
+		return "", fmt.Errorf("failed to find owner: %w", err)
+	}
+	if ownerNode == nil {
+		return "", fmt.Errorf("owner user %s not found", ownerID)
+	}
+
+	groupID := uuid.New().String()
+	namespace := fmt.Sprintf("group_%s", groupID)
+
+	// Create Group Node (It exists within its OWN namespace so it can be found by queries filtering for that group)
+	// WAIT: A group node itself acts as the anchor. If I put it in "group_X", then to find it I need to know "group_X".
+	// But I don't know "group_X" yet.
+	// The Group Node must be visible to the CREATOR (user_X) and Members.
+	// So Group Node should effectively be in "user_X" (created by)?
+	// NO.
+	// Solution: The Group Node has `namespace: "system"` or `namespace: "registry"`, OR
+	// We simply use the `group_has_member` edges from the USER to find the groups.
+	// The USER is in `user_X`. The User Node has `~group_has_member` edge to Group Node.
+	// When we query `User { ~group_has_member { ... } }` we are traversing FROM `user_X`.
+	// As long as the Group Node EXISTS, DGraph handles the traversal.
+	// The `namespace` field on the Group Node is just metadata for "what namespace does this define".
+	// So, we set `namespace` = `group_X` on the Group Node to indicate "I define this space".
+
+	now := time.Now().Format(time.RFC3339)
+	groupUID := "_:newgroup"
+
+	nquads := fmt.Sprintf(`
+		%s <dgraph.type> "Group" .
+		%s <name> %q .
+		%s <description> %q .
+		%s <namespace> %q .
+		%s <created_at> %q .
+		%s <updated_at> %q .
+		
+		# Hierarchy
+		%s <group_has_admin> <%s> .
+		%s <group_has_member> <%s> .
+	`,
+		groupUID, groupUID, name,
+		groupUID, description,
+		groupUID, namespace,
+		groupUID, now,
+		groupUID, now,
+		groupUID, ownerNode.UID,
+		groupUID, ownerNode.UID)
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquads),
+		CommitNow: true,
+	}
+
+	_, err = txn.Mutate(ctx, mu)
+	if err != nil {
+		return "", fmt.Errorf("failed to create group: %w", err)
+	}
+
+	// The returned ID is the DGraph UID.
+	// But the LOGICAL ID (for namespace) is the UUID we generated.
+	// We should probably store the UUID as a property `group_id` for external reference?
+	// For now, returning the Namespace string as the identifier to the caller is most useful.
+	// But `resp.Uids["newgroup"]` returns the DGraph UID.
+	// Let's return the namespace string, as that is the "ID" needed for further API calls.
+
+	return namespace, nil
+}
+
+// AddGroupMember adds a user to a group (V2)
+func (c *Client) AddGroupMember(ctx context.Context, groupNamespace, username string) error {
+	// groupNamespace e.g. "group_<UUID>"
+	// We need to find the Group Node by its namespace field.
+
+	q := `query FindGroup($ns: string) {
+		g(func: eq(namespace, $ns)) @filter(type(Group)) {
+			uid
+		}
+	}`
+	resp, err := c.Query(ctx, q, map[string]string{"$ns": groupNamespace})
+	if err != nil {
+		return fmt.Errorf("failed to query group: %w", err)
+	}
+
+	var res struct {
+		G []struct {
+			UID string `json:"uid"`
+		} `json:"g"`
+	}
+	json.Unmarshal(resp, &res)
+	if len(res.G) == 0 {
+		return fmt.Errorf("group %s not found", groupNamespace)
+	}
+	groupUID := res.G[0].UID
+
+	// Find the User
+	userNode, err := c.FindNodeByName(ctx, username, NodeTypeUser)
+	if err != nil || userNode == nil {
+		return fmt.Errorf("user %s not found", username)
+	}
+
+	// Delete the edge
+	nquad := fmt.Sprintf(`<%s> <group_has_member> <%s> .`, groupUID, userNode.UID)
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		DelNquads: []byte(nquad),
+		CommitNow: true,
+	}
+
+	if _, err := txn.Mutate(ctx, mu); err != nil {
+		return fmt.Errorf("failed to remove member: %w", err)
+	}
+	return nil
+	return nil
+}
+
+// RemoveGroupMember removes a user from a group (V2)
+func (c *Client) RemoveGroupMember(ctx context.Context, groupNamespace, username string) error {
+	// Find the Group
+	query := `query Group($ns: string) {
+		g(func: eq(namespace, $ns)) {
+			uid
+		}
+	}`
+	resp, err := c.Query(ctx, query, map[string]string{"$ns": groupNamespace})
+	if err != nil {
+		return fmt.Errorf("failed to query group: %w", err)
+	}
+
+	var res struct {
+		G []struct {
+			UID string `json:"uid"`
+		} `json:"g"`
+	}
+	json.Unmarshal(resp, &res)
+	if len(res.G) == 0 {
+		return fmt.Errorf("group %s not found", groupNamespace)
+	}
+	groupUID := res.G[0].UID
+
+	// Find the User
+	userNode, err := c.FindNodeByName(ctx, username, NodeTypeUser)
+	if err != nil || userNode == nil {
+		return fmt.Errorf("user %s not found", username)
+	}
+
+	// Delete the edge
+	nquad := fmt.Sprintf(`<%s> <group_has_member> <%s> .`, groupUID, userNode.UID)
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		DelNquads: []byte(nquad),
+		CommitNow: true,
+	}
+
+	if _, err := txn.Mutate(ctx, mu); err != nil {
+		return fmt.Errorf("failed to remove member: %w", err)
+	}
+	return nil
+}
+
+// ShareToGroup shares a conversation with a group
+func (c *Client) ShareToGroup(ctx context.Context, conversationID, groupNamespace string) error {
+	// 1. Find Conversation Node
+	queryConv := `query Conv($id: string) {
+		c(func: eq(source_conversation_id, $id)) {
+			uid
+		}
+	}`
+	respConv, err := c.Query(ctx, queryConv, map[string]string{"$id": conversationID})
+	if err != nil {
+		return fmt.Errorf("failed to query conversation: %w", err)
+	}
+	var resConv struct {
+		C []struct {
+			UID string `json:"uid"`
+		} `json:"c"`
+	}
+	json.Unmarshal(respConv, &resConv)
+
+	// If conversation not found via ID, check if it's already a UID
+	var convUID string
+	if len(resConv.C) > 0 {
+		convUID = resConv.C[0].UID
+	} else {
+		// Fallback check if it's a UID
+		// ... actually, rely on source_conversation_id which is UUID string.
+		return fmt.Errorf("conversation %s not found", conversationID)
+	}
+
+	// 2. Find Group Node
+	queryGroup := `query Group($ns: string) {
+		g(func: eq(namespace, $ns)) {
+			uid
+		}
+	}`
+	respGroup, err := c.Query(ctx, queryGroup, map[string]string{"$ns": groupNamespace})
+	if err != nil {
+		return fmt.Errorf("failed to query group: %w", err)
+	}
+	var resGroup struct {
+		G []struct {
+			UID string `json:"uid"`
+		} `json:"g"`
+	}
+	json.Unmarshal(respGroup, &resGroup)
+	if len(resGroup.G) == 0 {
+		return fmt.Errorf("group %s not found", groupNamespace)
+	}
+	groupUID := resGroup.G[0].UID
+
+	// 3. Create Edge: Conversation -> shared_with -> Group
+	nquad := fmt.Sprintf(`<%s> <shared_with> <%s> .`, convUID, groupUID)
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquad),
+		CommitNow: true,
+	}
+
+	if _, err := txn.Mutate(ctx, mu); err != nil {
+		return fmt.Errorf("failed to add member: %w", err)
+	}
+	return nil
+}
+
+// ListUserGroups returns groups the user is a member of (V2)
+// NOTE: This intentionally steps OUTSIDE the strict namespace filter for discovery.
+func (c *Client) ListUserGroups(ctx context.Context, userID string) ([]Group, error) {
+	userNode, err := c.FindNodeByName(ctx, userID, NodeTypeUser)
+	if err != nil || userNode == nil {
+		return nil, fmt.Errorf("user not found: %s", userID)
+	}
+
+	// Traverse from User -> ~group_has_member -> Group
+	query := `query UserGroups($user: string) {
+		groups(func: type(Group)) @filter(uid_in(group_has_member, $user)) {
+			uid
+			name
+			description
+			namespace
+			created_at
+			# We can also fetch members if needed
+			group_has_member {
+				uid
+				name
+			}
+		}
+	}`
+
+	resp, err := c.Query(ctx, query, map[string]string{"$user": userNode.UID})
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Groups []Group `json:"groups"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+
+	return result.Groups, nil
+}
+
+// IsGroupAdmin checks if a user is an admin of the group
+func (c *Client) IsGroupAdmin(ctx context.Context, groupNamespace, userID string) (bool, error) {
+	userNode, err := c.FindNodeByName(ctx, userID, NodeTypeUser)
+	if err != nil || userNode == nil {
+		return false, fmt.Errorf("user not found: %s", userID)
+	}
+
+	query := `query IsAdmin($ns: string, $user: string) {
+		g(func: eq(namespace, $ns)) @filter(uid_in(group_has_admin, $user)) {
+			uid
+		}
+	}`
+
+	resp, err := c.Query(ctx, query, map[string]string{
+		"$ns":   groupNamespace,
+		"$user": userNode.UID,
+	})
+	if err != nil {
+		return false, err
+	}
+
+	var res struct {
+		G []struct {
+			UID string `json:"uid"`
+		} `json:"g"`
+	}
+	if err := json.Unmarshal(resp, &res); err != nil {
+		return false, err
+	}
+
+	return len(res.G) > 0, nil
+}
+>>>>>>> 5f37bd4 (Major update: API timeout fixes, Vector-Native ingestion, Frontend integration)

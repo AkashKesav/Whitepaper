@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Reflection Engine
 
 The Reflection Engine performs "digital rumination" - asynchronous background processing that discovers insights, resolves contradictions, and maintains graph health.
@@ -314,3 +315,247 @@ func (e *Engine) RunCycle(ctx context.Context) error {
 | Reflection Cycle | Every 5 minutes | Full rumination |
 | Activation Decay | Every 1 hour | Time-based decay |
 | Pattern Check | On consultation | Proactive alerts |
+=======
+# Reflection Engine
+
+The Reflection Engine implements "digital rumination" - periodic processing that discovers insights, detects patterns, resolves contradictions, and manages activation priorities.
+
+## Overview
+
+```go
+type Engine struct {
+    synthesis      *SynthesisModule
+    anticipation   *AnticipationModule
+    curation       *CurationModule
+    prioritization *PrioritizationModule
+}
+```
+
+The engine runs all four modules during each reflection cycle, with curation running first followed by the other three in parallel.
+
+---
+
+## 1. Active Synthesis Module
+
+**Location**: `internal/reflection/synthesis.go`
+
+Discovers emergent insights by connecting disparate facts - the "shower thought" capability.
+
+### Purpose
+- Find nodes that might be connected but aren't linked
+- Evaluate if connections represent meaningful insights
+- Create insight nodes in the graph
+
+### Example
+```
+Stored Facts:
+  • "Alex loves Thai food"
+  • "User has peanut allergy"
+
+Synthesized Insight:
+  • "Thai food commonly contains peanuts - caution advised when planning meals with Alex"
+```
+
+### Key Functions
+
+```go
+// Run executes the synthesis module
+func (m *SynthesisModule) Run(ctx context.Context) error
+
+// findPotentialConnections finds nodes that might be connected
+func (m *SynthesisModule) findPotentialConnections(ctx context.Context, nodes []Node) ([]PotentialConnection, error)
+
+// evaluateConnection uses AI to determine if connection is an insight
+func (m *SynthesisModule) evaluateConnection(ctx context.Context, conn PotentialConnection) (*Insight, error)
+
+// DiscoverAllergyConflicts specifically looks for allergy-food conflicts
+func (m *SynthesisModule) DiscoverAllergyConflicts(ctx context.Context) ([]Insight, error)
+```
+
+### PotentialConnection
+```go
+type PotentialConnection struct {
+    Node1         Node
+    Node2         Node
+    PathExists    bool      // Already connected in graph
+    PathLength    int       // Hops between nodes
+    SharedContext []string  // Common tags/themes
+}
+```
+
+---
+
+## 2. Predictive Anticipation Module
+
+**Location**: `internal/reflection/anticipation.go`
+
+Identifies recurring patterns to model and anticipate user needs.
+
+### Purpose
+- Detect temporal patterns (day/time-based behavior)
+- Detect sequence patterns (action chains)
+- Create proactive alerts for patterns
+
+### Example
+```
+Detected Pattern:
+  • Every Monday at 9 AM: User mentions "Project Alpha review"
+  • Sentiment: Negative
+  
+Created Rule:
+  • On Monday morning: Prepare Project Alpha status summary
+```
+
+### Key Functions
+
+```go
+// Run executes the anticipation module
+func (m *AnticipationModule) Run(ctx context.Context) error
+
+// detectTemporalPatterns finds recurring time-based patterns
+func (m *AnticipationModule) detectTemporalPatterns(ctx context.Context) ([]Pattern, error)
+
+// detectSequencePatterns finds action sequences (A -> B -> C)
+func (m *AnticipationModule) detectSequencePatterns(ctx context.Context) ([]Pattern, error)
+
+// CheckScheduledPatterns checks for patterns that should trigger now
+func (m *AnticipationModule) CheckScheduledPatterns(ctx context.Context) ([]string, error)
+
+// CreateRuleFromPattern creates actionable rule from high-confidence pattern
+func (m *AnticipationModule) CreateRuleFromPattern(ctx context.Context, patternUID string) error
+```
+
+### TemporalPattern
+```go
+type TemporalPattern struct {
+    Event      string       // What happens
+    DayOfWeek  time.Weekday // When (day)
+    TimeOfDay  int          // When (hour)
+    Frequency  int          // How often
+    Sentiment  string       // User mood
+    Action     string       // Predicted action
+    Confidence float64      // Detection confidence
+}
+```
+
+---
+
+## 3. Self-Curation Module
+
+**Location**: `internal/reflection/curation.go`
+
+Resolves contradictions and maintains graph consistency.
+
+### Purpose
+- Detect functional edge constraint violations
+- Determine winning fact using temporal logic
+- Archive superseded information
+
+### Example
+```
+Contradiction Detected:
+  • January: "My manager is Bob"
+  • June: "My manager is Alice"
+
+Resolution:
+  • Archive: Bob relationship (older)
+  • Keep: Alice relationship (newer)
+  • Create: SUPERSEDES edge
+```
+
+### Key Functions
+
+```go
+// Run executes the curation module
+func (m *CurationModule) Run(ctx context.Context) error
+
+// checkFunctionalConstraints finds violations of functional edge constraints
+func (m *CurationModule) checkFunctionalConstraints(ctx context.Context) ([]Contradiction, error)
+
+// resolveContradiction attempts to resolve a contradiction
+func (m *CurationModule) resolveContradiction(ctx context.Context, conflict Contradiction) error
+
+// determineWinner uses temporal logic to determine which fact is correct
+func (m *CurationModule) determineWinner(node1, node2 *Node) string
+
+// ValidateGraphIntegrity performs comprehensive integrity check
+func (m *CurationModule) ValidateGraphIntegrity(ctx context.Context) ([]string, error)
+```
+
+### Winner Determination Logic
+1. **Recency**: Prefer more recent nodes
+2. **Confidence**: Prefer higher confidence scores
+3. **Activation**: Prefer higher activation levels
+
+---
+
+## 4. Dynamic Prioritization Module
+
+**Location**: `internal/reflection/prioritization.go`
+
+Implements activation boost/decay for the self-reordering graph.
+
+### Purpose
+- Boost frequently accessed nodes
+- Apply decay to stale nodes
+- Promote core identity nodes
+
+### Activation Formula
+```
+newActivation = currentActivation * (1 - decayRate)^daysSinceAccess
+```
+
+### Key Functions
+
+```go
+// Run executes the prioritization module
+func (m *PrioritizationModule) Run(ctx context.Context) error
+
+// ApplyDecay applies activation decay to all nodes
+func (m *PrioritizationModule) ApplyDecay(ctx context.Context) error
+
+// getHighFrequencyNodes returns nodes with high access counts
+func (m *PrioritizationModule) getHighFrequencyNodes(ctx context.Context) ([]Node, error)
+
+// boostActivation increases a node's activation
+func (m *PrioritizationModule) boostActivation(ctx context.Context, uid string) error
+
+// promoteCoreIdentityNodes promotes high-activation nodes
+func (m *PrioritizationModule) promoteCoreIdentityNodes(ctx context.Context) (int, error)
+
+// CalculateTraversalCost calculates cost to traverse (inverse of activation)
+func (m *PrioritizationModule) CalculateTraversalCost(activation float64) float64
+```
+
+### Core Identity
+Nodes with activation >= 0.9 are considered "core identity" and are protected from aggressive decay. These represent fundamental user traits.
+
+---
+
+## Reflection Cycle Execution
+
+```go
+func (e *Engine) RunCycle(ctx context.Context) error {
+    // 1. Curation runs first (serial)
+    e.curation.Run(ctx)
+    
+    // 2. Other modules run in parallel
+    go e.prioritization.Run(ctx)
+    go e.synthesis.Run(ctx)
+    go e.anticipation.Run(ctx)
+    
+    // Wait for completion
+    // Log results
+}
+```
+
+## Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| ReflectionInterval | 5 min | Time between cycles |
+| MinBatchSize | 5 | Minimum nodes to process |
+| MaxBatchSize | 50 | Maximum nodes per cycle |
+| DecayRate | 0.1 | Daily activation decay |
+| CoreIdentityThreshold | 0.9 | Protection threshold |
+>>>>>>> 5f37bd4 (Major update: API timeout fixes, Vector-Native ingestion, Frontend integration)

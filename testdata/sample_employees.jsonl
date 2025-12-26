@@ -1,0 +1,5 @@
+{"id": "user-001", "name": "Alice Johnson", "email": "alice@acme.com", "role": "Senior Engineer", "team": "Platform", "skills": ["Go", "Python", "Kubernetes"]}
+{"id": "user-002", "name": "Bob Smith", "email": "bob@acme.com", "role": "Engineering Manager", "team": "Platform", "reports_to": "user-005"}
+{"id": "user-003", "name": "Carol Williams", "email": "carol@acme.com", "role": "Product Manager", "team": "Product", "expertise": "B2B SaaS"}
+{"id": "user-004", "name": "David Brown", "email": "david@acme.com", "role": "DevOps Engineer", "team": "Infrastructure", "skills": ["Terraform", "AWS", "Docker"]}
+{"id": "user-005", "name": "Emma Davis", "email": "emma@acme.com", "role": "VP Engineering", "team": "Engineering", "direct_reports": ["user-002"]}

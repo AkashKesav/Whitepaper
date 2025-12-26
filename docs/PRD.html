@@ -1,0 +1,2765 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reflective Memory Kernel - PRD</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --primary: #4f46e5;
+            --primary-light: #6366f1;
+            --primary-dark: #3730a3;
+            --secondary: #0284c7;
+            --accent: #7c3aed;
+            --success: #059669;
+            --warning: #d97706;
+            --danger: #dc2626;
+            --bg-main: #ffffff;
+            --bg-card: #f8fafc;
+            --bg-subtle: #f1f5f9;
+            --bg-muted: #e2e8f0;
+            --text-primary: #0f172a;
+            --text-secondary: #475569;
+            --text-muted: #64748b;
+            --border: #cbd5e1;
+            --border-light: #e2e8f0;
+            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-main);
+            color: var(--text-primary);
+            line-height: 1.7;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        header {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 50%, var(--secondary) 100%);
+            padding: 4rem 2rem;
+            text-align: center;
+            color: white;
+        }
+
+        header h1 {
+            font-size: 3rem;
+            font-weight: 800;
+            margin-bottom: 1rem;
+        }
+
+        header p {
+            font-size: 1.2rem;
+            opacity: 0.95;
+            max-width: 700px;
+            margin: 0 auto;
+        }
+
+        .badge {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 0.5rem 1.5rem;
+            border-radius: 9999px;
+            margin-top: 1.5rem;
+            font-size: 0.875rem;
+        }
+
+        section {
+            background: var(--bg-card);
+            border-radius: 1rem;
+            padding: 2rem;
+            margin-bottom: 1.5rem;
+            border: 1px solid var(--border-light);
+            box-shadow: var(--shadow);
+        }
+
+        section h2 {
+            color: var(--primary);
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 1.5rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 2px solid var(--border-light);
+        }
+
+        section h3 {
+            color: var(--text-primary);
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin: 1.5rem 0 1rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+            font-size: 0.9rem;
+        }
+
+        th,
+        td {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        th {
+            background: linear-gradient(to right, var(--primary), var(--primary-light));
+            color: white;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+        }
+
+        tr:hover {
+            background: var(--bg-subtle);
+        }
+
+        .grid {
+            display: grid;
+            gap: 1.5rem;
+        }
+
+        .grid-2 {
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        }
+
+        .grid-3 {
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        }
+
+        .card {
+            background: var(--bg-main);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            border: 1px solid var(--border-light);
+            transition: all 0.2s;
+        }
+
+        .card:hover {
+            box-shadow: var(--shadow);
+            transform: translateY(-2px);
+        }
+
+        .card h4 {
+            color: var(--primary);
+            margin-bottom: 0.5rem;
+            font-size: 1rem;
+        }
+
+        .priority {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 9999px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+
+        .priority-high {
+            background: #fee2e2;
+            color: var(--danger);
+        }
+
+        .priority-medium {
+            background: #fef3c7;
+            color: var(--warning);
+        }
+
+        .priority-low {
+            background: #d1fae5;
+            color: var(--success);
+        }
+
+        .mermaid {
+            background: linear-gradient(135deg, var(--bg-subtle), var(--bg-muted));
+            border-radius: 1rem;
+            padding: 2rem;
+            margin: 1.5rem 0;
+            border: 1px solid var(--border-light);
+            overflow-x: auto;
+        }
+
+        ul,
+        ol {
+            margin: 0.75rem 0 0.75rem 1.5rem;
+        }
+
+        li {
+            margin: 0.3rem 0;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        code {
+            background: var(--bg-muted);
+            padding: 0.15rem 0.4rem;
+            border-radius: 0.25rem;
+            font-size: 0.85rem;
+            color: var(--primary);
+        }
+
+        .toc {
+            position: sticky;
+            top: 1rem;
+            background: var(--bg-card);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            border: 1px solid var(--border-light);
+        }
+
+        .toc h3 {
+            margin-bottom: 1rem;
+            color: var(--primary);
+            font-size: 0.95rem;
+        }
+
+        .toc a {
+            display: block;
+            color: var(--text-secondary);
+            text-decoration: none;
+            padding: 0.4rem 0.75rem;
+            font-size: 0.8rem;
+            border-left: 2px solid var(--border-light);
+            transition: all 0.15s;
+        }
+
+        .toc a:hover {
+            color: var(--primary);
+            border-left-color: var(--primary);
+            background: var(--bg-subtle);
+        }
+
+        .main-layout {
+            display: grid;
+            grid-template-columns: 220px 1fr;
+            gap: 2rem;
+        }
+
+        @media (max-width: 1024px) {
+            .main-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .toc {
+                position: static;
+            }
+        }
+
+        .wf {
+            background: var(--bg-main);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            overflow: hidden;
+            margin: 1rem 0;
+        }
+
+        .wf-header {
+            background: var(--bg-subtle);
+            padding: 0.5rem 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .wf-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .wf-dot.r {
+            background: #ef4444;
+        }
+
+        .wf-dot.y {
+            background: #f59e0b;
+        }
+
+        .wf-dot.g {
+            background: #22c55e;
+        }
+
+        .wf-title {
+            margin-left: 0.75rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .wf-body {
+            display: grid;
+            gap: 1rem;
+            padding: 1rem;
+            min-height: 280px;
+        }
+
+        .wf-side {
+            background: var(--bg-subtle);
+            border-radius: 0.5rem;
+            padding: 1rem;
+        }
+
+        .wf-main {
+            background: var(--bg-subtle);
+            border-radius: 0.5rem;
+            padding: 1rem;
+        }
+
+        .wf-nav {
+            padding: 0.5rem 0.75rem;
+            margin: 0.2rem 0;
+            border-radius: 0.375rem;
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
+
+        .wf-nav.active {
+            background: var(--primary);
+            color: white;
+        }
+
+        .wf-chat {
+            background: var(--bg-muted);
+            border-radius: 0.75rem;
+            padding: 0.6rem 1rem;
+            margin: 0.4rem 0;
+            max-width: 80%;
+            font-size: 0.85rem;
+        }
+
+        .wf-chat.user {
+            background: var(--primary);
+            color: white;
+            margin-left: auto;
+        }
+
+        .wf-metric {
+            text-align: center;
+            padding: 1rem;
+            background: var(--bg-main);
+            border-radius: 0.5rem;
+            border: 1px solid var(--border-light);
+        }
+
+        .wf-metric-val {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .wf-metric-lbl {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .kg-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin: 1rem 0;
+        }
+
+        .kg-node {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.4rem 0.75rem;
+            border-radius: 0.5rem;
+            font-size: 0.8rem;
+            font-weight: 500;
+            border: 2px solid;
+        }
+
+        .kg-user {
+            border-color: var(--primary);
+            background: rgba(79, 70, 229, 0.1);
+        }
+
+        .kg-entity {
+            border-color: var(--secondary);
+            background: rgba(2, 132, 199, 0.1);
+        }
+
+        .kg-insight {
+            border-color: var(--accent);
+            background: rgba(124, 58, 237, 0.1);
+        }
+
+        .kg-pattern {
+            border-color: var(--success);
+            background: rgba(5, 150, 105, 0.1);
+        }
+
+        .kg-alert {
+            border-color: var(--danger);
+            background: rgba(220, 38, 38, 0.1);
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>🧠 Reflective Memory Kernel</h1>
+        <p>Product Requirements Document for an AI Memory Architecture — Transforming Reactive RAG into Proactive
+            Agent-Augmented Generation</p>
+        <div class="badge">📋 Version 1.0.0 • December 2024</div>
+    </header>
+
+    <div class="container">
+        <div class="main-layout">
+            <nav class="toc">
+                <h3>📑 Contents</h3>
+                <a href="#overview">1. Product Overview</a>
+                <a href="#architecture">2. System Architecture</a>
+                <a href="#features">3. Core Features</a>
+                <a href="#user-stories">4. User Stories</a>
+                <a href="#wireframes">5. UI Wireframes</a>
+                <a href="#knowledge-graph">6. Knowledge Graph</a>
+                <a href="#data-model">7. Data Model</a>
+                <a href="#api">8. API Specification</a>
+                <a href="#technical">9. Technical Requirements</a>
+                <a href="#milestones">10. Milestones</a>
+                <a href="#enterprise">11. Enterprise Use Cases</a>
+                <a href="#success">12. Success Metrics</a>
+            </nav>
+
+            <main>
+                <!-- Section 1 -->
+                <section id="overview">
+                    <h2>1. Product Overview</h2>
+                    <h3>1.1 Vision</h3>
+                    <p>Build an AI memory system that thinks like a human subconscious — continuously processing,
+                        connecting, and anticipating rather than simply storing and retrieving.</p>
+                    <h3>1.2 Problem</h3>
+                    <div class="card" style="background: #fef2f2; border-color: #fecaca;">
+                        <h4 style="color: var(--danger);">Current AI Limitations</h4>
+                        <ul>
+                            <li><strong>Stateless</strong> — Each conversation starts from zero</li>
+                            <li><strong>Reactive</strong> — Only finds info when explicitly asked</li>
+                            <li><strong>No insights</strong> — Cannot connect disparate facts</li>
+                            <li><strong>No temporal awareness</strong> — Cannot track changes over time</li>
+                        </ul>
+                    </div>
+                    <h3>1.3 Solution</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>🎭 Front-End Agent</h4>
+                            <ul>
+                                <li>Fast conversational interface</li>
+                                <li>Sub-200ms latency</li>
+                                <li>Hot cache for instant retrieval</li>
+                                <li>WebSocket streaming</li>
+                            </ul>
+                        </div>
+                        <div class="card">
+                            <h4>🧠 Memory Kernel</h4>
+                            <ul>
+                                <li>Async background processing</li>
+                                <li>Three-phase loop</li>
+                                <li>Activation-based graph</li>
+                                <li>Pattern detection</li>
+                            </ul>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Section 2 -->
+                <section id="architecture">
+                    <h2>2. System Architecture</h2>
+                    <h3>2.1 High-Level Architecture</h3>
+                    <div class="mermaid">
+                        %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e0e7ff', 'primaryTextColor':
+                        '#3730a3', 'primaryBorderColor': '#6366f1', 'lineColor': '#64748b', 'secondaryColor': '#dbeafe',
+                        'tertiaryColor': '#f0fdf4', 'background': '#ffffff', 'clusterBkg': '#f8fafc', 'clusterBorder':
+                        '#e2e8f0'}}}%%
+                        flowchart TB
+                        subgraph User["👤 User Layer"]
+                        UI["🖥️ Web UI"]
+                        API["🔌 REST / WebSocket"]
+                        end
+                        subgraph Agent["🎭 Front-End Agent"]
+                        direction LR
+                        HTTP["🌐 HTTP"]
+                        WS["📡 WebSocket"]
+                        JWT["🔐 Auth"]
+                        HC["⚡ Hot Cache"]
+                        end
+                        subgraph Kernel["🧠 Memory Kernel"]
+                        P1["📥 Ingestion"]
+                        P2["💭 Reflection"]
+                        P3["💬 Consultation"]
+                        end
+                        subgraph Reflect["🔮 Reflection Engine"]
+                        SYN["✨ Synthesis"]
+                        ANT["🔮 Anticipation"]
+                        CUR["🧹 Curation"]
+                        PRI["📊 Priority"]
+                        end
+                        subgraph Data["💾 Data Layer"]
+                        DG[("🔷 DGraph")]
+                        NATS[("📨 NATS")]
+                        REDIS[("🔴 Redis")]
+                        end
+                        subgraph AI["🤖 AI Services"]
+                        EXT["📝 Extract"]
+                        SYS["📋 Synthesize"]
+                        EMB["🧬 Embed"]
+                        end
+                        UI --> HTTP
+                        API --> HTTP
+                        HTTP --> JWT & WS & HC
+                        HTTP --> P3
+                        WS -.-> NATS
+                        P1 --> DG & EXT
+                        P2 --> SYN & ANT & CUR & PRI
+                        P3 --> DG & SYS
+                        NATS --> P1
+                        HC --> REDIS
+                    </div>
+
+                    <h3>2.2 Data Flow</h3>
+                    <div class="mermaid">
+                        %%{init: {'theme': 'base', 'themeVariables': { 'actorBkg': '#e0e7ff', 'actorBorder': '#6366f1',
+                        'actorTextColor': '#3730a3', 'signalColor': '#6366f1', 'noteBkgColor': '#fef3c7',
+                        'noteTextColor': '#92400e'}}}%%
+                        sequenceDiagram
+                        autonumber
+                        participant U as 👤 User
+                        participant FE as 🎭 Agent
+                        participant HC as ⚡ Cache
+                        participant MK as 🧠 Kernel
+                        participant AI as 🤖 AI
+                        participant DG as 🔷 Graph
+                        U->>FE: Send Message
+                        FE->>HC: Search Context
+                        HC-->>FE: Recent Messages
+                        FE->>MK: Consult(query)
+                        MK->>DG: Query Facts
+                        DG-->>MK: Knowledge Nodes
+                        MK->>AI: Synthesize
+                        AI-->>MK: Brief
+                        MK-->>FE: Response
+                        FE->>AI: Generate
+                        AI-->>FE: LLM Response
+                        FE-->>U: Display
+                        Note over FE,MK: Async: Transcript
+                        FE-)MK: TranscriptEvent
+                        MK->>AI: Extract
+                        AI-->>MK: Entities
+                        MK->>DG: Upsert
+                    </div>
+
+                    <h3>2.3 Three-Phase Loop</h3>
+                    <div class="mermaid">
+                        %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#dbeafe', 'primaryTextColor':
+                        '#1e40af', 'primaryBorderColor': '#3b82f6', 'lineColor': '#3b82f6'}}}%%
+                        stateDiagram-v2
+                        direction LR
+                        [*] --> Ingestion
+                        state Ingestion {
+                        [*] --> Receive
+                        Receive --> Extract
+                        Extract --> Store
+                        Store --> [*]
+                        }
+                        Ingestion --> Reflection: Periodic
+                        state Reflection {
+                        [*] --> Curate
+                        Curate --> Synthesize
+                        Curate --> Anticipate
+                        Curate --> Prioritize
+                        Synthesize --> [*]
+                        Anticipate --> [*]
+                        Prioritize --> [*]
+                        }
+                        Reflection --> Consultation: On Query
+                        state Consultation {
+                        [*] --> Cache
+                        Cache --> Query
+                        Query --> Brief
+                        Brief --> Respond
+                        Respond --> [*]
+                        }
+                        Consultation --> Ingestion: Log
+                    </div>
+                </section>
+
+                <!-- Section 3 -->
+                <section id="features">
+                    <h2>3. Core Features</h2>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>F1: Conversational Memory</h4><span class="priority priority-high">P0</span>
+                            <ul>
+                                <li>Hot path: Ring buffer (50 msgs)</li>
+                                <li>Cold path: Summarization</li>
+                                <li>Semantic search</li>
+                            </ul>
+                        </div>
+                        <div class="card">
+                            <h4>F2: Entity Extraction</h4><span class="priority priority-high">P0</span>
+                            <ul>
+                                <li>People, places, preferences</li>
+                                <li>Relationships</li>
+                                <li>Attributes</li>
+                            </ul>
+                        </div>
+                        <div class="card">
+                            <h4>F3: Active Synthesis</h4><span class="priority priority-high">P0</span>
+                            <ul>
+                                <li>Shower thought capability</li>
+                                <li>Allergy conflict detection</li>
+                                <li>Cross-domain insights</li>
+                            </ul>
+                        </div>
+                        <div class="card">
+                            <h4>F4: Self-Curation</h4><span class="priority priority-medium">P1</span>
+                            <ul>
+                                <li>Functional constraints</li>
+                                <li>Temporal resolution</li>
+                                <li>Confidence scoring</li>
+                            </ul>
+                        </div>
+                        <div class="card">
+                            <h4>F5: Predictive Anticipation</h4><span class="priority priority-medium">P1</span>
+                            <ul>
+                                <li>Temporal patterns</li>
+                                <li>Sequence patterns</li>
+                                <li>Auto rule generation</li>
+                            </ul>
+                        </div>
+                        <div class="card">
+                            <h4>F6: Dynamic Prioritization</h4><span class="priority priority-medium">P1</span>
+                            <ul>
+                                <li>Access boost</li>
+                                <li>Time decay</li>
+                                <li>Core identity protection</li>
+                            </ul>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Section 4 -->
+                <section id="user-stories">
+                    <h2>4. User Stories</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Story</th>
+                                <th>Criteria</th>
+                                <th>Priority</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>US-01</td>
+                                <td>Remember yesterday's conversation</td>
+                                <td>Accurate context recall</td>
+                                <td><span class="priority priority-high">P0</span></td>
+                            </tr>
+                            <tr>
+                                <td>US-02</td>
+                                <td>Proactive conflict warnings</td>
+                                <td>Thai food + allergy alert</td>
+                                <td><span class="priority priority-high">P0</span></td>
+                            </tr>
+                            <tr>
+                                <td>US-03</td>
+                                <td>Update replaces old info</td>
+                                <td>Manager change archived</td>
+                                <td><span class="priority priority-medium">P1</span></td>
+                            </tr>
+                            <tr>
+                                <td>US-04</td>
+                                <td>Anticipate routine needs</td>
+                                <td>Monday prep suggested</td>
+                                <td><span class="priority priority-medium">P1</span></td>
+                            </tr>
+                            <tr>
+                                <td>US-05</td>
+                                <td>Fast responses</td>
+                                <td>&lt;200ms cached</td>
+                                <td><span class="priority priority-high">P0</span></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </section>
+
+                <!-- Section 5 -->
+                <section id="wireframes">
+                    <h2>5. UI Wireframes</h2>
+                    <h3>5.1 Chat Interface</h3>
+                    <div class="wf">
+                        <div class="wf-header">
+                            <div class="wf-dot r"></div>
+                            <div class="wf-dot y"></div>
+                            <div class="wf-dot g"></div><span class="wf-title">RMK Chat</span>
+                        </div>
+                        <div class="wf-body" style="grid-template-columns: 180px 1fr;">
+                            <div class="wf-side">
+                                <div style="font-weight: 600; margin-bottom: 0.75rem; font-size: 0.85rem;">💬 Chats
+                                </div>
+                                <div class="wf-nav active">✨ New Chat</div>
+                                <div class="wf-nav">📅 Planning</div>
+                                <div class="wf-nav">📊 Project Alpha</div>
+                                <div style="margin-top: 1.5rem; font-weight: 600; font-size: 0.85rem;">👥 Groups</div>
+                                <div class="wf-nav">🔧 Engineering</div>
+                            </div>
+                            <div class="wf-main">
+                                <div style="height: 200px; overflow-y: auto; margin-bottom: 0.75rem;">
+                                    <div class="wf-chat">Hello! I'm your memory-enhanced assistant. 🧠</div>
+                                    <div class="wf-chat user">What does Alex like to eat?</div>
+                                    <div class="wf-chat"><strong>Alex loves Thai food</strong> 🍜<br><small>⚠️ Note: You
+                                            have a peanut allergy</small></div>
+                                </div>
+                                <div style="display: flex; gap: 0.5rem;">
+                                    <input type="text"
+                                        style="flex: 1; padding: 0.5rem; border: 1px solid var(--border); border-radius: 0.375rem;"
+                                        placeholder="Type message...">
+                                    <button
+                                        style="background: var(--primary); color: white; padding: 0.5rem 1rem; border: none; border-radius: 0.375rem; cursor: pointer;">Send</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <h3>5.2 Dashboard</h3>
+                    <div class="wf">
+                        <div class="wf-header">
+                            <div class="wf-dot r"></div>
+                            <div class="wf-dot y"></div>
+                            <div class="wf-dot g"></div><span class="wf-title">Dashboard</span>
+                        </div>
+                        <div class="wf-body" style="grid-template-columns: 160px 1fr;">
+                            <div class="wf-side">
+                                <div class="wf-nav active">📊 Dashboard</div>
+                                <div class="wf-nav">💬 Chat</div>
+                                <div class="wf-nav">🕸️ Graph</div>
+                                <div class="wf-nav">💡 Insights</div>
+                                <div class="wf-nav">⚙️ Settings</div>
+                            </div>
+                            <div class="wf-main">
+                                <div
+                                    style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; margin-bottom: 1rem;">
+                                    <div class="wf-metric">
+                                        <div class="wf-metric-val">1,247</div>
+                                        <div class="wf-metric-lbl">Nodes</div>
+                                    </div>
+                                    <div class="wf-metric">
+                                        <div class="wf-metric-val">89</div>
+                                        <div class="wf-metric-lbl">Insights</div>
+                                    </div>
+                                    <div class="wf-metric">
+                                        <div class="wf-metric-val">156ms</div>
+                                        <div class="wf-metric-lbl">Latency</div>
+                                    </div>
+                                    <div class="wf-metric">
+                                        <div class="wf-metric-val">12</div>
+                                        <div class="wf-metric-lbl">Patterns</div>
+                                    </div>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+                                    <div
+                                        style="background: var(--bg-main); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-light);">
+                                        <div style="font-weight: 600; margin-bottom: 0.5rem; font-size: 0.9rem;">💡
+                                            Recent Insights</div>
+                                        <div
+                                            style="font-size: 0.8rem; color: var(--text-secondary); padding: 0.3rem 0; border-bottom: 1px solid var(--border-light);">
+                                            ⚠️ Thai + peanut conflict</div>
+                                        <div
+                                            style="font-size: 0.8rem; color: var(--text-secondary); padding: 0.3rem 0;">
+                                            📅 Monday pattern</div>
+                                    </div>
+                                    <div
+                                        style="background: var(--bg-main); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-light);">
+                                        <div style="font-weight: 600; margin-bottom: 0.5rem; font-size: 0.9rem;">🏆 Top
+                                            Entities</div>
+                                        <div
+                                            style="font-size: 0.8rem; color: var(--text-secondary); padding: 0.3rem 0; border-bottom: 1px solid var(--border-light);">
+                                            👤 Alex — 0.92</div>
+                                        <div
+                                            style="font-size: 0.8rem; color: var(--text-secondary); padding: 0.3rem 0;">
+                                            🏢 Acme — 0.85</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Section 6 -->
+                <section id="knowledge-graph">
+                    <h2>6. Knowledge Graph</h2>
+                    <h3>6.1 Sample Graph Visualization</h3>
+                    <div class="mermaid">
+                        %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e0e7ff', 'primaryTextColor':
+                        '#3730a3', 'primaryBorderColor': '#6366f1', 'lineColor': '#64748b', 'background': '#ffffff'}}}%%
+                        graph TB
+                        subgraph UserSpace["👤 User Namespace"]
+                        USER((("🧑 User")))
+                        end
+                        subgraph People["👥 People"]
+                        ALEX["👤 Alex<br /><small>Partner</small>"]
+                        ALICE["👩‍💼 Alice<br /><small>Manager</small>"]
+                        BOB["👨‍💼 Bob<br /><small>Colleague</small>"]
+                        end
+                        subgraph Places["🏢 Places"]
+                        ACME["🏢 Acme Corp"]
+                        THAI["🍜 Thai Palace"]
+                        end
+                        subgraph Facts["📝 Facts"]
+                        PEANUT["⚠️ Peanut Allergy"]
+                        THAILIKE["❤️ Loves Thai Food"]
+                        MEETING["📅 Monday Standup"]
+                        end
+                        subgraph Insights["💡 Insights"]
+                        INS1["💡 Thai may<br />contain peanuts"]
+                        INS2["📊 Meeting pattern"]
+                        end
+                        USER -->|"PARTNER_IS"| ALEX
+                        USER -->|"HAS_MANAGER"| ALICE
+                        USER -->|"WORKS_AT"| ACME
+                        USER -->|"HAS_ALLERGY"| PEANUT
+                        USER -->|"KNOWS"| BOB
+                        ALEX -->|"PREFERS"| THAILIKE
+                        THAILIKE -->|"related"| THAI
+                        PEANUT -.->|"SYNTHESIZED"| INS1
+                        THAILIKE -.->|"SYNTHESIZED"| INS1
+                        MEETING -.->|"TRIGGERS"| INS2
+                        style USER fill:#c7d2fe,stroke:#4f46e5,stroke-width:3px
+                        style ALEX fill:#dbeafe,stroke:#0284c7,stroke-width:2px
+                        style ALICE fill:#dbeafe,stroke:#0284c7,stroke-width:2px
+                        style PEANUT fill:#fee2e2,stroke:#dc2626,stroke-width:2px
+                        style INS1 fill:#fef3c7,stroke:#d97706,stroke-width:2px
+                        style INS2 fill:#d1fae5,stroke:#059669,stroke-width:2px
+                    </div>
+
+                    <h3>6.2 Node Types</h3>
+                    <div class="kg-legend">
+                        <span class="kg-node kg-user">👤 User</span>
+                        <span class="kg-node kg-entity">🧑 Entity</span>
+                        <span class="kg-node kg-insight">💡 Insight</span>
+                        <span class="kg-node kg-pattern">🔮 Pattern</span>
+                        <span class="kg-node kg-alert">⚠️ Alert</span>
+                    </div>
+
+                    <h3>6.3 Activation System</h3>
+                    <div class="mermaid">
+                        %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#d1fae5', 'primaryTextColor':
+                        '#065f46', 'primaryBorderColor': '#10b981', 'lineColor': '#6366f1'}}}%%
+                        flowchart LR
+                        subgraph Access["📈 On Access"]
+                        A1[Query Node] --> A2[Boost +0.1]
+                        A2 --> A3[Cap at 1.0]
+                        end
+                        subgraph Decay["📉 Daily Decay"]
+                        D1[All Nodes] --> D2["decay^days"]
+                        D2 --> D3[Floor 0.01]
+                        end
+                        subgraph Core["⭐ Core Identity"]
+                        C1["≥ 0.9"] --> C2[Protected]
+                        end
+                    </div>
+                </section>
+
+                <!-- Section 7 -->
+                <section id="data-model">
+                    <h2>7. Data Model</h2>
+                    <h3>7.1 Entity Relationship</h3>
+                    <div class="mermaid">
+                        %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e0e7ff', 'primaryTextColor':
+                        '#3730a3', 'primaryBorderColor': '#6366f1'}}}%%
+                        erDiagram
+                        USER ||--o{ ENTITY : knows
+                        USER ||--o{ GROUP : member_of
+                        ENTITY ||--o{ ENTITY : related_to
+                        ENTITY ||--o{ INSIGHT : contributes_to
+                        USER { string uid string username float activation }
+                        ENTITY { string uid string name string type float activation }
+                        INSIGHT { string uid string summary float confidence }
+                    </div>
+                    <h3>7.2 Edge Types</h3>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Edge</th>
+                                <th>Functional</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>PARTNER_IS</code></td>
+                                <td>✓</td>
+                                <td>Romantic partner (one current)</td>
+                            </tr>
+                            <tr>
+                                <td><code>HAS_MANAGER</code></td>
+                                <td>✓</td>
+                                <td>Reports to (one current)</td>
+                            </tr>
+                            <tr>
+                                <td><code>WORKS_AT</code></td>
+                                <td>✓</td>
+                                <td>Current employer</td>
+                            </tr>
+                            <tr>
+                                <td><code>PREFERS</code></td>
+                                <td>✗</td>
+                                <td>Positive preference</td>
+                            </tr>
+                            <tr>
+                                <td><code>HAS_ALLERGY</code></td>
+                                <td>✗</td>
+                                <td>Allergy/intolerance</td>
+                            </tr>
+                            <tr>
+                                <td><code>SUPERSEDES</code></td>
+                                <td>✗</td>
+                                <td>Replaces outdated info</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </section>
+
+                <!-- Section 8 -->
+                <section id="api">
+                    <h2>8. API Specification</h2>
+                    <div class="grid grid-3">
+                        <div class="card">
+                            <h4>🎭 Agent (3000)</h4>
+                            <ul>
+                                <li><code>POST /api/chat</code></li>
+                                <li><code>POST /api/login</code></li>
+                                <li><code>WS /api/ws/chat</code></li>
+                            </ul>
+                        </div>
+                        <div class="card">
+                            <h4>🧠 Kernel (9000)</h4>
+                            <ul>
+                                <li><code>POST /api/consult</code></li>
+                                <li><code>POST /api/ingest</code></li>
+                                <li><code>POST /api/reflect</code></li>
+                            </ul>
+                        </div>
+                        <div class="card">
+                            <h4>🤖 AI (8000)</h4>
+                            <ul>
+                                <li><code>POST /extract</code></li>
+                                <li><code>POST /synthesize</code></li>
+                                <li><code>POST /embed</code></li>
+                            </ul>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Section 9 -->
+                <section id="technical">
+                    <h2>9. Technical Requirements</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Component</th>
+                                <th>Technology</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Backend</td>
+                                <td>Go 1.22+</td>
+                            </tr>
+                            <tr>
+                                <td>AI Services</td>
+                                <td>Python / FastAPI 3.11+</td>
+                            </tr>
+                            <tr>
+                                <td>Graph DB</td>
+                                <td>DGraph</td>
+                            </tr>
+                            <tr>
+                                <td>Message Queue</td>
+                                <td>NATS JetStream</td>
+                            </tr>
+                            <tr>
+                                <td>Cache</td>
+                                <td>Redis 7.x</td>
+                            </tr>
+                            <tr>
+                                <td>LLM</td>
+                                <td>NVIDIA NIM / Ollama</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <h3>Performance Targets</h3>
+                    <div class="grid grid-3">
+                        <div class="wf-metric">
+                            <div class="wf-metric-val">&lt;200ms</div>
+                            <div class="wf-metric-lbl">Cached Response</div>
+                        </div>
+                        <div class="wf-metric">
+                            <div class="wf-metric-val">&lt;50ms</div>
+                            <div class="wf-metric-lbl">Cache Search</div>
+                        </div>
+                        <div class="wf-metric">
+                            <div class="wf-metric-val">1000+</div>
+                            <div class="wf-metric-lbl">Concurrent Users</div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Section 10 -->
+                <section id="milestones">
+                    <h2>10. Milestones</h2>
+                    <div class="mermaid">
+                        %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#6366f1', 'primaryTextColor':
+                        '#ffffff', 'lineColor': '#6366f1'}}}%%
+                        gantt
+                        title Development Timeline
+                        dateFormat YYYY-MM-DD
+                        section Core
+                        Architecture & Graph :done, 2024-10-01, 45d
+                        Ingestion Pipeline :done, 2024-11-01, 14d
+                        section Intelligence
+                        Reflection Engine :done, 2024-11-15, 21d
+                        Hot Cache :done, 2024-11-20, 14d
+                        section Polish
+                        AI Services :done, 2024-12-01, 21d
+                        Documentation :done, 2024-12-20, 7d
+                        Production :active, 2025-01-01, 30d
+                    </div>
+                </section>
+
+                <!-- Section 11: Enterprise Use Cases -->
+                <section id="enterprise">
+                    <h2>11. Enterprise Use Cases</h2>
+                    <p style="color: var(--text-secondary); margin-bottom: 1.5rem;">Real-world scenarios demonstrating
+                        how Reflective Memory Kernel transforms enterprise operations across industries.</p>
+
+                    <h3>🏢 Customer Support & Service</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-01: Multi-Session Support Continuity</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Customer contacts support about a billing issue, hangs up, calls back 3 days later.
+                                System recalls previous conversation, unresolved issues, and customer sentiment.</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces repeat
+                                explanation time by 80%</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-02: Cross-Channel Context Preservation</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Customer starts chat, switches to email, then calls. Agent has full context across all
+                                channels including attachments and previous resolutions.</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Unified customer
+                                view across touchpoints</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-03: Proactive Warranty Alerts</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Customer mentions product issue. System synthesizes: "Product was purchased 11 months
+                                ago → Warranty expires next month → Suggest warranty claim now."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Increases
+                                customer satisfaction by 35%</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-04: Escalation Pattern Detection</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                System detects pattern: Customer has contacted 3 times in 2 weeks about same issue →
+                                Auto-escalate to senior agent with full history.</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces churn
+                                risk by 45%</p>
+                        </div>
+                    </div>
+
+                    <h3>💼 Sales & Account Management</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-05: Deal Context Intelligence</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Sales rep asks "What does Acme Corp care about?" System synthesizes: "Budget concerns
+                                (Q2), security compliance (mentioned 4x), integration with Salesforce (requirement)."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Improves deal win
+                                rate by 28%</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-06: Stakeholder Relationship Mapping</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                System tracks: "Sarah (CTO) reports to Mike (CEO). Sarah prefers technical deep-dives.
+                                Mike cares about ROI. Both allergic to long meetings."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Personalized
+                                engagement strategies</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-07: Competitive Intelligence Synthesis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Prospect mentions competitor. System recalls: "Last 5 prospects who mentioned this
+                                competitor were concerned about pricing. Prepare value comparison."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Proactive
+                                objection handling</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-08: Renewal Risk Prediction</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Pattern detected: "Account usage dropped 40% + Support tickets increased 3x + Contract
+                                renewal in 60 days → High churn risk alert."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ 90-day early
+                                warning system</p>
+                        </div>
+                    </div>
+
+                    <h3>⚕️ Healthcare & Medical</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-09: Patient History Continuity</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Patient calls with symptoms. System recalls: "Previous visit: migraines + prescribed
+                                medication X. Current meds: Y, Z. Allergy: Penicillin."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Comprehensive
+                                patient context in seconds</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-10: Drug Interaction Alerts</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Doctor prescribes new medication. System synthesizes: "Patient is on Blood Thinner A →
+                                New medication B has interaction risk → Alert with alternatives."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Prevents adverse
+                                drug events</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-11: Follow-up Pattern Detection</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                System detects: "Patient typically reschedules Thursday appointments → Suggest Monday
+                                slots. Patient prefers Dr. Smith → Auto-route."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces no-shows
+                                by 40%</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-12: Care Team Coordination</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Multiple specialists treating same patient. System maintains unified view: "Cardiologist
+                                prescribed X, Neurologist noted Y, Primary care updated Z."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Prevents
+                                fragmented care</p>
+                        </div>
+                    </div>
+
+                    <h3>🏦 Financial Services</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-13: Fraud Pattern Recognition</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Customer behavior pattern: "Usually transacts in NYC + Sudden transaction in London +
+                                Within 2 hours of NYC transaction → Fraud alert."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Real-time fraud
+                                detection</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-14: Financial Advice Continuity</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Client calls advisor. System provides: "Risk tolerance: Conservative. Goals: Retirement
+                                in 10 years. Recent life event: Had baby 3 months ago."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Personalized
+                                advice at scale</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-15: Regulatory Compliance Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                System maintains: "Client opted out of marketing (GDPR). Last KYC update: 11 months ago
+                                → Renewal required. Investment suitability: reviewed Q1."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Automated
+                                compliance monitoring</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-16: Cross-Sell Opportunity Detection</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Pattern: "Client has high savings account balance + Mentioned vacation plans + Has no
+                                travel insurance → Suggest travel insurance product."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Contextual
+                                product recommendations</p>
+                        </div>
+                    </div>
+
+                    <h3>🔧 IT Operations & Engineering</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-17: Incident Resolution Intelligence</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Server alert triggered. System recalls: "Similar alert 3 months ago → Root cause was
+                                memory leak in Service X → Resolution steps applied → Fixed in 15 mins."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces MTTR by
+                                60%</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-18: Knowledge Transfer Continuity</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Senior engineer leaves. System retains: "Architecture decisions for Service Y, why
+                                Framework Z was chosen, known issues with Vendor Q integration."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Preserves
+                                institutional knowledge</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-19: Sprint Context Preservation</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Standup meeting. System provides: "Blocked on API from Team X (3 days). Dependency on
+                                Feature Y. Previous sprint: 2 stories carried over."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Intelligent
+                                project context</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-20: Vendor Relationship Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Evaluating vendor. System recalls: "Last contract negotiation: 15% discount achieved.
+                                SLA violations: 2 in past year. Support quality: declining trend."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Data-driven
+                                vendor decisions</p>
+                        </div>
+                    </div>
+
+                    <h3>⚖️ Legal Services</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-21: Case History Recall</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Lawyer asks about client. System: "Divorce case 2019, custody dispute 2021, current
+                                property matter. Judge preference: formal briefs."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Complete client
+                                context</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-22: Precedent Pattern Detection</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                System detects: "Similar case won using defense X. Judge Y ruled favorably 3/4 times on
+                                this statute."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ 40% better case
+                                outcomes</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-23: Billing Context Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Client historically disputes bills >$5K. Prefers itemized statements. Payment: net-45."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces billing
+                                disputes</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-24: Conflict Check Enhancement</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> New
+                                client intake. System: "Potential conflict: represented opposing party's subsidiary in
+                                2020."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Automated
+                                conflict detection</p>
+                        </div>
+                    </div>
+
+                    <h3>🎓 Education & Academia</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-25: Student Learning History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                Tutor session. System: "Struggles with algebra, visual learner, responds well to
+                                real-world examples."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Personalized
+                                learning</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-26: Parent Communication Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Last meeting: concerned about social skills. Prefers email over calls. Timezone: PST."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Better parent
+                                engagement</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-27: Assignment Pattern Analysis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Student submits late on Mondays → Weekend activity conflict. Suggest Thursday
+                                deadlines."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces late
+                                submissions</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-28: Research Collaboration Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Prof. Smith researches AI ethics. Past collaboration with Dr. Jones on bias detection."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Facilitates
+                                collaboration</p>
+                        </div>
+                    </div>
+
+                    <h3>🏠 Real Estate</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-29: Buyer Preference Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Prefers 3BR, south-facing, near schools. Budget: $500K-600K. Rejected: properties near
+                                highways."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Faster property
+                                matching</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-30: Negotiation History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Seller accepts offers 5-8% below asking. Timeline flexible. Motivated by relocation."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Better deal
+                                outcomes</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-31: Property Visit Synthesis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Visited 12 properties. Liked: open kitchens, backyards. Disliked: basement bedrooms."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Refined
+                                recommendations</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-32: Mortgage Pre-qual Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Pre-approved: $550K at 6.5%. Expires: 60 days. Lender: ABC Bank."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Streamlined
+                                transactions</p>
+                        </div>
+                    </div>
+
+                    <h3>🍽️ Hospitality & Travel</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-33: Guest Preference Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Returning guest: high floor, pillow menu item 3, early check-in, allergic to feathers."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Personalized
+                                stays</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-34: Complaint Resolution History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Previous complaint: noisy room. Compensated with upgrade. Flag: VIP treatment."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Prevents repeat
+                                issues</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-35: Dining Preference Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Regular: Table 7, server Maria, wine: Pinot Noir, dietary: gluten-free."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ VIP recognition
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-36: Travel Pattern Intelligence</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Travels monthly for business. Prefers aisle seats, Marriott properties, early flights."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Proactive booking
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🏭 Manufacturing & Supply Chain</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-37: Supplier Performance Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Supplier X: 3 late deliveries in Q3. Quality issues with batch 2847. Contract renewal:
+                                90 days."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Informed sourcing
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-38: Equipment Maintenance Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Machine A: fails every 6 months. Last maintenance: 5 months ago. Order parts now."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Predictive
+                                maintenance</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-39: Quality Issue Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Defect pattern: 15% higher on night shift. Root cause: temperature variance."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Quality
+                                improvement</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-40: Logistics Optimization</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Route A: 2hr delays on Fridays. Carrier B: 99% on-time. Suggest carrier switch."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces delays
+                                30%</p>
+                        </div>
+                    </div>
+
+                    <h3>📺 Media & Entertainment</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-41: Content Preference Learning</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "User watches sci-fi on weekends, documentaries on weeknights. Skips horror."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Better
+                                recommendations</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-42: Talent Relationship Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Actor X: requires trailer clause, prefers morning calls, agent: CAA."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Smooth
+                                negotiations</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-43: Audience Engagement Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Peak engagement: 8-10 PM. Content type: short-form. Platform: mobile."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Optimized
+                                scheduling</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-44: Subscription Churn Prediction</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "User: viewing dropped 60%, billing failed once, hasn't opened app in 2 weeks."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Proactive
+                                retention</p>
+                        </div>
+                    </div>
+
+                    <h3>🚗 Automotive</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-45: Service History Continuity</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Vehicle: 45K miles, last oil change: 5K ago, tire rotation due, warranty: expires
+                                2025."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Proactive service
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-46: Customer Purchase Journey</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Test drove 3 SUVs, financing preferred, trade-in: 2019 sedan. Decision: 2 weeks."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Personalized
+                                follow-up</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-47: Recall Management</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer's vehicle affected by recall X. Contacted twice, not yet serviced."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Safety compliance
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-48: Lease End Optimization</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Lease ends: 90 days. Over mileage by 2K. Suggest buyout vs new lease options."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Customer
+                                retention</p>
+                        </div>
+                    </div>
+
+                    <h3>💊 Pharmaceutical</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-49: HCP Engagement History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> "Dr.
+                                Smith: prefers clinical data, morning meetings, interested in cardiology trials."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Targeted
+                                engagement</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-50: Clinical Trial Matching</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Patient profile matches Trial ABC criteria. Previous participation: 2 trials."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Faster
+                                recruitment</p>
+                        </div>
+                    </div>
+
+                    <h3>🏛️ Government & Public Sector</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-51: Citizen Service History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Citizen applied for permit A in 2020, license B in 2022. Current: pending benefit
+                                review."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Unified citizen
+                                view</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-52: Case Worker Continuity</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Case transferred. New worker has full history: 3 home visits, 2 interventions, progress
+                                notes."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Seamless handoffs
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-53: Policy Impact Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Similar policy enacted 2018: 15% uptake, 3 implementation issues. Document learnings."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Evidence-based
+                                policy</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-54: Inter-Agency Coordination</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Citizen interacted with agencies A, B, C. Cross-reference for fraud detection."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces fraud 25%
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🛒 Retail & E-Commerce</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-55: Customer Purchase Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Bought size M last time, returned for size L. Prefers brand X. Gift buyer in December."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Personalized
+                                shopping</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-56: Cart Abandonment Context</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Abandoned cart 3x with same item. Price sensitivity detected. Trigger discount offer."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Increases
+                                conversion 20%</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-57: Return Pattern Analysis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer returns 40% of electronics. Flag for review before high-value orders."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces fraud
+                                losses</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-58: Inventory Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Product X sells out every Friday. Last 3 restocks depleted in 2 days. Pre-order now."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Optimal stock
+                                levels</p>
+                        </div>
+                    </div>
+
+                    <h3>📱 Telecommunications</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-59: Network Issue History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer reported 5 outages in area X. Root cause: tower Y. Escalate proactively."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Proactive
+                                resolution</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-60: Plan Optimization</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer uses 2GB avg, pays for 10GB. Suggest downgrade or family plan."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Customer
+                                satisfaction</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-61: Churn Risk Detection</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Searched competitor plans 3x, complained twice, contract ends in 30 days."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Retention offers
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-62: Device Upgrade Timing</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Device 30 months old, battery complaints, eligible for upgrade. New model released."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Timely offers</p>
+                        </div>
+                    </div>
+
+                    <h3>⚡ Energy & Utilities</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-63: Usage Pattern Analysis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Usage spiked 40% last winter. AC unit likely failing. Suggest efficiency audit."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Proactive advice
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-64: Outage Communication</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer prefers SMS alerts. Medical equipment on file. Priority restoration."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Critical care
+                                first</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-65: Billing Dispute History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Disputed 2 bills in 2023. Both resolved with meter re-read. Flag for accuracy check."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Prevents disputes
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-66: Solar Panel Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer installed solar 2022. Net metering active. Annual production: 8MWh."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Accurate billing
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🤝 Nonprofit & NGO</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-67: Donor Relationship Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Major donor: $10K annually, prefers education programs, personal connection to cause."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Personalized
+                                stewardship</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-68: Volunteer History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Volunteer: 50 hours in 2023, skills: marketing, available weekends, last event: Oct."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Better matching
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-69: Grant Application Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Foundation X: applied 3x, funded 1x for education. Next deadline: March. Focus: STEM."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Strategic
+                                applications</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-70: Beneficiary Journey</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Client entered program 2021, milestones: housing secured, job training completed."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Impact
+                                measurement</p>
+                        </div>
+                    </div>
+
+                    <h3>🏥 Insurance</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-71: Claims History Intelligence</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> "3
+                                claims in 5 years, all weather-related. No at-fault accidents. Low risk profile."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Accurate pricing
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-72: Policy Bundling Opportunities</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> "Has
+                                auto policy. Recently purchased home. Cross-sell home insurance bundle."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Increases LTV 35%
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-73: Fraud Detection Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Claim pattern matches known fraud ring. Multiple claims same provider. Flag for SIU."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces fraud
+                                losses</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-74: Renewal Risk Assessment</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Premium increased 15% last renewal. Customer complained. High churn risk."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Retention
+                                strategy</p>
+                        </div>
+                    </div>
+
+                    <h3>🌾 Agriculture</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-75: Crop History Analysis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Field A: soybeans last 2 years. Nitrogen levels low. Recommend corn rotation."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Better yields</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-76: Equipment Usage Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Tractor hours: 2500. Last service: 500 hours ago. Oil change overdue."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Preventive
+                                maintenance</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-77: Weather Impact Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Frost damaged crop in 2022. Plant variety X more resistant. Adjust planting date."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Risk mitigation
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-78: Supplier Relationship</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Seed supplier A: best germination rates. Fertilizer from B: bulk discount available."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Cost optimization
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>📊 Consulting & Professional Services</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-79: Client Engagement History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Client: 3 projects since 2020, $500K total revenue, primary contact: CFO."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Strategic account
+                                management</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-80: Expertise Matching</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Project needs M&A expertise. Consultant Y: 5 similar projects, 4.8 rating."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Optimal staffing
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-81: Proposal Success Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Client prefers fixed-fee, rejected hourly twice. Include case studies from industry."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Higher win rate
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-82: Knowledge Reuse</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Similar project completed for Client X. Reusable frameworks: 3. Time saving: 40%."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Efficiency gains
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🏗️ Construction</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-83: Subcontractor Performance</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Subcontractor X: 2 delays on last project, quality issues on electrical. Avoid for
+                                critical path."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Better partners
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-84: Project Delay Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Similar project took 20% longer. Weather delays common in Q1. Adjust timeline."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Realistic
+                                estimates</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-85: Material Cost Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Steel prices up 15% vs last project. Lumber stable. Adjust budget allocations."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Accurate budgets
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-86: Safety Incident Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Site B: 2 near-misses with scaffolding. Mandate additional training before work
+                                resumes."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Zero incidents
+                                goal</p>
+                        </div>
+                    </div>
+
+                    <h3>🎮 Gaming</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-87: Player Preference Learning</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Player prefers RPGs, plays weekends, in-game purchases: cosmetics only."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Personalized
+                                experience</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-88: Toxicity Pattern Detection</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Player reported 5x in 2 weeks. Previous warning issued. Escalate to temp ban."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Community safety
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-89: Matchmaking Optimization</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Player skill: Diamond. Recent losses: 5. Adjust MMR, suggest practice mode."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Fair matches</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-90: Lapsed Player Reengagement</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Last login: 60 days. 500 hours played. New expansion matches preferences."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Win-back
+                                campaigns</p>
+                        </div>
+                    </div>
+
+                    <h3>🏠 Property Management</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-91: Tenant History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Tenant: 3 years, always on-time, 2 maintenance requests, lease renewal due."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Retention
+                                priority</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-92: Maintenance Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Unit 5B: HVAC issues every summer. Schedule preventive maintenance May."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Proactive repairs
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-93: Vendor Performance</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Plumber A: avg response 2hr, rating 4.5. Electrician B: delayed twice, find
+                                alternative."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Quality service
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-94: Rent Collection Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Tenant pays 5th of month consistently. Set reminder accordingly. No late fees issued."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Better
+                                relationships</p>
+                        </div>
+                    </div>
+
+                    <h3>✈️ Aviation</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-95: Passenger Preference Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Frequent flyer: window seat, vegetarian meal, Priority boarding. Elite status."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ VIP experience
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-96: Delay Impact Analysis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Passenger has tight connection. Delay impacts 3 connecting passengers. Prioritize
+                                rebooking."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Minimal
+                                disruption</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-97: Crew Scheduling Optimization</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Crew member near hours limit. Prior fatigue reports. Schedule day off."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Safety compliance
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-98: Aircraft Maintenance Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Aircraft N123: APU replaced 6 months ago. Next C-check: 500 flight hours."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Airworthiness</p>
+                        </div>
+                    </div>
+
+                    <h3>🎭 Event Management</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-99: Attendee Preference Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> "VIP
+                                guest: dietary restrictions, seating preference, previous complaints noted."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Flawless
+                                experiences</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-100: Vendor Track Record</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Caterer X: excellent for 500+ events. AV vendor Y: had issues at last gala."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reliable partners
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🏈 Sports & Fitness</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-101: Athlete Performance Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Athlete: avg sprint 10.2s, improved 0.3s since Q1. Injury history: hamstring 2023."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Optimized
+                                training</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-102: Member Engagement Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Member visits: dropped from 4x/week to 1x. Last class: yoga. Risk of cancellation."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Retention
+                                outreach</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-103: Coaching History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Client prefers morning sessions, responds well to positive reinforcement, goal:
+                                marathon."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Personalized
+                                coaching</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-104: Equipment Usage Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Treadmill 5: 2000 hours, belt replacement due. Peak usage: 6-8 AM."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Preventive
+                                maintenance</p>
+                        </div>
+                    </div>
+
+                    <h3>🚚 Logistics & Delivery</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-105: Delivery Preference Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer: leave at back door, dog in yard (friendly), best time: after 5 PM."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Successful
+                                deliveries</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-106: Route Optimization History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Route A: school zone delays 3-4 PM. Alternative via B saves 15 mins."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ On-time
+                                deliveries</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-107: Driver Performance Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Driver X: 98% on-time, 4.9 rating, 2 complaints in 2023. Top performer."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Performance
+                                recognition</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-108: Package Issue History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Address X: 3 misdeliveries. Confirm unit number before dispatch."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces errors
+                                50%</p>
+                        </div>
+                    </div>
+
+                    <h3>👥 Human Resources</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-109: Employee Journey Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Hired 2020, promoted 2022, completed leadership training, next review: Q2."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Career
+                                development</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-110: Benefits Inquiry History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Employee asked about parental leave 3x. Life event likely. Proactive outreach."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Supportive HR</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-111: Training Completion Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Compliance training due in 30 days. Previous completion: on deadline. Send early
+                                reminder."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ 100% compliance
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-112: Exit Interview Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Dept X: 5 exits cited management. Common theme: lack of growth. Investigate."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces turnover
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🔬 Research & Development</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-113: Experiment History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Similar experiment failed 2022: temp too high. Suggest 20°C reduction."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Avoids repeat
+                                failures</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-114: Literature Connection</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> "New
+                                paper matches current research. Authors overlap with previous collaboration."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Knowledge
+                                synthesis</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-115: Patent Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Invention X: similar patent filed by competitor. Adjust claims to differentiate."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ IP protection</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-116: Grant Writing Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> "NSF
+                                reviewer feedback from last submission: need more preliminary data. Include now."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Higher success
+                                rate</p>
+                        </div>
+                    </div>
+
+                    <h3>🔒 Cybersecurity</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-117: Threat Pattern Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Similar attack pattern seen Q3. Source: IP range X. Block proactively."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Prevents breaches
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-118: User Behavior Baseline</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "User normally logs in from NYC, 9-5. Login from Russia at 3 AM. Flag anomaly."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Anomaly detection
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-119: Incident Response History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Similar incident resolved by isolating subnet B. Mean time to resolve: 45 mins."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Faster response
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-120: Vendor Security Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Vendor X: last security assessment 18 months ago. SOC 2 expired. Re-assess."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Risk management
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🐾 Veterinary</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-121: Pet Medical History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> "Max
+                                (Golden Retriever): allergic to chicken, hip dysplasia, last vaccine: 11 months ago."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Complete records
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-122: Owner Communication</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Owner prefers text reminders, anxious about procedures, needs extra explanation."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Better client
+                                care</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-123: Treatment Pattern</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Breed X: common skin issues. Last 3 patients: same diagnosis. Check environment."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Pattern
+                                recognition</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-124: Medication Inventory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Drug Y: usage up 30% this month. Stock depletes in 5 days. Reorder now."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ No stockouts</p>
+                        </div>
+                    </div>
+
+                    <h3>📚 Library & Archives</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-125: Patron Reading History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Patron: 15 mystery novels this year. New release in series available. Notify."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Personalized
+                                recommendations</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-126: Research Assistance</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Researcher studied topic X last month. New acquisition relates. Alert."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Proactive service
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-127: Collection Gap Analysis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> "10
+                                requests for topic Y this quarter. No materials available. Acquisition priority."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Demand-driven</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-128: Overdue Pattern</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Patron: 3 late returns. Audio reminder more effective than email."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces overdue
+                                40%</p>
+                        </div>
+                    </div>
+
+                    <h3>⚓ Maritime & Shipping</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-129: Vessel Maintenance History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Ship X: engine overhaul 6 months ago. Similar vessel had issues at 8 months. Monitor."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Preventive care
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-130: Port Efficiency Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Port Y: avg wait 6 hours. Congestion Tuesdays. Schedule arrival Wednesday."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Optimized
+                                scheduling</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-131: Crew Certification Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Officer Z: license expires in 60 days. Schedule renewal training."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Compliance
+                                assured</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-132: Cargo Handling History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Client A: requires temperature monitoring. Previous shipment: 2 deviations. Extra
+                                checks."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Quality assurance
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>⛏️ Mining</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-133: Equipment Failure Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Excavator Model A: hydraulic failures at 5000 hours. Unit at 4800. Schedule service."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Avoids downtime
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-134: Safety Incident Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Section B: 2 near-misses with falling rocks. Additional shoring required."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Zero harm goal
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-135: Environmental Compliance</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Water discharge exceeded limits Q2. Root cause: filter maintenance. Monitor closely."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Regulatory
+                                compliance</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-136: Geological Data Synthesis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Similar rock formation in Section C yielded 15% higher ore. Adjust extraction plan."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Improved yields
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>👔 Recruitment</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-137: Candidate History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Applied 2022, strong but declined offer. Now reapplying. Fast-track interview."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Efficient hiring
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-138: Interview Feedback Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Role X: last 5 hires failed due to culture fit. Add behavioral assessment."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Better hires</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-139: Source Effectiveness</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "LinkedIn: high volume, low conversion. Referrals: 3x better retention. Adjust spend."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Optimized
+                                sourcing</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-140: Salary Benchmark Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Role Y: market rate increased 10% since last hire. Adjust offer range."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Competitive
+                                offers</p>
+                        </div>
+                    </div>
+
+                    <h3>🎪 Theme Parks & Attractions</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-141: Guest Preference Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Family of 4: visited 3x, prefers morning, avoids roller coasters, buys fast pass."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Personalized
+                                visits</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-142: Ride Maintenance Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Ride X: bearing issues every 90 days. Next check due in 2 weeks."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Safety first</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-143: Crowd Flow Analysis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Saturdays: parade causes 30 min backup at Gate B. Suggest alternative routes."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Guest
+                                satisfaction</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-144: Food Preference Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Guest has peanut allergy on file. Alert all F&B stations on entry."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Allergy safety
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>☁️ Cloud & SaaS</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-145: Customer Usage Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer uses 20% of features. Onboarding gap: analytics module. Schedule training."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Feature adoption
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-146: Support Ticket History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> "3
+                                tickets on same issue. Root cause: API rate limiting. Suggest plan upgrade."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Upsell
+                                opportunity</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-147: Integration Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer has Salesforce integration. New API version released. Notify for migration."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Proactive
+                                communication</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-148: Billing History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer: 2 failed payments last year. Card expires next month. Send reminder."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Payment
+                                continuity</p>
+                        </div>
+                    </div>
+
+                    <h3>🎨 Creative Agencies</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-149: Client Brand Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Client X: brand colors #FF5733, prefers minimalist design, dislikes stock photos."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Brand consistency
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-150: Revision History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Client requested 5 rounds of revisions on logo. Set expectations upfront next time."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Better scoping
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🔌 IoT & Smart Devices</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-151: Device Usage Patterns</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Smart thermostat: user lowers temp at 10 PM daily. Automate schedule."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Smart automation
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-152: Firmware Update History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Device failed after update v2.3. Rollback and skip this version for similar devices."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces failures
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-153: Connectivity Issues</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Device X: drops connection every 4 hours. Router compatibility issue known. Suggest
+                                fix."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Proactive support
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-154: Energy Optimization</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "User's energy usage up 20%. New device added. Suggest efficiency tips."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Cost savings</p>
+                        </div>
+                    </div>
+
+                    <h3>🏨 Coworking Spaces</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-155: Member Preference Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Member: prefers quiet zone, books room 3A weekly, coffee preference: oat latte."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Personalized
+                                service</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-156: Space Utilization</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Room B: 80% utilization Tue-Thu, 20% Mon/Fri. Adjust pricing dynamically."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Revenue
+                                optimization</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-157: Networking Opportunities</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Member A: looking for developers. Member B: available freelance dev. Introduce."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Community value
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-158: Amenity Usage</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Printer usage up 40%. Toner low. Auto-reorder before stockout."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Smooth operations
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🎯 Marketing Automation</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-159: Campaign Performance Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Email A/B test: subject with emoji won. Apply learning to future campaigns."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Continuous
+                                improvement</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-160: Lead Scoring History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Lead visited pricing page 5x, downloaded whitepaper. Score: 85. Ready for sales."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Qualified leads
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-161: Content Performance</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Blog posts on topic X: 3x more engagement. Create more content in this area."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Content strategy
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-162: Audience Segmentation</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Segment A: responds to discounts. Segment B: responds to new features. Personalize."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Targeted
+                                messaging</p>
+                        </div>
+                    </div>
+
+                    <h3>📦 Warehouse & Fulfillment</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-163: Pick Path Optimization</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Items A, B, C often ordered together. Relocate to adjacent bins."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Faster picking
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-164: Worker Performance</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Worker X: 20% above average. Worker Y: struggling with zone C. Reassign."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Optimized
+                                staffing</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-165: Damage Pattern Detection</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Product X: 5% damage rate in zone B. Forklift traffic high. Relocate fragile items."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces damage
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-166: Seasonal Demand</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Last December: product Y sales up 300%. Pre-stock front of warehouse Nov 15."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Ready for peaks
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🔧 Field Service</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-167: Equipment Service History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Unit at customer X: 3 repairs in 2 years. Next issue likely. Suggest replacement."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Proactive service
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-168: Technician Skills</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Issue requires certification X. Tech A: certified. Tech B: not. Route to A."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Right tech, first
+                                time</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-169: Parts Inventory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Part Y: used 3x on similar issues. Tech's van inventory: 0. Dispatch from depot."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Prepared visits
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-170: Customer Access Notes</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer X: gate code 1234, dog in backyard, parking behind building."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Smooth access</p>
+                        </div>
+                    </div>
+
+                    <h3>🍕 Food & Beverage</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-171: Customer Order History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Regular: large pepperoni, extra cheese, delivery every Friday 7 PM."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ One-click reorder
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-172: Allergy Management</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer: severe nut allergy. Flag all orders. Kitchen alert."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Safety first</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-173: Inventory Spoilage</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Tomatoes expire in 2 days. Current usage: 3 days worth. Discount or special."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces waste</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-174: Peak Hour Prep</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Lunch rush: 12-1 PM, avg 50 orders. Pre-prep popular items 11:30 AM."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Faster service
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🎓 Corporate Training</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-175: Learning Progress Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Employee: completed modules 1-3, quiz scores improving. Recommend advanced track."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Personalized
+                                learning</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-176: Skill Gap Analysis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Team X: 60% lack cloud certification. Business need: cloud migration. Priority
+                                training."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Strategic
+                                upskilling</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-177: Trainer Effectiveness</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Trainer A: 4.8 rating, 95% completion. Trainer B: 3.2 rating. Coaching needed."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Quality training
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-178: Compliance Deadline</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> "15
+                                employees: ethics training due in 7 days. 5 not started. Escalate to managers."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ 100% compliance
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🏥 Dental Practice</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-179: Patient Treatment History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Patient: crown on tooth 14 (2021), root canal 15 (2022). Due for cleaning."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Complete records
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-180: Anxiety Management</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Patient: dental anxiety noted. Prefers nitrous, extra time for procedures."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Patient comfort
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-181: Insurance Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Patient: $1500 annual max, $800 used. Suggest using remaining before year end."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Benefit
+                                maximization</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-182: Referral Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Referred to specialist 60 days ago. No follow-up. Patient needs extraction."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Care continuity
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🎪 Franchise Operations</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-183: Franchisee Performance</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Location X: sales down 15%, complaints up. Similar pattern before closure at Y."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Early
+                                intervention</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-184: Best Practice Sharing</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Location A: drive-thru time 2 min. Location B: 5 min. Share A's process."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Network
+                                improvement</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-185: Royalty Payment History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Franchisee: late payments 3x in 2023. Financial stress indicators. Proactive support."
+                            </p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Partner success
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-186: Territory Analysis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> "New
+                                housing development in zone X. Population up 20%. Expansion opportunity."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Growth planning
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🛡️ Risk Management</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-187: Incident Pattern Analysis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> "3
+                                slip-and-falls in area X this quarter. Similar lighting issue. Fix immediately."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Prevents injuries
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-188: Contract Risk Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Vendor X: SLA breach 2x in past. Clause Y triggered penalty. Include in renewal."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Protected
+                                interests</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-189: Audit Finding Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Finding X from 2022 audit: recurring. Systemic issue. Escalate to leadership."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Closes gaps</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-190: Business Continuity</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Last outage: vendor A failed. Backup: vendor B. Update contact list."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Resilient
+                                operations</p>
+                        </div>
+                    </div>
+
+                    <h3>📱 Mobile App Development</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-191: User Feedback Synthesis</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong> "App
+                                store reviews: 50 mentions of slow loading. iOS 17 specific. Prioritize fix."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ User-driven fixes
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-192: Feature Usage Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Feature X: 5% adoption. Feature Y: 80%. Consider removing X, enhancing Y."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Focused
+                                development</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-193: Crash Pattern Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Crash rate up 200% after update. Similar to bug in v2.3. Check that fix."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Faster debugging
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-194: A/B Test History</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Last 3 tests: blue buttons outperform green by 15%. Default to blue."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Data-driven
+                                design</p>
+                        </div>
+                    </div>
+
+                    <h3>🌐 Localization</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-195: Translation Memory</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Term 'dashboard' translated 3 ways. Standardize to most common usage."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Consistency</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-196: Regional Preference</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Germany: formal tone preferred. US: casual works. Adjust AI responses."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Cultural fit</p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-197: Translator Performance</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Translator A: fastest but 5% error rate. Translator B: slower, 0.5% errors. Route by
+                                priority."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Quality vs speed
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-198: Market-Specific Content</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Japan: specific compliance requirements. Include local disclaimers automatically."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Local compliance
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>🎁 Loyalty Programs</h3>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>UC-199: Points Expiration Alert</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer: 5000 points expire in 30 days. Suggest redemption options."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Reduces forfeit
+                            </p>
+                        </div>
+                        <div class="card">
+                            <h4>UC-200: Tier Milestone Tracking</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary);"><strong>Scenario:</strong>
+                                "Customer: $200 from Gold status. Suggest qualifying purchase."</p>
+                            <p style="font-size: 0.8rem; color: var(--success); margin-top: 0.5rem;">✓ Tier progression
+                            </p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Section 12 -->
+                <section id="success">
+                    <h2>12. Success Metrics</h2>
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <h4>📊 Quantitative</h4>
+                            <table style="font-size: 0.85rem;">
+                                <tr>
+                                    <td>Response (p50)</td>
+                                    <td><strong>&lt;200ms</strong></td>
+                                </tr>
+                                <tr>
+                                    <td>Memory Recall</td>
+                                    <td><strong>&gt;90%</strong></td>
+                                </tr>
+                                <tr>
+                                    <td>Uptime</td>
+                                    <td><strong>&gt;99.5%</strong></td>
+                                </tr>
+                            </table>
+                        </div>
+                        <div class="card">
+                            <h4>🎯 Qualitative</h4>
+                            <ul>
+                                <li>Users feel understood</li>
+                                <li>Proactive alerts helpful</li>
+                                <li>Graph is auditable</li>
+                            </ul>
+                        </div>
+                    </div>
+                </section>
+
+                <section
+                    style="text-align: center; background: linear-gradient(135deg, var(--bg-subtle), var(--bg-muted)); border: none;">
+                    <p style="color: var(--text-muted); font-size: 0.9rem;"><strong>Reflective Memory
+                            Kernel</strong> —
+                        PRD v1.0.0 • December 2025</p>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <script>mermaid.initialize({ startOnLoad: true, theme: 'base', securityLevel: 'loose' });</script>
+</body>
+
+</html>

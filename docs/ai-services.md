@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # AI Services
 
 The AI Services layer provides SLM (Small Language Model) orchestration for entity extraction, curation, synthesis, and response generation.
@@ -347,3 +348,206 @@ The SLM approach reduces costs by:
 3. **Caching**: Cache synthesis results in Redis
 
 4. **Local Fallback**: Ollama provides free local inference
+=======
+# AI Services
+
+Python FastAPI server providing LLM orchestration for entity extraction, curation, synthesis, embeddings, and response generation.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       FastAPI Application                        │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌───────────┐  │
+│  │  /extract   │ │  /curate    │ │ /synthesize │ │ /generate │  │
+│  └──────┬──────┘ └──────┬──────┘ └──────┬──────┘ └─────┬─────┘  │
+│         │               │               │               │        │
+│  ┌──────▼──────┐ ┌──────▼──────┐ ┌──────▼──────┐       │        │
+│  │ Extraction  │ │  Curation   │ │  Synthesis  │       │        │
+│  │    SLM      │ │    SLM      │ │    SLM      │       │        │
+│  └──────┬──────┘ └──────┬──────┘ └──────┬──────┘       │        │
+│         │               │               │               │        │
+│         └───────────────┴───────────────┴───────────────┘        │
+│                                 │                                 │
+│                         ┌───────▼───────┐                        │
+│                         │   LLM Router  │                        │
+│                         └───────┬───────┘                        │
+│                                 │                                 │
+│    ┌────────────────────────────┼────────────────────────────┐   │
+│    │                            │                            │   │
+│    ▼                            ▼                            ▼   │
+│ ┌──────┐                   ┌──────┐                    ┌──────┐  │
+│ │Ollama│                   │NVIDIA│                    │OpenAI│  │
+│ │Local │                   │ NIM  │                    │ API  │  │
+│ └──────┘                   └──────┘                    └──────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Components
+
+### main.py
+FastAPI application with all endpoint definitions.
+
+### extraction_slm.py
+Entity extraction from conversation transcripts.
+
+```python
+class ExtractionSLM:
+    async def extract(
+        self,
+        user_query: str,
+        ai_response: str,
+        context: Optional[str] = None
+    ) -> List[ExtractedEntity]
+```
+
+**Extracted Entity Structure**:
+```python
+class ExtractedEntity:
+    name: str           # Entity name
+    type: str           # Entity/Fact/Preference/Event
+    description: str    # Optional description
+    tags: List[str]     # Searchable tags
+    attributes: dict    # Additional properties
+    relations: List     # Relationships to other entities
+```
+
+### curation_slm.py
+Contradiction resolution between conflicting facts.
+
+```python
+class CurationSLM:
+    async def resolve(
+        self,
+        node1: dict,  # {name, description, created_at}
+        node2: dict   # {name, description, created_at}
+    ) -> CurationResponse
+```
+
+### synthesis_slm.py
+Response synthesis and insight evaluation.
+
+```python
+class SynthesisSLM:
+    async def synthesize(
+        self,
+        query: str,
+        context: Optional[str],
+        facts: List[dict],
+        insights: List[dict],
+        alerts: List[str]
+    ) -> SynthesisResponse
+
+    async def evaluate_connection(
+        self,
+        node1: dict,
+        node2: dict,
+        path_exists: bool,
+        path_length: int
+    ) -> InsightResponse
+```
+
+### llm_router.py
+Multi-provider LLM abstraction layer.
+
+```python
+class LLMRouter:
+    async def generate(
+        self,
+        query: str,
+        context: Optional[str] = None,
+        alerts: Optional[List[str]] = None,
+        provider: str = "ollama",
+        model: str = None
+    ) -> str
+
+    async def extract_json(
+        self,
+        prompt: str,
+        provider: str = "nvidia",
+        model: str = None
+    ) -> dict
+```
+
+**Supported Providers**:
+| Provider | Models | Use Case |
+|----------|--------|----------|
+| Ollama | llama3.1, mistral | Local development |
+| NVIDIA NIM | llama-3.1-70b-instruct | Production quality |
+| OpenAI | gpt-4, gpt-3.5-turbo | Fallback option |
+
+### embedding_service.py
+Vector embedding generation for semantic search.
+
+```python
+class EmbeddingService:
+    async def get_embedding(self, text: str) -> List[float]
+    
+    def find_most_similar(
+        self,
+        query_embedding: List[float],
+        candidates: List[dict],
+        top_k: int = 5,
+        threshold: float = 0.3
+    ) -> List[dict]
+```
+
+## Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /extract` | Extract entities from conversation |
+| `POST /curate` | Resolve contradictions |
+| `POST /synthesize` | Create coherent brief from facts |
+| `POST /synthesize-insight` | Evaluate potential insight |
+| `POST /generate` | Generate conversational response |
+| `POST /embed` | Generate embedding vector |
+| `POST /semantic-search` | Find similar candidates |
+| `POST /expand-query` | Extract search terms from query |
+| `GET /health` | Health check |
+
+## Configuration
+
+Environment variables:
+
+```bash
+# Required
+NVIDIA_API_KEY=nvapi-...
+
+# Optional
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-...
+OLLAMA_HOST=http://localhost:11434
+PORT=8000
+```
+
+## Dependencies
+
+```txt
+fastapi>=0.104.0
+uvicorn>=0.24.0
+pydantic>=2.0.0
+httpx>=0.25.0
+numpy>=1.24.0
+```
+
+## Running Locally
+
+```bash
+cd ai
+pip install -r requirements.txt
+python main.py
+# Server starts on http://localhost:8000
+```
+
+## Docker
+
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+CMD ["python", "main.py"]
+```
+>>>>>>> 5f37bd4 (Major update: API timeout fixes, Vector-Native ingestion, Frontend integration)

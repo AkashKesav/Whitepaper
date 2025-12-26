@@ -1,0 +1,200 @@
+{"id": "emp-00000", "name": "Henry Wilson", "department": "Operations", "role": "Senior Engineer - Operations", "skills": ["React", "K8s", "JavaScript"], "level": 2, "location": "NYC", "years_exp": 7}
+{"id": "emp-00001", "name": "Emma Smith", "department": "Finance", "role": "Specialist - Finance", "skills": ["JavaScript", "TypeScript", "GraphQL", "Docker", "ML"], "level": 2, "location": "Remote", "years_exp": 17}
+{"id": "emp-00002", "name": "Frank Garcia", "department": "Data Science", "role": "Senior Engineer - Data Science", "skills": ["Rust", "SQL", "JavaScript"], "level": 2, "location": "Seattle", "years_exp": 20}
+{"id": "emp-00003", "name": "Grace Brown", "department": "Sales", "role": "Analyst - Sales", "skills": ["AWS", "Go", "Python", "React", "GraphQL"], "level": 5, "location": "SF", "years_exp": 10}
+{"id": "emp-00004", "name": "David Williams", "department": "Security", "role": "Lead - Security", "skills": ["TypeScript", "AWS", "Docker", "K8s", "JavaScript"], "level": 1, "location": "Remote", "years_exp": 4}
+{"id": "emp-00005", "name": "David Davis", "department": "Security", "role": "Specialist - Security", "skills": ["SQL", "JavaScript", "Rust", "ML", "Docker"], "level": 2, "location": "Seattle", "years_exp": 6}
+{"id": "emp-00006", "name": "Iris Smith", "department": "Sales", "role": "Analyst - Sales", "skills": ["AWS", "TypeScript", "SQL"], "level": 3, "location": "NYC", "years_exp": 8}
+{"id": "emp-00007", "name": "Carol Williams", "department": "Design", "role": "Director - Design", "skills": ["AWS", "SQL", "Python", "Java"], "level": 4, "location": "SF", "years_exp": 13}
+{"id": "emp-00008", "name": "Jack Miller", "department": "Operations", "role": "Senior Engineer - Operations", "skills": ["Java", "Python", "Go"], "level": 5, "location": "Seattle", "years_exp": 15}
+{"id": "emp-00009", "name": "David Williams", "department": "Operations", "role": "Analyst - Operations", "skills": ["GraphQL", "SQL", "ML", "AWS", "Go"], "level": 5, "location": "Austin", "years_exp": 18}
+{"id": "emp-00010", "name": "David Davis", "department": "Operations", "role": "Specialist - Operations", "skills": ["Docker", "ML", "SQL", "GraphQL"], "level": 3, "location": "Seattle", "years_exp": 16}
+{"id": "emp-00011", "name": "David Garcia", "department": "Data Science", "role": "Senior Engineer - Data Science", "skills": ["K8s", "TypeScript", "Rust", "SQL", "Docker"], "level": 3, "location": "Seattle", "years_exp": 2}
+{"id": "emp-00012", "name": "Carol Miller", "department": "Engineering", "role": "Analyst - Engineering", "skills": ["K8s", "SQL", "Go", "JavaScript"], "level": 1, "location": "Remote", "years_exp": 15}
+{"id": "emp-00013", "name": "Jack Johnson", "department": "Sales", "role": "Analyst - Sales", "skills": ["ML", "Java", "TypeScript", "Go", "K8s"], "level": 5, "location": "SF", "years_exp": 11}
+{"id": "emp-00014", "name": "Henry Davis", "department": "Security", "role": "Specialist - Security", "skills": ["ML", "Java"], "level": 4, "location": "SF", "years_exp": 2}
+{"id": "emp-00015", "name": "Bob Brown", "department": "Design", "role": "Coordinator - Design", "skills": ["React", "JavaScript", "TypeScript"], "level": 1, "location": "Austin", "years_exp": 12}
+{"id": "emp-00016", "name": "Frank Johnson", "department": "Security", "role": "Manager - Security", "skills": ["JavaScript", "Docker", "Go", "AWS"], "level": 3, "location": "SF", "years_exp": 3}
+{"id": "emp-00017", "name": "Carol Smith", "department": "Security", "role": "Analyst - Security", "skills": ["K8s", "TypeScript", "ML"], "level": 1, "location": "Remote", "years_exp": 3}
+{"id": "emp-00018", "name": "Jack Wilson", "department": "Design", "role": "Manager - Design", "skills": ["Docker", "Go", "K8s", "React"], "level": 2, "location": "SF", "years_exp": 6}
+{"id": "emp-00019", "name": "Alice Davis", "department": "Finance", "role": "Senior Engineer - Finance", "skills": ["React", "JavaScript"], "level": 2, "location": "NYC", "years_exp": 1}
+{"id": "emp-00020", "name": "Grace Garcia", "department": "Product", "role": "Lead - Product", "skills": ["GraphQL", "Python", "Go", "Docker", "K8s"], "level": 3, "location": "NYC", "years_exp": 16}
+{"id": "emp-00021", "name": "Jack Smith", "department": "Finance", "role": "Manager - Finance", "skills": ["Rust", "React"], "level": 5, "location": "Austin", "years_exp": 17}
+{"id": "emp-00022", "name": "Emma Wilson", "department": "Security", "role": "Senior Engineer - Security", "skills": ["Python", "GraphQL", "React", "ML"], "level": 5, "location": "Seattle", "years_exp": 3}
+{"id": "emp-00023", "name": "Jack Wilson", "department": "Security", "role": "Engineer - Security", "skills": ["K8s", "Java"], "level": 5, "location": "Austin", "years_exp": 13}
+{"id": "emp-00024", "name": "Frank Miller", "department": "Engineering", "role": "Engineer - Engineering", "skills": ["GraphQL", "Java", "ML", "Docker", "Python"], "level": 4, "location": "Seattle", "years_exp": 10}
+{"id": "emp-00025", "name": "Jack Williams", "department": "Marketing", "role": "Specialist - Marketing", "skills": ["Java", "ML"], "level": 2, "location": "SF", "years_exp": 5}
+{"id": "emp-00026", "name": "Iris Garcia", "department": "HR", "role": "Coordinator - HR", "skills": ["TypeScript", "SQL", "GraphQL"], "level": 5, "location": "Austin", "years_exp": 2}
+{"id": "emp-00027", "name": "Frank Williams", "department": "Product", "role": "Director - Product", "skills": ["Docker", "Rust", "ML", "TypeScript"], "level": 4, "location": "Seattle", "years_exp": 20}
+{"id": "emp-00028", "name": "Alice Garcia", "department": "Product", "role": "Manager - Product", "skills": ["Python", "Docker", "K8s"], "level": 4, "location": "Austin", "years_exp": 7}
+{"id": "emp-00029", "name": "Alice Wilson", "department": "Security", "role": "Manager - Security", "skills": ["Docker", "Rust", "JavaScript"], "level": 1, "location": "Austin", "years_exp": 7}
+{"id": "emp-00030", "name": "Henry Brown", "department": "Design", "role": "Manager - Design", "skills": ["AWS", "Go", "JavaScript", "React"], "level": 1, "location": "SF", "years_exp": 4}
+{"id": "emp-00031", "name": "Carol Miller", "department": "Finance", "role": "Lead - Finance", "skills": ["ML", "Java", "React", "K8s", "AWS"], "level": 3, "location": "NYC", "years_exp": 6}
+{"id": "emp-00032", "name": "Grace Williams", "department": "HR", "role": "Director - HR", "skills": ["JavaScript", "Java", "AWS", "ML"], "level": 4, "location": "Seattle", "years_exp": 14}
+{"id": "emp-00033", "name": "Jack Brown", "department": "Product", "role": "Lead - Product", "skills": ["SQL", "AWS", "JavaScript", "TypeScript", "Java"], "level": 4, "location": "Seattle", "years_exp": 5}
+{"id": "emp-00034", "name": "Frank Johnson", "department": "Sales", "role": "Engineer - Sales", "skills": ["Python", "Rust", "Docker", "TypeScript"], "level": 4, "location": "Remote", "years_exp": 13}
+{"id": "emp-00035", "name": "Frank Garcia", "department": "Security", "role": "Analyst - Security", "skills": ["SQL", "React", "GraphQL", "JavaScript", "ML"], "level": 3, "location": "Remote", "years_exp": 7}
+{"id": "emp-00036", "name": "Carol Miller", "department": "Design", "role": "Lead - Design", "skills": ["K8s", "Java", "Python", "React"], "level": 4, "location": "Seattle", "years_exp": 18}
+{"id": "emp-00037", "name": "Carol Wilson", "department": "Security", "role": "Engineer - Security", "skills": ["JavaScript", "GraphQL", "React"], "level": 5, "location": "NYC", "years_exp": 15}
+{"id": "emp-00038", "name": "Emma Williams", "department": "Data Science", "role": "Analyst - Data Science", "skills": ["Go", "React", "TypeScript", "SQL", "ML"], "level": 3, "location": "SF", "years_exp": 17}
+{"id": "emp-00039", "name": "Frank Johnson", "department": "HR", "role": "Senior Engineer - HR", "skills": ["Go", "SQL", "GraphQL"], "level": 5, "location": "SF", "years_exp": 12}
+{"id": "emp-00040", "name": "Bob Smith", "department": "Sales", "role": "Coordinator - Sales", "skills": ["Python", "GraphQL", "Docker", "AWS", "SQL"], "level": 4, "location": "SF", "years_exp": 16}
+{"id": "emp-00041", "name": "Jack Williams", "department": "Product", "role": "Engineer - Product", "skills": ["SQL", "Java", "TypeScript", "K8s", "Python"], "level": 2, "location": "NYC", "years_exp": 15}
+{"id": "emp-00042", "name": "Bob Johnson", "department": "Product", "role": "Manager - Product", "skills": ["Python", "Go"], "level": 2, "location": "Remote", "years_exp": 13}
+{"id": "emp-00043", "name": "Carol Williams", "department": "Finance", "role": "Manager - Finance", "skills": ["K8s", "ML", "AWS", "GraphQL"], "level": 2, "location": "NYC", "years_exp": 7}
+{"id": "emp-00044", "name": "David Johnson", "department": "HR", "role": "Senior Engineer - HR", "skills": ["AWS", "GraphQL", "Go", "Rust"], "level": 1, "location": "SF", "years_exp": 5}
+{"id": "emp-00045", "name": "Grace Davis", "department": "Design", "role": "Specialist - Design", "skills": ["GraphQL", "Go"], "level": 2, "location": "SF", "years_exp": 16}
+{"id": "emp-00046", "name": "David Garcia", "department": "Security", "role": "Engineer - Security", "skills": ["K8s", "Docker"], "level": 5, "location": "Seattle", "years_exp": 19}
+{"id": "emp-00047", "name": "Bob Williams", "department": "Sales", "role": "Manager - Sales", "skills": ["Docker", "React", "Rust", "AWS", "ML"], "level": 3, "location": "Austin", "years_exp": 16}
+{"id": "emp-00048", "name": "Alice Miller", "department": "Data Science", "role": "Engineer - Data Science", "skills": ["JavaScript", "Go", "ML", "AWS", "Python"], "level": 4, "location": "Seattle", "years_exp": 9}
+{"id": "emp-00049", "name": "Bob Brown", "department": "Sales", "role": "Senior Engineer - Sales", "skills": ["Rust", "ML"], "level": 5, "location": "Remote", "years_exp": 20}
+{"id": "emp-00050", "name": "Bob Wilson", "department": "Operations", "role": "Engineer - Operations", "skills": ["GraphQL", "React", "Python", "Java"], "level": 2, "location": "Austin", "years_exp": 8}
+{"id": "emp-00051", "name": "Frank Wilson", "department": "Engineering", "role": "Director - Engineering", "skills": ["Java", "Go", "SQL"], "level": 3, "location": "Austin", "years_exp": 6}
+{"id": "emp-00052", "name": "Carol Wilson", "department": "Data Science", "role": "Lead - Data Science", "skills": ["JavaScript", "TypeScript", "AWS"], "level": 2, "location": "Remote", "years_exp": 17}
+{"id": "emp-00053", "name": "Carol Miller", "department": "Engineering", "role": "Lead - Engineering", "skills": ["Go", "Rust", "ML"], "level": 1, "location": "NYC", "years_exp": 3}
+{"id": "emp-00054", "name": "Grace Johnson", "department": "HR", "role": "Senior Engineer - HR", "skills": ["React", "GraphQL", "TypeScript"], "level": 4, "location": "SF", "years_exp": 1}
+{"id": "emp-00055", "name": "Iris Davis", "department": "Operations", "role": "Coordinator - Operations", "skills": ["GraphQL", "K8s", "AWS", "Rust", "ML"], "level": 5, "location": "SF", "years_exp": 20}
+{"id": "emp-00056", "name": "Emma Johnson", "department": "Finance", "role": "Director - Finance", "skills": ["Go", "GraphQL", "Python"], "level": 3, "location": "Seattle", "years_exp": 4}
+{"id": "emp-00057", "name": "Jack Davis", "department": "Marketing", "role": "Manager - Marketing", "skills": ["JavaScript", "AWS", "TypeScript", "GraphQL", "Python"], "level": 5, "location": "NYC", "years_exp": 3}
+{"id": "emp-00058", "name": "Frank Brown", "department": "Data Science", "role": "Director - Data Science", "skills": ["Go", "SQL", "Rust", "React", "JavaScript"], "level": 1, "location": "SF", "years_exp": 2}
+{"id": "emp-00059", "name": "Jack Brown", "department": "Finance", "role": "Lead - Finance", "skills": ["Rust", "SQL", "Docker", "AWS"], "level": 4, "location": "NYC", "years_exp": 14}
+{"id": "emp-00060", "name": "Alice Brown", "department": "Engineering", "role": "Manager - Engineering", "skills": ["Docker", "Go", "K8s"], "level": 3, "location": "Seattle", "years_exp": 15}
+{"id": "emp-00061", "name": "Grace Smith", "department": "HR", "role": "Senior Engineer - HR", "skills": ["Java", "SQL"], "level": 4, "location": "Austin", "years_exp": 13}
+{"id": "emp-00062", "name": "Jack Miller", "department": "Engineering", "role": "Senior Engineer - Engineering", "skills": ["Rust", "TypeScript"], "level": 3, "location": "Austin", "years_exp": 8}
+{"id": "emp-00063", "name": "Henry Davis", "department": "Design", "role": "Manager - Design", "skills": ["Java", "SQL", "K8s", "GraphQL", "AWS"], "level": 4, "location": "Austin", "years_exp": 2}
+{"id": "emp-00064", "name": "Frank Brown", "department": "Design", "role": "Engineer - Design", "skills": ["TypeScript", "Java", "JavaScript", "K8s", "Docker"], "level": 1, "location": "Seattle", "years_exp": 8}
+{"id": "emp-00065", "name": "Emma Williams", "department": "Engineering", "role": "Manager - Engineering", "skills": ["GraphQL", "AWS", "Docker", "Python"], "level": 2, "location": "Seattle", "years_exp": 11}
+{"id": "emp-00066", "name": "Bob Garcia", "department": "Marketing", "role": "Lead - Marketing", "skills": ["ML", "Python", "Go"], "level": 2, "location": "Austin", "years_exp": 13}
+{"id": "emp-00067", "name": "David Brown", "department": "Security", "role": "Manager - Security", "skills": ["TypeScript", "React", "K8s", "AWS", "JavaScript"], "level": 4, "location": "NYC", "years_exp": 7}
+{"id": "emp-00068", "name": "Frank Wilson", "department": "Security", "role": "Senior Engineer - Security", "skills": ["GraphQL", "Python"], "level": 5, "location": "Remote", "years_exp": 8}
+{"id": "emp-00069", "name": "Bob Williams", "department": "Marketing", "role": "Coordinator - Marketing", "skills": ["Rust", "Java"], "level": 5, "location": "Remote", "years_exp": 1}
+{"id": "emp-00070", "name": "Jack Williams", "department": "Marketing", "role": "Engineer - Marketing", "skills": ["React", "Java", "SQL"], "level": 1, "location": "NYC", "years_exp": 10}
+{"id": "emp-00071", "name": "Frank Johnson", "department": "Finance", "role": "Specialist - Finance", "skills": ["GraphQL", "JavaScript", "Rust", "Java"], "level": 3, "location": "NYC", "years_exp": 10}
+{"id": "emp-00072", "name": "Henry Johnson", "department": "HR", "role": "Engineer - HR", "skills": ["Java", "K8s", "ML", "TypeScript"], "level": 2, "location": "NYC", "years_exp": 1}
+{"id": "emp-00073", "name": "Grace Johnson", "department": "HR", "role": "Director - HR", "skills": ["Docker", "Go", "Rust"], "level": 4, "location": "Seattle", "years_exp": 16}
+{"id": "emp-00074", "name": "David Garcia", "department": "Security", "role": "Senior Engineer - Security", "skills": ["K8s", "React"], "level": 5, "location": "Seattle", "years_exp": 3}
+{"id": "emp-00075", "name": "David Wilson", "department": "HR", "role": "Engineer - HR", "skills": ["React", "SQL", "GraphQL"], "level": 3, "location": "Seattle", "years_exp": 4}
+{"id": "emp-00076", "name": "Henry Wilson", "department": "Sales", "role": "Analyst - Sales", "skills": ["Go", "React", "Python"], "level": 5, "location": "NYC", "years_exp": 5}
+{"id": "emp-00077", "name": "David Brown", "department": "Design", "role": "Director - Design", "skills": ["TypeScript", "K8s", "React", "GraphQL", "Java"], "level": 1, "location": "SF", "years_exp": 13}
+{"id": "emp-00078", "name": "Grace Brown", "department": "Engineering", "role": "Analyst - Engineering", "skills": ["SQL", "React", "TypeScript", "Go", "JavaScript"], "level": 3, "location": "Seattle", "years_exp": 11}
+{"id": "emp-00079", "name": "Bob Wilson", "department": "Sales", "role": "Engineer - Sales", "skills": ["SQL", "JavaScript", "TypeScript", "Rust", "ML"], "level": 4, "location": "Remote", "years_exp": 10}
+{"id": "emp-00080", "name": "Emma Garcia", "department": "Engineering", "role": "Specialist - Engineering", "skills": ["K8s", "Python", "ML", "GraphQL"], "level": 5, "location": "NYC", "years_exp": 13}
+{"id": "emp-00081", "name": "Bob Miller", "department": "Product", "role": "Specialist - Product", "skills": ["AWS", "Rust", "Go", "GraphQL", "Java"], "level": 1, "location": "NYC", "years_exp": 9}
+{"id": "emp-00082", "name": "Bob Williams", "department": "Security", "role": "Senior Engineer - Security", "skills": ["Go", "Rust", "ML", "GraphQL"], "level": 5, "location": "Seattle", "years_exp": 7}
+{"id": "emp-00083", "name": "Alice Wilson", "department": "HR", "role": "Coordinator - HR", "skills": ["Docker", "TypeScript", "ML", "Python"], "level": 3, "location": "NYC", "years_exp": 13}
+{"id": "emp-00084", "name": "Henry Davis", "department": "Finance", "role": "Lead - Finance", "skills": ["K8s", "SQL", "ML"], "level": 1, "location": "Seattle", "years_exp": 6}
+{"id": "emp-00085", "name": "Grace Smith", "department": "Data Science", "role": "Coordinator - Data Science", "skills": ["Rust", "AWS", "ML", "TypeScript", "Python"], "level": 5, "location": "Austin", "years_exp": 19}
+{"id": "emp-00086", "name": "Emma Wilson", "department": "Engineering", "role": "Lead - Engineering", "skills": ["Docker", "TypeScript", "AWS", "Rust", "React"], "level": 3, "location": "NYC", "years_exp": 16}
+{"id": "emp-00087", "name": "Emma Johnson", "department": "Engineering", "role": "Analyst - Engineering", "skills": ["TypeScript", "Rust"], "level": 2, "location": "SF", "years_exp": 9}
+{"id": "emp-00088", "name": "Iris Garcia", "department": "HR", "role": "Manager - HR", "skills": ["AWS", "SQL"], "level": 4, "location": "SF", "years_exp": 3}
+{"id": "emp-00089", "name": "Jack Garcia", "department": "Design", "role": "Director - Design", "skills": ["GraphQL", "Rust"], "level": 2, "location": "SF", "years_exp": 7}
+{"id": "emp-00090", "name": "Grace Williams", "department": "Design", "role": "Senior Engineer - Design", "skills": ["Go", "GraphQL", "Java"], "level": 1, "location": "Seattle", "years_exp": 2}
+{"id": "emp-00091", "name": "Bob Brown", "department": "Security", "role": "Senior Engineer - Security", "skills": ["JavaScript", "ML", "Docker"], "level": 3, "location": "NYC", "years_exp": 16}
+{"id": "emp-00092", "name": "Frank Williams", "department": "Engineering", "role": "Lead - Engineering", "skills": ["ML", "AWS"], "level": 5, "location": "NYC", "years_exp": 5}
+{"id": "emp-00093", "name": "Henry Garcia", "department": "Engineering", "role": "Senior Engineer - Engineering", "skills": ["Go", "SQL", "JavaScript", "TypeScript", "K8s"], "level": 2, "location": "Remote", "years_exp": 7}
+{"id": "emp-00094", "name": "Iris Smith", "department": "Engineering", "role": "Director - Engineering", "skills": ["React", "Go", "Docker", "Java"], "level": 3, "location": "Remote", "years_exp": 11}
+{"id": "emp-00095", "name": "Alice Garcia", "department": "Operations", "role": "Specialist - Operations", "skills": ["React", "Java", "Go", "GraphQL", "SQL"], "level": 3, "location": "SF", "years_exp": 12}
+{"id": "emp-00096", "name": "Bob Williams", "department": "Operations", "role": "Lead - Operations", "skills": ["React", "Java", "ML"], "level": 4, "location": "Remote", "years_exp": 14}
+{"id": "emp-00097", "name": "Henry Smith", "department": "Engineering", "role": "Director - Engineering", "skills": ["SQL", "AWS", "ML", "Java", "Rust"], "level": 3, "location": "Seattle", "years_exp": 6}
+{"id": "emp-00098", "name": "Iris Miller", "department": "HR", "role": "Specialist - HR", "skills": ["Go", "Java", "SQL", "AWS"], "level": 5, "location": "Austin", "years_exp": 16}
+{"id": "emp-00099", "name": "Emma Brown", "department": "Security", "role": "Engineer - Security", "skills": ["TypeScript", "ML", "Java"], "level": 1, "location": "Austin", "years_exp": 12}
+{"id": "emp-00100", "name": "Iris Brown", "department": "Design", "role": "Senior Engineer - Design", "skills": ["ML", "SQL", "K8s", "JavaScript", "Python"], "level": 5, "location": "NYC", "years_exp": 18}
+{"id": "emp-00101", "name": "Jack Wilson", "department": "Sales", "role": "Engineer - Sales", "skills": ["Go", "ML", "K8s", "TypeScript", "SQL"], "level": 2, "location": "Austin", "years_exp": 11}
+{"id": "emp-00102", "name": "Jack Davis", "department": "Data Science", "role": "Manager - Data Science", "skills": ["ML", "GraphQL", "JavaScript", "Java"], "level": 5, "location": "Seattle", "years_exp": 1}
+{"id": "emp-00103", "name": "Alice Johnson", "department": "Engineering", "role": "Manager - Engineering", "skills": ["Java", "ML", "GraphQL", "Go", "Python"], "level": 5, "location": "SF", "years_exp": 5}
+{"id": "emp-00104", "name": "Frank Wilson", "department": "Sales", "role": "Coordinator - Sales", "skills": ["Java", "ML", "JavaScript", "K8s"], "level": 1, "location": "Austin", "years_exp": 7}
+{"id": "emp-00105", "name": "Frank Davis", "department": "Product", "role": "Coordinator - Product", "skills": ["Java", "TypeScript", "K8s", "GraphQL", "JavaScript"], "level": 2, "location": "Remote", "years_exp": 18}
+{"id": "emp-00106", "name": "Grace Garcia", "department": "Marketing", "role": "Specialist - Marketing", "skills": ["Python", "TypeScript"], "level": 1, "location": "Austin", "years_exp": 20}
+{"id": "emp-00107", "name": "Bob Johnson", "department": "Data Science", "role": "Manager - Data Science", "skills": ["Docker", "K8s", "React"], "level": 2, "location": "SF", "years_exp": 8}
+{"id": "emp-00108", "name": "Bob Wilson", "department": "Operations", "role": "Lead - Operations", "skills": ["K8s", "ML"], "level": 3, "location": "Seattle", "years_exp": 4}
+{"id": "emp-00109", "name": "David Garcia", "department": "Sales", "role": "Senior Engineer - Sales", "skills": ["JavaScript", "Docker", "Rust", "GraphQL"], "level": 2, "location": "Austin", "years_exp": 19}
+{"id": "emp-00110", "name": "Henry Garcia", "department": "Design", "role": "Lead - Design", "skills": ["AWS", "TypeScript"], "level": 3, "location": "Austin", "years_exp": 9}
+{"id": "emp-00111", "name": "Frank Brown", "department": "Engineering", "role": "Analyst - Engineering", "skills": ["SQL", "Go", "Rust", "GraphQL", "Python"], "level": 5, "location": "Seattle", "years_exp": 14}
+{"id": "emp-00112", "name": "Iris Brown", "department": "Marketing", "role": "Manager - Marketing", "skills": ["AWS", "Java", "GraphQL", "Python"], "level": 1, "location": "Austin", "years_exp": 10}
+{"id": "emp-00113", "name": "David Wilson", "department": "Sales", "role": "Manager - Sales", "skills": ["GraphQL", "Docker"], "level": 3, "location": "Remote", "years_exp": 3}
+{"id": "emp-00114", "name": "Jack Johnson", "department": "Engineering", "role": "Manager - Engineering", "skills": ["TypeScript", "JavaScript", "Rust"], "level": 5, "location": "Seattle", "years_exp": 13}
+{"id": "emp-00115", "name": "Jack Brown", "department": "Security", "role": "Engineer - Security", "skills": ["React", "AWS", "K8s", "JavaScript", "Docker"], "level": 5, "location": "SF", "years_exp": 4}
+{"id": "emp-00116", "name": "Emma Smith", "department": "Engineering", "role": "Manager - Engineering", "skills": ["GraphQL", "AWS", "Python", "React", "ML"], "level": 3, "location": "NYC", "years_exp": 20}
+{"id": "emp-00117", "name": "Alice Smith", "department": "Marketing", "role": "Engineer - Marketing", "skills": ["GraphQL", "K8s", "SQL", "ML", "Java"], "level": 5, "location": "Seattle", "years_exp": 13}
+{"id": "emp-00118", "name": "Alice Davis", "department": "Operations", "role": "Coordinator - Operations", "skills": ["GraphQL", "Java", "Python"], "level": 5, "location": "NYC", "years_exp": 13}
+{"id": "emp-00119", "name": "Henry Wilson", "department": "Design", "role": "Analyst - Design", "skills": ["JavaScript", "GraphQL", "K8s", "ML", "React"], "level": 1, "location": "Seattle", "years_exp": 9}
+{"id": "emp-00120", "name": "Henry Davis", "department": "HR", "role": "Coordinator - HR", "skills": ["Java", "K8s"], "level": 5, "location": "NYC", "years_exp": 16}
+{"id": "emp-00121", "name": "Carol Garcia", "department": "Operations", "role": "Analyst - Operations", "skills": ["React", "ML", "JavaScript", "Go", "TypeScript"], "level": 3, "location": "NYC", "years_exp": 10}
+{"id": "emp-00122", "name": "Henry Williams", "department": "Security", "role": "Coordinator - Security", "skills": ["SQL", "TypeScript", "React"], "level": 4, "location": "Seattle", "years_exp": 7}
+{"id": "emp-00123", "name": "Grace Miller", "department": "Engineering", "role": "Lead - Engineering", "skills": ["Python", "Docker", "Java", "TypeScript", "AWS"], "level": 4, "location": "NYC", "years_exp": 3}
+{"id": "emp-00124", "name": "Emma Smith", "department": "Data Science", "role": "Manager - Data Science", "skills": ["K8s", "Go", "Java", "SQL"], "level": 1, "location": "Austin", "years_exp": 18}
+{"id": "emp-00125", "name": "Jack Miller", "department": "Data Science", "role": "Lead - Data Science", "skills": ["GraphQL", "JavaScript", "AWS", "Docker"], "level": 4, "location": "Austin", "years_exp": 2}
+{"id": "emp-00126", "name": "Grace Wilson", "department": "Sales", "role": "Engineer - Sales", "skills": ["Python", "Java", "SQL"], "level": 1, "location": "Austin", "years_exp": 11}
+{"id": "emp-00127", "name": "Emma Brown", "department": "Product", "role": "Coordinator - Product", "skills": ["TypeScript", "AWS"], "level": 4, "location": "NYC", "years_exp": 14}
+{"id": "emp-00128", "name": "Carol Davis", "department": "Finance", "role": "Lead - Finance", "skills": ["Docker", "K8s", "JavaScript", "Go", "Java"], "level": 3, "location": "Seattle", "years_exp": 19}
+{"id": "emp-00129", "name": "Carol Garcia", "department": "Operations", "role": "Senior Engineer - Operations", "skills": ["JavaScript", "Rust", "SQL", "Docker"], "level": 5, "location": "Austin", "years_exp": 17}
+{"id": "emp-00130", "name": "Emma Johnson", "department": "Data Science", "role": "Engineer - Data Science", "skills": ["Python", "Java"], "level": 4, "location": "Seattle", "years_exp": 14}
+{"id": "emp-00131", "name": "Frank Miller", "department": "Operations", "role": "Engineer - Operations", "skills": ["AWS", "JavaScript", "K8s", "TypeScript"], "level": 4, "location": "Austin", "years_exp": 18}
+{"id": "emp-00132", "name": "David Miller", "department": "Product", "role": "Manager - Product", "skills": ["Docker", "SQL", "GraphQL"], "level": 4, "location": "Remote", "years_exp": 12}
+{"id": "emp-00133", "name": "Grace Brown", "department": "Security", "role": "Lead - Security", "skills": ["GraphQL", "Rust", "ML", "SQL"], "level": 2, "location": "Remote", "years_exp": 4}
+{"id": "emp-00134", "name": "Henry Williams", "department": "Operations", "role": "Senior Engineer - Operations", "skills": ["K8s", "Docker", "Rust"], "level": 4, "location": "SF", "years_exp": 18}
+{"id": "emp-00135", "name": "Emma Miller", "department": "Operations", "role": "Senior Engineer - Operations", "skills": ["Python", "JavaScript", "Rust"], "level": 1, "location": "Austin", "years_exp": 10}
+{"id": "emp-00136", "name": "Carol Brown", "department": "Engineering", "role": "Specialist - Engineering", "skills": ["Rust", "React", "GraphQL", "AWS", "Python"], "level": 4, "location": "NYC", "years_exp": 5}
+{"id": "emp-00137", "name": "Alice Smith", "department": "Engineering", "role": "Analyst - Engineering", "skills": ["AWS", "Python", "K8s", "Java", "TypeScript"], "level": 3, "location": "SF", "years_exp": 8}
+{"id": "emp-00138", "name": "Carol Davis", "department": "Operations", "role": "Manager - Operations", "skills": ["Rust", "Docker", "ML", "Go"], "level": 1, "location": "Seattle", "years_exp": 4}
+{"id": "emp-00139", "name": "Frank Williams", "department": "Operations", "role": "Analyst - Operations", "skills": ["Rust", "GraphQL", "K8s"], "level": 2, "location": "Austin", "years_exp": 11}
+{"id": "emp-00140", "name": "Alice Johnson", "department": "Sales", "role": "Engineer - Sales", "skills": ["ML", "Go"], "level": 4, "location": "NYC", "years_exp": 7}
+{"id": "emp-00141", "name": "David Davis", "department": "Marketing", "role": "Senior Engineer - Marketing", "skills": ["React", "ML", "Docker", "Python"], "level": 4, "location": "SF", "years_exp": 10}
+{"id": "emp-00142", "name": "Henry Williams", "department": "HR", "role": "Director - HR", "skills": ["Rust", "K8s", "ML", "GraphQL", "Docker"], "level": 3, "location": "Remote", "years_exp": 15}
+{"id": "emp-00143", "name": "David Brown", "department": "Security", "role": "Director - Security", "skills": ["JavaScript", "TypeScript", "GraphQL", "Rust"], "level": 1, "location": "Remote", "years_exp": 4}
+{"id": "emp-00144", "name": "Carol Brown", "department": "HR", "role": "Engineer - HR", "skills": ["TypeScript", "Docker"], "level": 2, "location": "Remote", "years_exp": 1}
+{"id": "emp-00145", "name": "Jack Miller", "department": "Marketing", "role": "Coordinator - Marketing", "skills": ["Rust", "SQL", "AWS", "Python"], "level": 2, "location": "NYC", "years_exp": 7}
+{"id": "emp-00146", "name": "Bob Davis", "department": "Finance", "role": "Director - Finance", "skills": ["Python", "GraphQL", "Rust"], "level": 4, "location": "Remote", "years_exp": 2}
+{"id": "emp-00147", "name": "Carol Garcia", "department": "Operations", "role": "Senior Engineer - Operations", "skills": ["TypeScript", "Rust", "React"], "level": 5, "location": "Seattle", "years_exp": 1}
+{"id": "emp-00148", "name": "Iris Miller", "department": "Product", "role": "Senior Engineer - Product", "skills": ["React", "SQL"], "level": 2, "location": "Seattle", "years_exp": 18}
+{"id": "emp-00149", "name": "Emma Garcia", "department": "HR", "role": "Senior Engineer - HR", "skills": ["Rust", "SQL", "ML"], "level": 3, "location": "SF", "years_exp": 6}
+{"id": "emp-00150", "name": "Frank Wilson", "department": "Data Science", "role": "Analyst - Data Science", "skills": ["Docker", "ML"], "level": 3, "location": "Remote", "years_exp": 16}
+{"id": "emp-00151", "name": "Frank Williams", "department": "Marketing", "role": "Lead - Marketing", "skills": ["SQL", "AWS"], "level": 3, "location": "SF", "years_exp": 5}
+{"id": "emp-00152", "name": "Bob Davis", "department": "Product", "role": "Manager - Product", "skills": ["K8s", "AWS", "Rust", "Python"], "level": 1, "location": "Remote", "years_exp": 10}
+{"id": "emp-00153", "name": "Henry Garcia", "department": "Product", "role": "Lead - Product", "skills": ["Docker", "Rust", "Python", "GraphQL"], "level": 4, "location": "Seattle", "years_exp": 5}
+{"id": "emp-00154", "name": "Iris Brown", "department": "Engineering", "role": "Specialist - Engineering", "skills": ["K8s", "JavaScript", "SQL"], "level": 5, "location": "SF", "years_exp": 4}
+{"id": "emp-00155", "name": "Henry Williams", "department": "Product", "role": "Coordinator - Product", "skills": ["JavaScript", "ML"], "level": 1, "location": "Remote", "years_exp": 17}
+{"id": "emp-00156", "name": "David Smith", "department": "Engineering", "role": "Specialist - Engineering", "skills": ["SQL", "TypeScript", "Python", "ML", "Docker"], "level": 4, "location": "Seattle", "years_exp": 18}
+{"id": "emp-00157", "name": "Grace Wilson", "department": "Data Science", "role": "Engineer - Data Science", "skills": ["Java", "SQL", "ML", "Rust"], "level": 4, "location": "Seattle", "years_exp": 1}
+{"id": "emp-00158", "name": "Bob Miller", "department": "Data Science", "role": "Manager - Data Science", "skills": ["Python", "Go", "ML", "K8s", "TypeScript"], "level": 1, "location": "SF", "years_exp": 8}
+{"id": "emp-00159", "name": "Jack Davis", "department": "Engineering", "role": "Director - Engineering", "skills": ["TypeScript", "GraphQL", "Java"], "level": 1, "location": "SF", "years_exp": 18}
+{"id": "emp-00160", "name": "Emma Davis", "department": "Data Science", "role": "Manager - Data Science", "skills": ["TypeScript", "Python", "GraphQL", "Go", "K8s"], "level": 4, "location": "Seattle", "years_exp": 13}
+{"id": "emp-00161", "name": "David Brown", "department": "Design", "role": "Lead - Design", "skills": ["AWS", "Docker", "K8s"], "level": 4, "location": "Remote", "years_exp": 12}
+{"id": "emp-00162", "name": "David Wilson", "department": "Security", "role": "Director - Security", "skills": ["SQL", "AWS", "Docker", "Java"], "level": 3, "location": "Austin", "years_exp": 12}
+{"id": "emp-00163", "name": "Iris Williams", "department": "Engineering", "role": "Lead - Engineering", "skills": ["K8s", "Docker", "TypeScript", "Rust", "JavaScript"], "level": 1, "location": "NYC", "years_exp": 3}
+{"id": "emp-00164", "name": "Grace Johnson", "department": "HR", "role": "Lead - HR", "skills": ["ML", "Go", "AWS"], "level": 2, "location": "NYC", "years_exp": 1}
+{"id": "emp-00165", "name": "Alice Johnson", "department": "Operations", "role": "Specialist - Operations", "skills": ["Java", "ML", "GraphQL", "JavaScript", "Docker"], "level": 1, "location": "Remote", "years_exp": 9}
+{"id": "emp-00166", "name": "Alice Miller", "department": "Marketing", "role": "Senior Engineer - Marketing", "skills": ["Rust", "React", "GraphQL"], "level": 1, "location": "NYC", "years_exp": 18}
+{"id": "emp-00167", "name": "Henry Wilson", "department": "Marketing", "role": "Coordinator - Marketing", "skills": ["Docker", "TypeScript"], "level": 3, "location": "NYC", "years_exp": 8}
+{"id": "emp-00168", "name": "Iris Johnson", "department": "Engineering", "role": "Specialist - Engineering", "skills": ["TypeScript", "ML"], "level": 1, "location": "Remote", "years_exp": 3}
+{"id": "emp-00169", "name": "Emma Garcia", "department": "Marketing", "role": "Coordinator - Marketing", "skills": ["TypeScript", "JavaScript"], "level": 5, "location": "SF", "years_exp": 10}
+{"id": "emp-00170", "name": "Emma Brown", "department": "Engineering", "role": "Coordinator - Engineering", "skills": ["Go", "GraphQL", "Python"], "level": 2, "location": "Austin", "years_exp": 14}
+{"id": "emp-00171", "name": "Jack Garcia", "department": "Product", "role": "Engineer - Product", "skills": ["Python", "AWS", "JavaScript", "Rust", "ML"], "level": 1, "location": "SF", "years_exp": 19}
+{"id": "emp-00172", "name": "Iris Johnson", "department": "Finance", "role": "Engineer - Finance", "skills": ["Python", "K8s", "Rust", "ML", "TypeScript"], "level": 5, "location": "NYC", "years_exp": 17}
+{"id": "emp-00173", "name": "Frank Brown", "department": "Product", "role": "Senior Engineer - Product", "skills": ["TypeScript", "AWS", "Go", "React"], "level": 1, "location": "Austin", "years_exp": 7}
+{"id": "emp-00174", "name": "Iris Davis", "department": "Data Science", "role": "Senior Engineer - Data Science", "skills": ["GraphQL", "Docker"], "level": 5, "location": "Austin", "years_exp": 16}
+{"id": "emp-00175", "name": "Alice Williams", "department": "Product", "role": "Manager - Product", "skills": ["Java", "GraphQL", "Docker", "Python"], "level": 2, "location": "SF", "years_exp": 17}
+{"id": "emp-00176", "name": "Iris Wilson", "department": "Operations", "role": "Specialist - Operations", "skills": ["TypeScript", "JavaScript", "AWS", "Docker"], "level": 1, "location": "Remote", "years_exp": 7}
+{"id": "emp-00177", "name": "Carol Brown", "department": "Marketing", "role": "Specialist - Marketing", "skills": ["Go", "Python", "Docker", "AWS"], "level": 2, "location": "Austin", "years_exp": 9}
+{"id": "emp-00178", "name": "Alice Brown", "department": "Security", "role": "Specialist - Security", "skills": ["Rust", "AWS", "Python"], "level": 2, "location": "Austin", "years_exp": 14}
+{"id": "emp-00179", "name": "Jack Williams", "department": "Operations", "role": "Engineer - Operations", "skills": ["Docker", "AWS", "Go", "K8s"], "level": 2, "location": "SF", "years_exp": 1}
+{"id": "emp-00180", "name": "Emma Brown", "department": "Finance", "role": "Senior Engineer - Finance", "skills": ["SQL", "Go"], "level": 1, "location": "NYC", "years_exp": 17}
+{"id": "emp-00181", "name": "Frank Davis", "department": "Finance", "role": "Lead - Finance", "skills": ["JavaScript", "TypeScript", "Go", "Python", "GraphQL"], "level": 2, "location": "SF", "years_exp": 14}
+{"id": "emp-00182", "name": "Frank Johnson", "department": "Product", "role": "Manager - Product", "skills": ["React", "GraphQL", "AWS", "Rust", "Python"], "level": 5, "location": "Remote", "years_exp": 8}
+{"id": "emp-00183", "name": "Alice Williams", "department": "Security", "role": "Senior Engineer - Security", "skills": ["Java", "Docker"], "level": 3, "location": "Seattle", "years_exp": 7}
+{"id": "emp-00184", "name": "Grace Brown", "department": "Operations", "role": "Senior Engineer - Operations", "skills": ["JavaScript", "React", "SQL", "AWS", "Rust"], "level": 4, "location": "Remote", "years_exp": 7}
+{"id": "emp-00185", "name": "Iris Brown", "department": "Marketing", "role": "Lead - Marketing", "skills": ["SQL", "Python", "TypeScript", "AWS", "ML"], "level": 3, "location": "SF", "years_exp": 14}
+{"id": "emp-00186", "name": "Iris Smith", "department": "Product", "role": "Senior Engineer - Product", "skills": ["JavaScript", "SQL"], "level": 2, "location": "Remote", "years_exp": 9}
+{"id": "emp-00187", "name": "Carol Garcia", "department": "Data Science", "role": "Specialist - Data Science", "skills": ["SQL", "GraphQL", "Rust", "K8s", "TypeScript"], "level": 5, "location": "Remote", "years_exp": 3}
+{"id": "emp-00188", "name": "Iris Davis", "department": "Engineering", "role": "Specialist - Engineering", "skills": ["ML", "Go"], "level": 1, "location": "Seattle", "years_exp": 6}
+{"id": "emp-00189", "name": "Grace Johnson", "department": "Product", "role": "Specialist - Product", "skills": ["Rust", "TypeScript", "ML", "Go"], "level": 4, "location": "Seattle", "years_exp": 11}
+{"id": "emp-00190", "name": "David Williams", "department": "Engineering", "role": "Manager - Engineering", "skills": ["AWS", "React"], "level": 5, "location": "Austin", "years_exp": 3}
+{"id": "emp-00191", "name": "Carol Williams", "department": "Engineering", "role": "Manager - Engineering", "skills": ["SQL", "Go", "Python", "Java"], "level": 2, "location": "Austin", "years_exp": 20}
+{"id": "emp-00192", "name": "Alice Davis", "department": "Design", "role": "Coordinator - Design", "skills": ["Java", "K8s", "Go", "GraphQL"], "level": 5, "location": "Austin", "years_exp": 16}
+{"id": "emp-00193", "name": "Grace Johnson", "department": "Product", "role": "Senior Engineer - Product", "skills": ["SQL", "Python", "Docker", "Rust", "Java"], "level": 1, "location": "NYC", "years_exp": 7}
+{"id": "emp-00194", "name": "Carol Johnson", "department": "Security", "role": "Director - Security", "skills": ["JavaScript", "SQL"], "level": 3, "location": "Austin", "years_exp": 17}
+{"id": "emp-00195", "name": "Emma Garcia", "department": "Operations", "role": "Specialist - Operations", "skills": ["TypeScript", "ML", "Docker", "K8s"], "level": 5, "location": "SF", "years_exp": 4}
+{"id": "emp-00196", "name": "Henry Davis", "department": "Sales", "role": "Lead - Sales", "skills": ["K8s", "AWS", "GraphQL", "Docker", "Rust"], "level": 2, "location": "Seattle", "years_exp": 11}
+{"id": "emp-00197", "name": "Iris Johnson", "department": "Operations", "role": "Analyst - Operations", "skills": ["React", "JavaScript", "Java"], "level": 1, "location": "NYC", "years_exp": 11}
+{"id": "emp-00198", "name": "Frank Miller", "department": "Marketing", "role": "Analyst - Marketing", "skills": ["Java", "Python", "AWS"], "level": 1, "location": "Austin", "years_exp": 18}
+{"id": "emp-00199", "name": "David Smith", "department": "Data Science", "role": "Lead - Data Science", "skills": ["AWS", "Docker", "K8s", "Java", "Python"], "level": 1, "location": "Seattle", "years_exp": 4}
