@@ -422,72 +422,69 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Process document via AI services extraction
+	// Process document via AI services - Vector-Native Ingestion
 	entities := 0
+	chunks := 0
+	relationships := 0
+
 	if s.agent.aiClient == nil {
-		s.logger.Warn("aiClient is nil, cannot extract entities")
+		s.logger.Warn("aiClient is nil, cannot ingest document")
 	} else {
-		// Call AI service to extract entities from document
-		type ExtractRequest struct {
-			UserQuery  string `json:"user_query"`
-			AIResponse string `json:"ai_response"`
+		// Call AI service /ingest endpoint for Vector-Native processing
+		type IngestRequest struct {
+			Text         string `json:"text"`
+			DocumentType string `json:"document_type"`
 		}
 
-		extractReq := ExtractRequest{
-			UserQuery:  "Extract all people, companies, locations, and topics from this document",
-			AIResponse: string(content),
+		ingestReq := IngestRequest{
+			Text:         string(content),
+			DocumentType: "text",
 		}
 
-		reqBody, _ := json.Marshal(extractReq)
+		reqBody, _ := json.Marshal(ingestReq)
 		resp, err := s.agent.aiClient.httpClient.Post(
-			s.agent.aiClient.baseURL+"/extract",
+			s.agent.aiClient.baseURL+"/ingest",
 			"application/json",
 			bytes.NewReader(reqBody),
 		)
 		if err != nil {
-			s.logger.Warn("AI extract request failed", zap.Error(err))
+			s.logger.Warn("AI ingest request failed", zap.Error(err))
 		} else if resp.StatusCode == 200 {
 			defer resp.Body.Close()
 
-			// Read the body first
-			bodyBytes, readErr := io.ReadAll(resp.Body)
-			if readErr != nil {
-				s.logger.Warn("Failed to read extract response", zap.Error(readErr))
-			} else {
-				// Try to decode as object first (expected format: {"value": [...], "Count": N})
-				var result struct {
-					Value []interface{} `json:"value"`
-					Count int           `json:"Count"`
-				}
-				if decodeErr := json.Unmarshal(bodyBytes, &result); decodeErr == nil {
-					entities = len(result.Value)
-					if result.Count > 0 {
-						entities = result.Count
-					}
-				} else {
-					// Try to decode as raw array
-					var rawEntities []interface{}
-					if decodeErr2 := json.Unmarshal(bodyBytes, &rawEntities); decodeErr2 == nil {
-						entities = len(rawEntities)
-					} else {
-						s.logger.Warn("Failed to decode extract response",
-							zap.Error(decodeErr),
-							zap.String("body_preview", string(bodyBytes[:min(len(bodyBytes), 200)])))
+			// Parse ingest response
+			var result struct {
+				Entities      []interface{}          `json:"entities"`
+				Relationships []interface{}          `json:"relationships"`
+				Stats         map[string]interface{} `json:"stats"`
+				Summary       string                 `json:"summary"`
+				VectorTree    interface{}            `json:"vector_tree"`
+			}
+			if decodeErr := json.NewDecoder(resp.Body).Decode(&result); decodeErr == nil {
+				entities = len(result.Entities)
+				relationships = len(result.Relationships)
+
+				// Get chunk count from stats if available
+				if stats, ok := result.Stats["chunks"]; ok {
+					if count, ok := stats.(float64); ok {
+						chunks = int(count)
 					}
 				}
 
-				if entities > 0 {
-					s.logger.Info("Extracted entities from document",
-						zap.Int("count", entities),
-						zap.String("filename", header.Filename))
-				}
+				s.logger.Info("Document ingested with Vector-Native processing",
+					zap.Int("entities", entities),
+					zap.Int("relationships", relationships),
+					zap.Int("chunks", chunks),
+					zap.String("filename", header.Filename))
+			} else {
+				s.logger.Warn("Failed to decode ingest response", zap.Error(decodeErr))
 			}
 		} else {
-			s.logger.Warn("AI extract returned non-200", zap.Int("status", resp.StatusCode))
+			s.logger.Warn("AI ingest returned non-200", zap.Int("status", resp.StatusCode))
 		}
 	}
 
-	// Log document processing for memory (actual kernel ingestion happens via chat flow)
+	// Log document processing
 	s.logger.Info("Document processed for user",
 		zap.String("user", userID),
 		zap.String("namespace", namespace),
@@ -499,7 +496,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		Filename: header.Filename,
 		Size:     header.Size,
 		Entities: entities,
-		Message:  fmt.Sprintf("Document '%s' uploaded and processed", header.Filename),
+		Message:  fmt.Sprintf("Document '%s' uploaded and processed (%d entities, %d chunks)", header.Filename, entities, chunks),
 	})
 }
 

@@ -773,6 +773,73 @@ async def semantic_search(request: SemanticSearchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# =============================================================================
+# DOCUMENT INGESTION - Vector-Native Architecture
+# =============================================================================
+
+@app.post("/ingest", response_model=IngestDocumentResponse)
+async def ingest_document(request: IngestDocumentRequest):
+    """
+    Ingest a document using Vector-Native Hierarchical architecture.
+    
+    - Chunks document into 200-word segments
+    - Generates embeddings for each chunk
+    - Extracts entities using tiered approach
+    - Builds hierarchical vector tree
+    """
+    try:
+        ingester: DocumentIngester = app.state.document_ingester
+        
+        if request.text:
+            # Plain text ingestion
+            result = await ingester.ingest_text(request.text)
+        elif request.content_base64:
+            # Base64 encoded content (future: PDF support)
+            import base64
+            content = base64.b64decode(request.content_base64).decode('utf-8', errors='ignore')
+            result = await ingester.ingest_text(content)
+        else:
+            raise HTTPException(status_code=400, detail="Either text or content_base64 is required")
+        
+        # Convert result to response format
+        entities = [
+            {
+                "name": e.name,
+                "type": e.entity_type,
+                "description": e.description,
+                "confidence": e.confidence,
+                "source": e.source
+            }
+            for e in result.entities
+        ]
+        
+        relationships = [
+            {
+                "from_entity": r.from_entity,
+                "to_entity": r.to_entity,
+                "relation_type": r.relation_type,
+                "confidence": r.confidence
+            }
+            for r in result.relationships
+        ]
+        
+        print(f"DEBUG /ingest: processed document with {len(entities)} entities, {len(result.chunks)} chunks", flush=True)
+        
+        return IngestDocumentResponse(
+            entities=entities,
+            relationships=relationships,
+            stats=result.stats,
+            summary=result.summary,
+            vector_tree=result.vector_tree if result.vector_tree else None
+        )
+        
+    except Exception as e:
+        print(f"DEBUG /ingest error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
