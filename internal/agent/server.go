@@ -54,6 +54,7 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 
 	api.Handle("/chat", protect(s.handleChat)).Methods("POST")
 	api.Handle("/stats", protect(s.handleStats)).Methods("GET")
+	api.Handle("/conversations", protect(s.handleConversations)).Methods("GET")
 
 	// Groups
 	api.Handle("/groups", protect(s.handleCreateGroup)).Methods("POST")
@@ -260,6 +261,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// Determine Namespace
 	namespace := fmt.Sprintf("user_%s", userID) // Default to private
 	if req.ContextType == "group" && req.ContextID != "" {
+		// Check if user is a member of the workspace
+		isMember, err := s.agent.mkClient.IsWorkspaceMember(r.Context(), req.ContextID, userID)
+		if err != nil {
+			s.logger.Error("Failed to check workspace membership", zap.Error(err))
+			http.Error(w, "Failed to verify workspace access", http.StatusInternalServerError)
+			return
+		}
+		if !isMember {
+			http.Error(w, "You are not a member of this workspace", http.StatusForbidden)
+			return
+		}
 		namespace = req.ContextID
 	}
 
@@ -269,8 +281,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		conversationID = uuid.New().String()
 	}
 
-	response, err := s.agent.Chat(r.Context(), userID, conversationID, namespace, req.Message)
+	// Create context with timeout for AI service
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	response, err := s.agent.Chat(ctx, userID, conversationID, namespace, req.Message)
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			s.logger.Warn("Chat timed out", zap.String("user_id", userID))
+			http.Error(w, "Request timed out, please try again", http.StatusGatewayTimeout)
+			return
+		}
 		s.logger.Error("Chat failed", zap.Error(err))
 		http.Error(w, "Failed to generate response", http.StatusInternalServerError)
 		return
@@ -294,6 +315,54 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+}
+
+// ConversationSummary represents a conversation summary for the API
+type ConversationSummary struct {
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Namespace    string `json:"namespace"`
+	UpdatedAt    string `json:"updated_at"`
+	MessageCount int    `json:"message_count"`
+}
+
+// handleConversations returns the list of conversations for the current user
+func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+
+	// TODO: Implement actual conversation retrieval from DGraph/Redis
+	// For now, return empty list (conversations are not persisted in current implementation)
+	conversations := []ConversationSummary{}
+
+	// Try to get recent conversation IDs from Redis if available
+	if s.agent.RedisClient != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		// Get conversation IDs pattern: conv:{userID}:*
+		pattern := fmt.Sprintf("conv:%s:*", userID)
+		keys, err := s.agent.RedisClient.Keys(ctx, pattern).Result()
+		if err == nil && len(keys) > 0 {
+			for _, key := range keys {
+				// Extract conversation ID from key
+				parts := key[len(fmt.Sprintf("conv:%s:", userID)):]
+				if parts != "" {
+					conversations = append(conversations, ConversationSummary{
+						ID:           parts,
+						Title:        "Chat",
+						Namespace:    fmt.Sprintf("user_%s", userID),
+						UpdatedAt:    time.Now().Format(time.RFC3339),
+						MessageCount: 0,
+					})
+				}
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"conversations": conversations,
+	})
 }
 
 // WebSocket message types

@@ -162,6 +162,13 @@ func main() {
 	server := agent.NewServer(a, logger.Named("server"))
 	server.SetupRoutes(router)
 
+	// Serve static files for web UI (must be after API routes to avoid conflicts)
+	staticDir := "./static"
+	if _, err := os.Stat(staticDir); err == nil {
+		router.PathPrefix("/").Handler(http.FileServer(http.Dir(staticDir)))
+		logger.Info("Serving static files from", zap.String("dir", staticDir))
+	}
+
 	// Add CORS
 	corsObj := handlers.CORS(
 		handlers.AllowedOrigins([]string{"*"}),
