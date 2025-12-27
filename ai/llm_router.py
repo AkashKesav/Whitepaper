@@ -19,6 +19,7 @@ class LLMRouter:
         # Determine available providers
         self.openai_key = os.getenv("OPENAI_API_KEY")
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        self.minimax_key = os.getenv("MINIMAX_API_KEY")
         print(f"DEBUG: ENV KEYS: {list(os.environ.keys())}", flush=True)
         
         # Determine available providers
@@ -29,6 +30,8 @@ class LLMRouter:
             self.providers.append("openai")
         if self.anthropic_key:
             self.providers.append("anthropic")
+        if self.minimax_key:
+            self.providers.append("minimax")
         
         self.default_provider = "nvidia" # Forced per user request
 
@@ -102,6 +105,21 @@ class LLMRouter:
         Returns:
             Model response text
         """
+        # Priority: NVIDIA NIM (as requested) -> Minimax Direct
+        # If NVIDIA_API_KEY is present, try to use it for Minimax-M2 or similar
+        if self.nvidia_key:
+             try:
+                 return await self._call_nvidia_vision(prompt, image_base64, model)
+             except Exception as e:
+                 print(f"DEBUG: NVIDIA Vision failed: {e}. Trying fallback...", flush=True)
+
+        # Fallback to Minimax Direct if configured and NVIDIA failed/missing
+        if self.minimax_key:
+             return await self._call_minimax_vision(prompt, image_base64)
+             
+        return "No vision provider configured."
+    async def _call_nvidia_vision(self, prompt: str, image_base64: str, model: str) -> str:
+        """Call NVIDIA NIM API for Vision."""
         timeout = httpx.Timeout(180.0, connect=30.0, read=180.0, write=30.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
@@ -111,7 +129,7 @@ class LLMRouter:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": model,
+                    "model": model, # e.g. "minimaxai/minimax-m2"
                     "messages": [{
                         "role": "user",
                         "content": [
@@ -135,6 +153,70 @@ class LLMRouter:
             import re
             content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
             return content
+
+    async def _call_minimax_vision(self, prompt: str, image_base64: str) -> str:
+        """Call Minimax API for Vision (abab6.5-chat)."""
+        print("DEBUG: Calling Minimax Vision API...", flush=True)
+        timeout = httpx.Timeout(180.0, connect=30.0, read=180.0, write=30.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                "https://api.minimax.chat/v1/text/chatcompletion_pro",
+                headers={
+                    "Authorization": f"Bearer {self.minimax_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "abab6.5-chat",
+                    "messages": [{
+                        "sender_type": "USER",
+                        "sender_name": "User",
+                        "text": prompt,
+                        "images": [image_base64] # Minimax expects list of base64 strings? Check docs if failure.
+                    }],
+                    "botsetting": [
+                        {
+                            "bot_name": "MM Assistant",
+                            "content": "You are a helpful assistant capable of analyzing images."
+                        }
+                    ],
+                    "reply_constraints": {"sender_type": "BOT", "sender_name": "MM Assistant"},
+                    "temperature": 0.1,
+                    "tokens_to_generate": 2048,
+                },
+            )
+            
+            # If standard endpoint fails, try OpenAI-compatible path
+            if response.status_code != 200:
+                 print(f"DEBUG: Minimax Native failed ({response.status_code}), trying OpenAI compat...", flush=True)
+                 return await self._call_minimax_openai_compat(prompt, image_base64)
+                 
+            data = response.json()
+            return data["reply"]
+
+    async def _call_minimax_openai_compat(self, prompt: str, image_base64: str) -> str:
+        """Call Minimax via OpenAI-compatible endpoint."""
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                "https://api.minimax.chat/v1/chat/completions", # Guessing endpoint
+                headers={
+                    "Authorization": f"Bearer {self.minimax_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "abab6.5-chat",
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_base64}"
+                            }}
+                        ]
+                    }],
+                }
+            )
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
 
     async def _call_nvidia(self, system: str, query: str, model: str) -> str:
         """Call NVIDIA NIM API (OpenAI-compatible)."""

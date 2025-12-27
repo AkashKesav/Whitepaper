@@ -523,6 +523,7 @@ class IngestDocumentResponse(BaseModel):
     """Response from document ingestion."""
     entities: list[dict]
     relationships: list[dict]
+    chunks: list[dict]
     stats: dict
     summary: str = ""
     vector_tree: Optional[dict] = None

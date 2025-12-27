@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	"github.com/reflective-memory-kernel/internal/graph"
 	"go.uber.org/zap"
 )
 
@@ -453,29 +454,51 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			defer resp.Body.Close()
 
 			// Parse ingest response
+			// Parse ingest response
 			var result struct {
-				Entities      []interface{}          `json:"entities"`
-				Relationships []interface{}          `json:"relationships"`
-				Stats         map[string]interface{} `json:"stats"`
-				Summary       string                 `json:"summary"`
-				VectorTree    interface{}            `json:"vector_tree"`
+				Entities      []graph.ExtractedEntity `json:"entities"`
+				Relationships []interface{}           `json:"relationships"`
+				Chunks        []graph.DocumentChunk   `json:"chunks"`
+				Stats         map[string]interface{}  `json:"stats"`
+				Summary       string                  `json:"summary"`
+				VectorTree    interface{}             `json:"vector_tree"`
 			}
 			if decodeErr := json.NewDecoder(resp.Body).Decode(&result); decodeErr == nil {
 				entities = len(result.Entities)
 				relationships = len(result.Relationships)
-
-				// Get chunk count from stats if available
-				if stats, ok := result.Stats["chunks"]; ok {
-					if count, ok := stats.(float64); ok {
-						chunks = int(count)
-					}
-				}
+				chunks = len(result.Chunks)
 
 				s.logger.Info("Document ingested with Vector-Native processing",
 					zap.Int("entities", entities),
 					zap.Int("relationships", relationships),
 					zap.Int("chunks", chunks),
 					zap.String("filename", header.Filename))
+
+				// Persist Extracted Data
+				ctx := context.Background()
+				// Use filename as "conversation ID" context for now
+				docContextID := fmt.Sprintf("doc_%s", header.Filename)
+
+				// 1. Persist Entities to DGraph
+				if len(result.Entities) > 0 {
+					if err := s.agent.mkClient.PersistEntities(ctx, namespace, userID, docContextID, result.Entities); err != nil {
+						s.logger.Error("Failed to persist entities", zap.Error(err))
+					} else {
+						s.logger.Info("Persisted entities to DGraph", zap.Int("count", len(result.Entities)))
+					}
+				}
+
+				// 2. Persist Chunks to Qdrant
+				if len(result.Chunks) > 0 {
+					// Use a unique docID for chunk namespacing
+					docID := fmt.Sprintf("doc_%d_%s", time.Now().Unix(), header.Filename)
+					if err := s.agent.mkClient.PersistChunks(ctx, namespace, docID, result.Chunks); err != nil {
+						s.logger.Error("Failed to persist chunks", zap.Error(err))
+					} else {
+						s.logger.Info("Persisted chunks to Qdrant", zap.Int("count", len(result.Chunks)))
+					}
+				}
+
 			} else {
 				s.logger.Warn("Failed to decode ingest response", zap.Error(decodeErr))
 			}

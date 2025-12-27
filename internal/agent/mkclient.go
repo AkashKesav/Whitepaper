@@ -43,7 +43,12 @@ type MemoryKernel interface {
 	GetGraphClient() *graph.Client
 
 	// Admin methods
+	// Admin methods
 	TriggerReflection(ctx context.Context) error
+
+	// Ingestion Persistence
+	PersistEntities(ctx context.Context, namespace, userID, conversationID string, entities []graph.ExtractedEntity) error
+	PersistChunks(ctx context.Context, namespace, docID string, chunks []graph.DocumentChunk) error
 }
 
 // MKClient is a client for consulting the Memory Kernel
@@ -547,6 +552,22 @@ func (c *MKClient) TriggerReflection(ctx context.Context) error {
 		return c.directKernel.TriggerReflection(ctx)
 	}
 	return fmt.Errorf("HTTP mode not supported for TriggerReflection")
+}
+
+// PersistEntities persists extracted entities to the graph
+func (c *MKClient) PersistEntities(ctx context.Context, namespace, userID, conversationID string, entities []graph.ExtractedEntity) error {
+	if c.directKernel != nil {
+		return c.directKernel.PersistEntities(ctx, namespace, userID, conversationID, entities)
+	}
+	return fmt.Errorf("HTTP mode not supported for PersistEntities")
+}
+
+// PersistChunks persists document chunks to Qdrant
+func (c *MKClient) PersistChunks(ctx context.Context, namespace, docID string, chunks []graph.DocumentChunk) error {
+	if c.directKernel != nil {
+		return c.directKernel.PersistChunks(ctx, namespace, docID, chunks)
+	}
+	return fmt.Errorf("HTTP mode not supported for PersistChunks")
 }
 
 // AIClient is a client for AI services

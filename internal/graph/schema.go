@@ -262,6 +262,14 @@ type ExtractedRelation struct {
 	Properties map[string]string `json:"properties,omitempty"`
 }
 
+// DocumentChunk represents a chunk of a document with its vector embedding
+type DocumentChunk struct {
+	Text       string    `json:"text"`
+	PageNumber int       `json:"page_number"`
+	ChunkIndex int       `json:"chunk_index"`
+	Embedding  []float32 `json:"embedding"`
+}
+
 // ConsultationRequest represents a query from the FEA to the Memory Kernel
 type ConsultationRequest struct {
 	UserID          string   `json:"user_id,omitempty"`

@@ -16,23 +16,26 @@ import (
 )
 
 const (
-	// CollectionName is the Qdrant collection for node embeddings
-	CollectionName = "rmk_nodes"
+	// DefaultCollectionName is the default Qdrant collection for node embeddings
+	DefaultCollectionName = "rmk_nodes"
+	// CacheCollectionName is the Qdrant collection for semantic cache
+	CacheCollectionName = "rmk_cache"
 	// EmbeddingDimension is the dimension of Ollama nomic-embed-text embeddings
 	EmbeddingDimension = 768
 )
 
 // VectorIndex manages vector embeddings using Qdrant
 type VectorIndex struct {
-	baseURL     string
-	httpClient  *http.Client
-	dimension   int
-	logger      *zap.Logger
-	initialized bool
+	baseURL        string
+	httpClient     *http.Client
+	dimension      int
+	collectionName string
+	logger         *zap.Logger
+	initialized    bool
 }
 
 // NewVectorIndex creates a new Qdrant-backed vector index
-func NewVectorIndex(qdrantURL string, logger *zap.Logger) *VectorIndex {
+func NewVectorIndex(qdrantURL, collectionName string, logger *zap.Logger) *VectorIndex {
 	if qdrantURL == "" {
 		qdrantURL = os.Getenv("QDRANT_URL")
 		if qdrantURL == "" {
@@ -40,8 +43,13 @@ func NewVectorIndex(qdrantURL string, logger *zap.Logger) *VectorIndex {
 		}
 	}
 
+	if collectionName == "" {
+		collectionName = DefaultCollectionName
+	}
+
 	return &VectorIndex{
-		baseURL: qdrantURL,
+		baseURL:        qdrantURL,
+		collectionName: collectionName,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -57,7 +65,7 @@ func (vi *VectorIndex) Initialize(ctx context.Context) error {
 	}
 
 	// Check if collection exists
-	resp, err := vi.httpClient.Get(vi.baseURL + "/collections/" + CollectionName)
+	resp, err := vi.httpClient.Get(vi.baseURL + "/collections/" + vi.collectionName)
 	if err != nil {
 		return fmt.Errorf("failed to check collection: %w", err)
 	}
@@ -65,7 +73,7 @@ func (vi *VectorIndex) Initialize(ctx context.Context) error {
 
 	if resp.StatusCode == http.StatusOK {
 		vi.initialized = true
-		vi.logger.Info("Qdrant collection already exists", zap.String("collection", CollectionName))
+		vi.logger.Info("Qdrant collection already exists", zap.String("collection", vi.collectionName))
 		return nil
 	}
 
@@ -83,7 +91,7 @@ func (vi *VectorIndex) Initialize(ctx context.Context) error {
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "PUT",
-		vi.baseURL+"/collections/"+CollectionName,
+		vi.baseURL+"/collections/"+vi.collectionName,
 		bytes.NewBuffer(jsonData))
 	if err != nil {
 		return err
@@ -102,13 +110,13 @@ func (vi *VectorIndex) Initialize(ctx context.Context) error {
 	}
 
 	vi.initialized = true
-	vi.logger.Info("Created Qdrant collection", zap.String("collection", CollectionName))
+	vi.logger.Info("Created Qdrant collection", zap.String("collection", vi.collectionName))
 	return nil
 }
 
-// Store saves a node's embedding to Qdrant
+// Store saves a node's embedding to Qdrant with metadata
 // The point ID is a hash of namespace+uid for uniqueness
-func (vi *VectorIndex) Store(ctx context.Context, namespace, uid string, embedding []float32) error {
+func (vi *VectorIndex) Store(ctx context.Context, namespace, uid string, embedding []float32, metadata map[string]interface{}) error {
 	if err := vi.Initialize(ctx); err != nil {
 		return err
 	}
@@ -120,10 +128,10 @@ func (vi *VectorIndex) Store(ctx context.Context, namespace, uid string, embeddi
 			{
 				"id":     pointID,
 				"vector": embedding,
-				"payload": map[string]interface{}{
+				"payload": mergeMaps(map[string]interface{}{
 					"namespace": namespace,
 					"uid":       uid,
-				},
+				}, metadata),
 			},
 		},
 	}
@@ -134,7 +142,7 @@ func (vi *VectorIndex) Store(ctx context.Context, namespace, uid string, embeddi
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "PUT",
-		vi.baseURL+"/collections/"+CollectionName+"/points",
+		vi.baseURL+"/collections/"+vi.collectionName+"/points",
 		bytes.NewBuffer(jsonData))
 	if err != nil {
 		return err
@@ -160,10 +168,10 @@ func (vi *VectorIndex) Store(ctx context.Context, namespace, uid string, embeddi
 }
 
 // Search finds top-K similar nodes by vector similarity
-// Returns UIDs of matching nodes and their similarity scores
-func (vi *VectorIndex) Search(ctx context.Context, namespace string, queryVec []float32, topK int) ([]string, []float32, error) {
+// Returns UIDs, scores, and payloads of matching nodes
+func (vi *VectorIndex) Search(ctx context.Context, namespace string, queryVec []float32, topK int) ([]string, []float32, []map[string]interface{}, error) {
 	if err := vi.Initialize(ctx); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	searchReq := map[string]interface{}{
@@ -182,26 +190,26 @@ func (vi *VectorIndex) Search(ctx context.Context, namespace string, queryVec []
 
 	jsonData, err := json.Marshal(searchReq)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST",
-		vi.baseURL+"/collections/"+CollectionName+"/points/search",
+		vi.baseURL+"/collections/"+vi.collectionName+"/points/search",
 		bytes.NewBuffer(jsonData))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := vi.httpClient.Do(req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("vector search failed: %w", err)
+		return nil, nil, nil, fmt.Errorf("vector search failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, nil, fmt.Errorf("vector search failed (status %d): %s", resp.StatusCode, string(body))
+		return nil, nil, nil, fmt.Errorf("vector search failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
@@ -213,16 +221,18 @@ func (vi *VectorIndex) Search(ctx context.Context, namespace string, queryVec []
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, nil, fmt.Errorf("failed to decode search results: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to decode search results: %w", err)
 	}
 
 	uids := make([]string, 0, len(result.Result))
 	scores := make([]float32, 0, len(result.Result))
+	payloads := make([]map[string]interface{}, 0, len(result.Result))
 
 	for _, hit := range result.Result {
 		if uid, ok := hit.Payload["uid"].(string); ok {
 			uids = append(uids, uid)
 			scores = append(scores, hit.Score)
+			payloads = append(payloads, hit.Payload)
 		}
 	}
 
@@ -230,7 +240,18 @@ func (vi *VectorIndex) Search(ctx context.Context, namespace string, queryVec []
 		zap.String("namespace", namespace),
 		zap.Int("results", len(uids)))
 
-	return uids, scores, nil
+	return uids, scores, payloads, nil
+}
+
+// mergeMaps merges two maps
+func mergeMaps(base, extra map[string]interface{}) map[string]interface{} {
+	if extra == nil {
+		return base
+	}
+	for k, v := range extra {
+		base[k] = v
+	}
+	return base
 }
 
 // Delete removes a node's embedding from Qdrant
@@ -251,7 +272,7 @@ func (vi *VectorIndex) Delete(ctx context.Context, namespace, uid string) error 
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST",
-		vi.baseURL+"/collections/"+CollectionName+"/points/delete",
+		vi.baseURL+"/collections/"+vi.collectionName+"/points/delete",
 		bytes.NewBuffer(jsonData))
 	if err != nil {
 		return err
@@ -269,7 +290,7 @@ func (vi *VectorIndex) Delete(ctx context.Context, namespace, uid string) error 
 
 // Stats returns vector index statistics
 func (vi *VectorIndex) Stats(ctx context.Context) (map[string]interface{}, error) {
-	resp, err := vi.httpClient.Get(vi.baseURL + "/collections/" + CollectionName)
+	resp, err := vi.httpClient.Get(vi.baseURL + "/collections/" + vi.collectionName)
 	if err != nil {
 		return nil, err
 	}

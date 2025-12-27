@@ -823,11 +823,22 @@ async def ingest_document(request: IngestDocumentRequest):
             for r in result.relationships
         ]
         
+        chunks = [
+            {
+                "text": c.text,
+                "page_number": c.page_number,
+                "chunk_index": c.chunk_index,
+                "embedding": c.embedding,
+            }
+            for c in result.chunks
+        ]
+        
         print(f"DEBUG /ingest: processed document with {len(entities)} entities, {len(result.chunks)} chunks", flush=True)
         
         return IngestDocumentResponse(
             entities=entities,
             relationships=relationships,
+            chunks=chunks,
             stats=result.stats,
             summary=result.summary,
             vector_tree=result.vector_tree if result.vector_tree else None

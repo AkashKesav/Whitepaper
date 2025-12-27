@@ -46,6 +46,7 @@ type IngestionPipeline struct {
 	aiServicesURL string
 	localEmbedder local.LocalEmbedder
 	wisdomManager *wisdom.WisdomManager
+	vectorIndex   *VectorIndex
 
 	batchSize     int
 	flushInterval time.Duration
@@ -84,6 +85,7 @@ func NewIngestionPipeline(
 	aiServicesURL string,
 	localEmbedder local.LocalEmbedder,
 	wisdomManager *wisdom.WisdomManager,
+	vectorIndex *VectorIndex,
 	batchSize int,
 	flushInterval time.Duration,
 	logger *zap.Logger,
@@ -95,6 +97,7 @@ func NewIngestionPipeline(
 		aiServicesURL: aiServicesURL,
 		localEmbedder: localEmbedder,
 		wisdomManager: wisdomManager,
+		vectorIndex:   vectorIndex,
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
 		logger:        logger,
@@ -524,6 +527,41 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, namespac
 		}
 	}()
 
+	return nil
+}
+
+// PersistEntities persists a batch of entities to DGraph
+func (p *IngestionPipeline) PersistEntities(ctx context.Context, namespace, userID, conversationID string, entities []graph.ExtractedEntity) error {
+	return p.processBatchedEntities(ctx, namespace, userID, conversationID, entities)
+}
+
+// PersistChunks persists document chunks to Qdrant
+func (p *IngestionPipeline) PersistChunks(ctx context.Context, namespace, docID string, chunks []graph.DocumentChunk) error {
+	if p.vectorIndex == nil {
+		return fmt.Errorf("vector index is not initialized")
+	}
+
+	for _, chunk := range chunks {
+		// UID: chunk_{docID}_{index}
+		uid := fmt.Sprintf("chunk_%s_%d", docID, chunk.ChunkIndex)
+
+		// Metadata for hybrid retrieval
+		metadata := map[string]interface{}{
+			"text":        chunk.Text,
+			"page_number": chunk.PageNumber,
+			"chunk_index": chunk.ChunkIndex,
+			"source_id":   docID,
+			"type":        "chunk",
+		}
+
+		// Store in Qdrant (using vectorIndex.Store)
+		if err := p.vectorIndex.Store(ctx, namespace, uid, chunk.Embedding, metadata); err != nil {
+			// Log error but continue with other chunks
+			p.logger.Error("Failed to persist chunk",
+				zap.String("uid", uid),
+				zap.Error(err))
+		}
+	}
 	return nil
 }
 

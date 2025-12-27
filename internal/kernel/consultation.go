@@ -196,24 +196,61 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace st
 		if err != nil {
 			h.logger.Warn("Failed to embed query for vector search", zap.Error(err))
 		} else if len(queryVec) > 0 {
-			uids, scores, err := h.vectorIndex.Search(ctx, namespace, queryVec, 20)
+			uids, scores, payloads, err := h.vectorIndex.Search(ctx, namespace, queryVec, 20)
 			if err != nil {
 				h.logger.Warn("Vector search failed", zap.Error(err))
 			} else if len(uids) > 0 {
-				// Fetch full node data for vector search results
-				vectorNodes, err := h.graphClient.GetNodesByUIDs(ctx, uids)
-				if err != nil {
-					h.logger.Warn("Failed to fetch vector search results", zap.Error(err))
-				} else {
-					h.logger.Info("Vector search found candidates",
-						zap.Int("count", len(vectorNodes)),
-						zap.Float32("top_score", scores[0]))
+				h.logger.Info("Vector search found candidates",
+					zap.Int("count", len(uids)),
+					zap.Float32("top_score", scores[0]))
 
-					// Add vector results first (highest priority - semantic match)
-					for _, node := range vectorNodes {
-						if !seen[node.UID] && isValidNode(node) {
-							seen[node.UID] = true
-							merged = append(merged, node)
+				// Process Vector Results (Hybrid)
+				var entityUIDs []string
+
+				for i, uid := range uids {
+					payload := payloads[i]
+
+					// If this is a chunk with text, create a synthetic node
+					if text, ok := payload["text"].(string); ok && text != "" {
+						// Create synthetic Fact node from snippet
+						snippetNode := graph.Node{
+							UID:         uid,
+							Name:        "Relevant Excerpt",
+							Description: text, // The chunk text is the content
+							DType:       []string{string(graph.NodeTypeFact)},
+							Activation:  1.0, // High priority from vector match
+							Confidence:  float64(scores[i]),
+							Tags:        []string{"vector-result", "snippet"},
+						}
+
+						// Add metadata if available
+						if page, ok := payload["page_number"].(float64); ok {
+							snippetNode.Attributes = map[string]string{
+								"page": fmt.Sprintf("%.0f", page),
+							}
+						}
+
+						if !seen[uid] {
+							seen[uid] = true
+							merged = append(merged, snippetNode)
+						}
+					} else {
+						// It's a graph node (Entity), queue for lookup
+						entityUIDs = append(entityUIDs, uid)
+					}
+				}
+
+				// Fetch full node data for Entity matches
+				if len(entityUIDs) > 0 {
+					vectorNodes, err := h.graphClient.GetNodesByUIDs(ctx, entityUIDs)
+					if err != nil {
+						h.logger.Warn("Failed to fetch vector search results", zap.Error(err))
+					} else {
+						for _, node := range vectorNodes {
+							if !seen[node.UID] && isValidNode(node) {
+								seen[node.UID] = true
+								merged = append(merged, node)
+							}
 						}
 					}
 				}

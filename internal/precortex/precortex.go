@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/reflective-memory-kernel/internal/graph"
+	"github.com/reflective-memory-kernel/internal/kernel"
 	"github.com/reflective-memory-kernel/internal/kernel/cache"
 	"go.uber.org/zap"
 )
@@ -57,9 +58,11 @@ type PreCortex struct {
 	graphClient  *graph.Client
 
 	// Components
-	intentClassifier *IntentClassifier
-	semanticCache    *SemanticCache
-	reflexEngine     *ReflexEngine
+	// Components
+	intentClassifier    *IntentClassifier
+	semanticCache       *SemanticCache
+	reflexEngine        *ReflexEngine
+	semanticVectorIndex *kernel.VectorIndex
 
 	mu sync.RWMutex
 
@@ -71,19 +74,20 @@ type PreCortex struct {
 }
 
 // NewPreCortex creates a new Pre-Cortex instance
-func NewPreCortex(cfg Config, cacheManager *cache.Manager, graphClient *graph.Client, logger *zap.Logger) (*PreCortex, error) {
+func NewPreCortex(cfg Config, cacheManager *cache.Manager, graphClient *graph.Client, semanticVectorIndex *kernel.VectorIndex, logger *zap.Logger) (*PreCortex, error) {
 	pc := &PreCortex{
-		config:       cfg,
-		logger:       logger,
-		cacheManager: cacheManager,
-		graphClient:  graphClient,
+		config:              cfg,
+		logger:              logger,
+		cacheManager:        cacheManager,
+		graphClient:         graphClient,
+		semanticVectorIndex: semanticVectorIndex,
 	}
 
 	// Initialize intent classifier
 	pc.intentClassifier = NewIntentClassifier(logger)
 
 	// Initialize semantic cache (will add ONNX embedder later)
-	pc.semanticCache = NewSemanticCache(cacheManager, nil, cfg.CacheSimilarity, logger)
+	pc.semanticCache = NewSemanticCache(cacheManager, semanticVectorIndex, nil, cfg.CacheSimilarity, logger)
 
 	// Initialize reflex engine
 	pc.reflexEngine = NewReflexEngine(graphClient, logger)
@@ -98,7 +102,7 @@ func NewPreCortex(cfg Config, cacheManager *cache.Manager, graphClient *graph.Cl
 
 // SetEmbedder configures the embedder for semantic similarity search
 func (pc *PreCortex) SetEmbedder(embedder Embedder) {
-	pc.semanticCache = NewSemanticCache(pc.cacheManager, embedder, pc.config.CacheSimilarity, pc.logger)
+	pc.semanticCache = NewSemanticCache(pc.cacheManager, pc.semanticVectorIndex, embedder, pc.config.CacheSimilarity, pc.logger)
 	pc.logger.Info("Pre-Cortex semantic cache embedder configured",
 		zap.Bool("embedder_active", embedder != nil))
 }

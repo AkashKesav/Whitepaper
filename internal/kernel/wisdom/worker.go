@@ -19,8 +19,9 @@ type Embedder interface {
 }
 
 // VectorStorer interface for storing vectors in a vector database
+// VectorStorer interface for storing vectors in a vector database
 type VectorStorer interface {
-	Store(ctx context.Context, namespace, uid string, embedding []float32) error
+	Store(ctx context.Context, namespace, uid string, embedding []float32, metadata map[string]interface{}) error
 }
 
 // Config holds configuration for the Wisdom Worker
@@ -190,7 +191,12 @@ func (wm *WisdomManager) processBatch(ctx context.Context, batch []graph.Transcr
 			if err != nil {
 				wm.logger.Warn("Failed to generate embedding for summary", zap.Error(err))
 			} else {
-				if err := wm.vectorStorer.Store(ctx, ns, summaryUID, embedding); err != nil {
+				// Store with metadata
+				metadata := map[string]interface{}{
+					"type": "summary",
+					"text": summary,
+				}
+				if err := wm.vectorStorer.Store(ctx, ns, summaryUID, embedding, metadata); err != nil {
 					wm.logger.Warn("Failed to store embedding in vector index", zap.Error(err))
 				} else {
 					wm.logger.Info("Stored summary embedding in Qdrant",

@@ -320,7 +320,7 @@ func (k *Kernel) Start() error {
 
 	// Initialize Vector Index (Qdrant) for Hybrid RAG
 	// Must be initialized before WisdomManager for embedding storage
-	k.vectorIndex = NewVectorIndex(k.config.QdrantURL, k.logger)
+	k.vectorIndex = NewVectorIndex(k.config.QdrantURL, DefaultCollectionName, k.logger)
 	if err := k.vectorIndex.Initialize(k.ctx); err != nil {
 		k.logger.Warn("Failed to initialize Qdrant vector index (will retry on first use)", zap.Error(err))
 	} else {
@@ -343,6 +343,7 @@ func (k *Kernel) Start() error {
 		k.config.AIServicesURL,
 		k.localEmbedder,
 		k.wisdomManager,
+		k.vectorIndex,
 		k.config.IngestionBatchSize,
 		k.config.IngestionFlushInterval,
 		k.logger,
@@ -616,4 +617,14 @@ func (k *Kernel) IngestEvent(ctx context.Context, event *graph.TranscriptEvent) 
 	}
 	// Delegate to pipeline's direct ingest
 	return k.ingestionPipeline.IngestDirect(ctx, event)
+}
+
+// PersistEntities persists extracted entities to the graph
+func (k *Kernel) PersistEntities(ctx context.Context, namespace, userID, conversationID string, entities []graph.ExtractedEntity) error {
+	return k.ingestionPipeline.PersistEntities(ctx, namespace, userID, conversationID, entities)
+}
+
+// PersistChunks persists document chunks to Qdrant
+func (k *Kernel) PersistChunks(ctx context.Context, namespace, docID string, chunks []graph.DocumentChunk) error {
+	return k.ingestionPipeline.PersistChunks(ctx, namespace, docID, chunks)
 }

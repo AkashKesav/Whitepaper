@@ -2,14 +2,11 @@ package precortex
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"math"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	"github.com/reflective-memory-kernel/internal/kernel"
 	"github.com/reflective-memory-kernel/internal/kernel/cache"
 	"go.uber.org/zap"
 )
@@ -23,53 +20,35 @@ const (
 	DefaultSimilarityThreshold = 0.92
 )
 
-// CachedEntry represents a cached query-response pair with its embedding
-type CachedEntry struct {
-	Query     string    `json:"query"`
-	Response  string    `json:"response"`
-	Embedding []float32 `json:"embedding"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-// SemanticCache provides vector-based semantic caching using Ollama embeddings
+// SemanticCache provides vector-based semantic caching using Qdrant
 type SemanticCache struct {
 	cacheManager *cache.Manager
-	redisClient  *redis.Client
+	vectorIndex  *kernel.VectorIndex
 	embedder     Embedder
 	threshold    float64
 	logger       *zap.Logger
-
-	// In-memory vector index for fast similarity search
-	// Key: namespace, Value: list of cached entries
-	vectorIndex map[string][]CachedEntry
-	indexMu     sync.RWMutex
 }
 
-// NewSemanticCache creates a new semantic cache with vector similarity support
-func NewSemanticCache(cacheManager *cache.Manager, embedder Embedder, threshold float64, logger *zap.Logger) *SemanticCache {
+// NewSemanticCache creates a new semantic cache
+func NewSemanticCache(cacheManager *cache.Manager, vectorIndex *kernel.VectorIndex, embedder Embedder, threshold float64, logger *zap.Logger) *SemanticCache {
 	if threshold <= 0 || threshold > 1 {
 		threshold = DefaultSimilarityThreshold
 	}
 
 	sc := &SemanticCache{
 		cacheManager: cacheManager,
+		vectorIndex:  vectorIndex,
 		embedder:     embedder,
 		threshold:    threshold,
 		logger:       logger,
-		vectorIndex:  make(map[string][]CachedEntry),
 	}
 
 	logger.Info("Semantic cache initialized",
 		zap.Float64("threshold", threshold),
-		zap.Bool("embedder_available", embedder != nil))
+		zap.Bool("vector_index_active", vectorIndex != nil),
+		zap.Bool("embedder_active", embedder != nil))
 
 	return sc
-}
-
-// SetRedisClient sets the Redis client for persistent vector storage
-func (sc *SemanticCache) SetRedisClient(client *redis.Client) {
-	sc.redisClient = client
-	sc.logger.Info("Redis client configured for semantic cache persistence")
 }
 
 // Check looks up a query in the semantic cache
@@ -93,8 +72,8 @@ func (sc *SemanticCache) Check(ctx context.Context, namespace, query string) (st
 		}
 	}
 
-	// 2. If we have an embedder, try vector similarity search
-	if sc.embedder != nil {
+	// 2. If we have an embedder and vector index, try vector similarity search
+	if sc.embedder != nil && sc.vectorIndex != nil {
 		response, similarity, found := sc.vectorSearch(ctx, namespace, query)
 		if found {
 			sc.logger.Info("Semantic cache: similarity HIT",
@@ -124,13 +103,13 @@ func (sc *SemanticCache) Store(ctx context.Context, namespace, query, response s
 
 	sc.cacheManager.SetWithTTL(key, response, int64(len(response)), CacheTTL)
 
-	// If we have an embedder, also store the vector for similarity search
-	if sc.embedder != nil {
+	// If we have an embedder and vector index, store vector
+	if sc.embedder != nil && sc.vectorIndex != nil {
 		go sc.storeVector(ctx, namespace, query, response)
 	}
 }
 
-// vectorSearch performs semantic similarity search
+// vectorSearch performs semantic similarity search using Qdrant
 func (sc *SemanticCache) vectorSearch(ctx context.Context, namespace, query string) (string, float32, bool) {
 	// Generate embedding for query
 	queryVec, err := sc.embedder.Embed(query)
@@ -139,48 +118,31 @@ func (sc *SemanticCache) vectorSearch(ctx context.Context, namespace, query stri
 		return "", 0, false
 	}
 
-	// Search in-memory index
-	sc.indexMu.RLock()
-	entries, exists := sc.vectorIndex[namespace]
-	sc.indexMu.RUnlock()
+	// Search Qdrant
+	// Logic: We store query as vector, and response as payload
+	// Search returns similar queries. If similarity > threshold, we return the cached response.
 
-	if !exists || len(entries) == 0 {
-		// Try loading from Redis if available
-		if sc.redisClient != nil {
-			entries = sc.loadFromRedis(ctx, namespace)
-			if len(entries) > 0 {
-				sc.indexMu.Lock()
-				sc.vectorIndex[namespace] = entries
-				sc.indexMu.Unlock()
-			}
-		}
-	}
-
-	if len(entries) == 0 {
+	_, scores, payloads, err := sc.vectorIndex.Search(ctx, namespace, queryVec, 1) // Get top 1
+	if err != nil {
+		sc.logger.Warn("Semantic cache vector search failed", zap.Error(err))
 		return "", 0, false
 	}
 
-	// Find the most similar entry
-	var bestMatch *CachedEntry
-	var bestSimilarity float32 = 0
+	if len(scores) == 0 {
+		return "", 0, false
+	}
 
-	for i := range entries {
-		similarity := cosineSimilarity(queryVec, entries[i].Embedding)
-		if similarity > bestSimilarity {
-			bestSimilarity = similarity
-			bestMatch = &entries[i]
+	bestScore := scores[0]
+	if bestScore >= float32(sc.threshold) {
+		// Found a hit
+		if response, ok := payloads[0]["response"].(string); ok {
+			sc.logger.Debug("Vector search found match",
+				zap.Float32("similarity", bestScore))
+			return response, bestScore, true
 		}
 	}
 
-	// Check if similarity exceeds threshold
-	if bestMatch != nil && bestSimilarity >= float32(sc.threshold) {
-		sc.logger.Debug("Vector search found match",
-			zap.String("matched_query", bestMatch.Query[:min(30, len(bestMatch.Query))]),
-			zap.Float32("similarity", bestSimilarity))
-		return bestMatch.Response, bestSimilarity, true
-	}
-
-	return "", bestSimilarity, false
+	return "", bestScore, false
 }
 
 // storeVector stores a query embedding for future similarity search
@@ -192,129 +154,47 @@ func (sc *SemanticCache) storeVector(ctx context.Context, namespace, query, resp
 		return
 	}
 
-	entry := CachedEntry{
-		Query:     query,
-		Response:  response,
-		Embedding: vec,
-		CreatedAt: time.Now(),
+	// UID = hash of query
+	uid := fmt.Sprintf("sc_%s", hashQuery(query))
+
+	metadata := map[string]interface{}{
+		"query":    query,
+		"response": response,
+		"type":     "cache_entry",
 	}
 
-	// Store in memory index
-	sc.indexMu.Lock()
-	entries := sc.vectorIndex[namespace]
-
-	// Check if we already have this exact query
-	for i, e := range entries {
-		if normalizeQuery(e.Query) == normalizeQuery(query) {
-			// Update existing entry
-			entries[i] = entry
-			sc.vectorIndex[namespace] = entries
-			sc.indexMu.Unlock()
-			sc.persistToRedis(ctx, namespace, entries)
-			return
-		}
-	}
-
-	// Add new entry, respecting max size
-	entries = append(entries, entry)
-	if len(entries) > MaxCachedVectors {
-		// Remove oldest entries (FIFO)
-		entries = entries[len(entries)-MaxCachedVectors:]
-	}
-	sc.vectorIndex[namespace] = entries
-	sc.indexMu.Unlock()
-
-	// Persist to Redis for durability
-	sc.persistToRedis(ctx, namespace, entries)
-
-	sc.logger.Debug("Stored vector in semantic cache",
-		zap.String("namespace", namespace),
-		zap.Int("embedding_dims", len(vec)),
-		zap.Int("total_cached", len(entries)))
-}
-
-// persistToRedis saves the vector index to Redis for persistence
-func (sc *SemanticCache) persistToRedis(ctx context.Context, namespace string, entries []CachedEntry) {
-	if sc.redisClient == nil {
-		return
-	}
-
-	key := fmt.Sprintf("semantic_vectors:%s", namespace)
-	data, err := json.Marshal(entries)
-	if err != nil {
-		sc.logger.Warn("Failed to marshal entries for Redis", zap.Error(err))
-		return
-	}
-
-	if err := sc.redisClient.Set(ctx, key, data, CacheTTL).Err(); err != nil {
-		sc.logger.Warn("Failed to persist vectors to Redis", zap.Error(err))
+	if err := sc.vectorIndex.Store(ctx, namespace, uid, vec, metadata); err != nil {
+		sc.logger.Warn("Failed to store vector in semantic cache", zap.Error(err))
+	} else {
+		sc.logger.Debug("Stored vector in semantic cache",
+			zap.String("namespace", namespace),
+			zap.String("uid", uid))
 	}
 }
 
-// loadFromRedis loads the vector index from Redis
-func (sc *SemanticCache) loadFromRedis(ctx context.Context, namespace string) []CachedEntry {
-	if sc.redisClient == nil {
-		return nil
+// hashQuery creates a simple hash of a query
+func hashQuery(query string) string {
+	h := 0
+	for _, c := range query {
+		h = 31*h + int(c)
 	}
-
-	key := fmt.Sprintf("semantic_vectors:%s", namespace)
-	data, err := sc.redisClient.Get(ctx, key).Result()
-	if err != nil {
-		if err != redis.Nil {
-			sc.logger.Warn("Failed to load vectors from Redis", zap.Error(err))
-		}
-		return nil
-	}
-
-	var entries []CachedEntry
-	if err := json.Unmarshal([]byte(data), &entries); err != nil {
-		sc.logger.Warn("Failed to unmarshal vectors from Redis", zap.Error(err))
-		return nil
-	}
-
-	sc.logger.Debug("Loaded vectors from Redis",
-		zap.String("namespace", namespace),
-		zap.Int("count", len(entries)))
-
-	return entries
+	return fmt.Sprintf("%x", h&0x7fffffff)
 }
 
 // Stats returns cache statistics
-func (sc *SemanticCache) Stats() map[string]interface{} {
-	sc.indexMu.RLock()
-	defer sc.indexMu.RUnlock()
-
-	totalVectors := 0
-	for _, entries := range sc.vectorIndex {
-		totalVectors += len(entries)
-	}
-
-	return map[string]interface{}{
-		"namespaces":      len(sc.vectorIndex),
-		"total_vectors":   totalVectors,
+func (sc *SemanticCache) Stats(ctx context.Context) map[string]interface{} {
+	stats := map[string]interface{}{
 		"threshold":       sc.threshold,
 		"embedder_active": sc.embedder != nil,
 	}
-}
 
-// cosineSimilarity computes the cosine similarity between two vectors
-func cosineSimilarity(a, b []float32) float32 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
+	if sc.vectorIndex != nil {
+		if idxStats, err := sc.vectorIndex.Stats(ctx); err == nil {
+			stats["qdrant_stats"] = idxStats
+		}
 	}
 
-	var dot, normA, normB float32
-	for i := range a {
-		dot += a[i] * b[i]
-		normA += a[i] * a[i]
-		normB += b[i] * b[i]
-	}
-
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-
-	return dot / (float32(math.Sqrt(float64(normA))) * float32(math.Sqrt(float64(normB))))
+	return stats
 }
 
 // normalizeQuery normalizes a query for exact matching

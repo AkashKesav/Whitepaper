@@ -140,10 +140,19 @@ func main() {
 		CacheSimilarity:     0.85, // 85% similarity threshold for cache hits
 	}
 
+	// Initialize Cache Vector Index
+	// Use same Qdrant URL as Kernel (env var or default)
+	qdrantURL := os.Getenv("QDRANT_URL") // Fallback handled by NewVectorIndex
+	cacheIndex := kernel.NewVectorIndex(qdrantURL, kernel.CacheCollectionName, logger.Named("cache_index"))
+	if err := cacheIndex.Initialize(context.Background()); err != nil {
+		logger.Warn("Failed to initialize cache vector index", zap.Error(err))
+	}
+
 	pc, err := precortex.NewPreCortex(
 		pcConfig,
 		cacheManager,
 		k.GetGraphClient(),
+		cacheIndex,
 		logger.Named("precortex"),
 	)
 	if err != nil {
