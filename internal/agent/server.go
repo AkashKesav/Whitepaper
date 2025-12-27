@@ -424,7 +424,9 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	// Process document via AI services extraction
 	entities := 0
-	if s.agent.aiClient != nil {
+	if s.agent.aiClient == nil {
+		s.logger.Warn("aiClient is nil, cannot extract entities")
+	} else {
 		// Call AI service to extract entities from document
 		type ExtractRequest struct {
 			UserQuery  string `json:"user_query"`
@@ -432,7 +434,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 
 		extractReq := ExtractRequest{
-			UserQuery:  "Extract information from this document: " + header.Filename,
+			UserQuery:  "Extract all people, companies, locations, and topics from this document",
 			AIResponse: string(content),
 		}
 
@@ -442,15 +444,46 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			"application/json",
 			bytes.NewReader(reqBody),
 		)
-		if err == nil && resp.StatusCode == 200 {
+		if err != nil {
+			s.logger.Warn("AI extract request failed", zap.Error(err))
+		} else if resp.StatusCode == 200 {
 			defer resp.Body.Close()
-			var result struct {
-				Value []interface{} `json:"value"`
-				Count int           `json:"Count"`
+
+			// Read the body first
+			bodyBytes, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				s.logger.Warn("Failed to read extract response", zap.Error(readErr))
+			} else {
+				// Try to decode as object first (expected format: {"value": [...], "Count": N})
+				var result struct {
+					Value []interface{} `json:"value"`
+					Count int           `json:"Count"`
+				}
+				if decodeErr := json.Unmarshal(bodyBytes, &result); decodeErr == nil {
+					entities = len(result.Value)
+					if result.Count > 0 {
+						entities = result.Count
+					}
+				} else {
+					// Try to decode as raw array
+					var rawEntities []interface{}
+					if decodeErr2 := json.Unmarshal(bodyBytes, &rawEntities); decodeErr2 == nil {
+						entities = len(rawEntities)
+					} else {
+						s.logger.Warn("Failed to decode extract response",
+							zap.Error(decodeErr),
+							zap.String("body_preview", string(bodyBytes[:min(len(bodyBytes), 200)])))
+					}
+				}
+
+				if entities > 0 {
+					s.logger.Info("Extracted entities from document",
+						zap.Int("count", entities),
+						zap.String("filename", header.Filename))
+				}
 			}
-			if json.NewDecoder(resp.Body).Decode(&result) == nil {
-				entities = result.Count
-			}
+		} else {
+			s.logger.Warn("AI extract returned non-200", zap.Int("status", resp.StatusCode))
 		}
 	}
 
