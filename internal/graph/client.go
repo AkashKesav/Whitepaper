@@ -41,7 +41,22 @@ func DefaultClientConfig() ClientConfig {
 		Address:        "localhost:9080",
 		MaxRetries:     5,
 		RetryInterval:  2 * time.Second,
-		RequestTimeout: 30 * time.Second,
+		RequestTimeout: 10 * time.Second, // Default 10s timeout for DGraph calls
+	}
+}
+
+// timeoutInterceptor creates a gRPC unary interceptor that enforces per-call timeouts.
+// This prevents slow DGraph queries from blocking the API indefinitely.
+func timeoutInterceptor(timeout time.Duration) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply interface{},
+		cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		// Only add timeout if context doesn't already have a deadline
+		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+		return invoker(ctx, method, req, reply, cc, opts...)
 	}
 }
 
@@ -55,6 +70,7 @@ func NewClient(ctx context.Context, cfg ClientConfig, logger *zap.Logger) (*Clie
 		conn, err = grpc.DialContext(ctx, cfg.Address,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithBlock(),
+			grpc.WithUnaryInterceptor(timeoutInterceptor(cfg.RequestTimeout)),
 		)
 		if err == nil {
 			break

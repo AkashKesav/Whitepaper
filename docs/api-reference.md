@@ -11,6 +11,7 @@ Complete API reference for all Reflective Memory Kernel services.
 Send a message and receive a response.
 
 **Request:**
+
 ```http
 POST /api/chat HTTP/1.1
 Content-Type: application/json
@@ -23,11 +24,12 @@ Content-Type: application/json
 ```
 
 **Response:**
+
 ```json
 {
-    "conversation_id": "conv_abc123",
-    "response": "Here's what I know about that...",
-    "latency_ms": 234
+  "conversation_id": "conv_abc123",
+  "response": "Here's what I know about that...",
+  "latency_ms": 234
 }
 ```
 
@@ -45,11 +47,12 @@ Content-Type: application/json
 Get agent statistics.
 
 **Response:**
+
 ```json
 {
-    "active_conversations": 5,
-    "total_turns": 42,
-    "average_latency_ms": 180
+  "active_conversations": 5,
+  "total_turns": 42,
+  "average_latency_ms": 180
 }
 ```
 
@@ -60,9 +63,10 @@ Get agent statistics.
 Health check endpoint.
 
 **Response:**
+
 ```json
 {
-    "status": "healthy"
+  "status": "healthy"
 }
 ```
 
@@ -75,38 +79,42 @@ Health check endpoint.
 Real-time chat connection.
 
 **Connection:**
+
 ```
 ws://localhost:3000/ws/chat?user_id=user123
 ```
 
 **Client → Server Messages:**
 
-| Type | Payload | Description |
-|------|---------|-------------|
-| `chat` | `{"message": "Hello"}` | Send a message |
-| `ping` | - | Keep-alive ping |
+| Type   | Payload                | Description     |
+| ------ | ---------------------- | --------------- |
+| `chat` | `{"message": "Hello"}` | Send a message  |
+| `ping` | -                      | Keep-alive ping |
 
 **Server → Client Messages:**
 
-| Type | Payload | Description |
-|------|---------|-------------|
-| `response` | `{"response": "..."}` | Chat response |
-| `pong` | - | Keep-alive pong |
+| Type       | Payload               | Description     |
+| ---------- | --------------------- | --------------- |
+| `response` | `{"response": "..."}` | Chat response   |
+| `pong`     | -                     | Keep-alive pong |
 
 **Example Session:**
-```javascript
-const ws = new WebSocket('ws://localhost:3000/ws/chat?user_id=user1');
 
-ws.send(JSON.stringify({
-    type: 'chat',
-    payload: { message: 'Hello!' }
-}));
+```javascript
+const ws = new WebSocket("ws://localhost:3000/ws/chat?user_id=user1");
+
+ws.send(
+  JSON.stringify({
+    type: "chat",
+    payload: { message: "Hello!" },
+  })
+);
 
 ws.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    if (data.type === 'response') {
-        console.log(data.payload.response);
-    }
+  const data = JSON.parse(event.data);
+  if (data.type === "response") {
+    console.log(data.payload.response);
+  }
 };
 ```
 
@@ -119,6 +127,7 @@ ws.onmessage = (event) => {
 Consult the Memory Kernel for context and insights.
 
 **Request:**
+
 ```http
 POST /api/consult HTTP/1.1
 Content-Type: application/json
@@ -134,35 +143,36 @@ Content-Type: application/json
 ```
 
 **Response:**
+
 ```json
 {
-    "request_id": "req_xyz789",
-    "synthesized_brief": "Based on your history, the user prefers...",
-    "relevant_facts": [
-        {
-            "uid": "0x1",
-            "name": "Alex",
-            "description": "User's partner",
-            "activation": 0.85
-        }
-    ],
-    "insights": [
-        {
-            "insight_type": "warning",
-            "summary": "Peanut allergy risk with Thai food",
-            "action_suggestion": "Mention allergy when Thai food discussed"
-        }
-    ],
-    "patterns": [
-        {
-            "pattern_type": "temporal",
-            "predicted_action": "User may need Project Alpha brief"
-        }
-    ],
-    "proactive_alerts": [
-        "If Thai food is mentioned, remind about peanut allergy"
-    ],
-    "confidence": 0.87
+  "request_id": "req_xyz789",
+  "synthesized_brief": "Based on your history, the user prefers...",
+  "relevant_facts": [
+    {
+      "uid": "0x1",
+      "name": "Alex",
+      "description": "User's partner",
+      "activation": 0.85
+    }
+  ],
+  "insights": [
+    {
+      "insight_type": "warning",
+      "summary": "Peanut allergy risk with Thai food",
+      "action_suggestion": "Mention allergy when Thai food discussed"
+    }
+  ],
+  "patterns": [
+    {
+      "pattern_type": "temporal",
+      "predicted_action": "User may need Project Alpha brief"
+    }
+  ],
+  "proactive_alerts": [
+    "If Thai food is mentioned, remind about peanut allergy"
+  ],
+  "confidence": 0.87
 }
 ```
 
@@ -173,15 +183,16 @@ Content-Type: application/json
 Get Memory Kernel statistics.
 
 **Response:**
+
 ```json
 {
-    "Entity_count": 45,
-    "Fact_count": 123,
-    "Insight_count": 12,
-    "Pattern_count": 5,
-    "high_activation_nodes": 8,
-    "recent_insights": 3,
-    "active_patterns": 2
+  "Entity_count": 45,
+  "Fact_count": 123,
+  "Insight_count": 12,
+  "Pattern_count": 5,
+  "high_activation_nodes": 8,
+  "recent_insights": 3,
+  "active_patterns": 2
 }
 ```
 
@@ -192,9 +203,10 @@ Get Memory Kernel statistics.
 Manually trigger a reflection cycle (for testing).
 
 **Response:**
+
 ```json
 {
-    "status": "reflection triggered"
+  "status": "reflection triggered"
 }
 ```
 
@@ -205,9 +217,10 @@ Manually trigger a reflection cycle (for testing).
 Health check endpoint.
 
 **Response:**
+
 ```json
 {
-    "status": "healthy"
+  "status": "healthy"
 }
 ```
 
@@ -220,29 +233,31 @@ Health check endpoint.
 Extract entities from conversation text.
 
 **Request:**
+
 ```json
 {
-    "user_query": "My partner Alex loves Thai food",
-    "ai_response": "That sounds delicious!",
-    "context": "Dinner planning conversation"
+  "user_query": "My partner Alex loves Thai food",
+  "ai_response": "That sounds delicious!",
+  "context": "Dinner planning conversation"
 }
 ```
 
 **Response:**
+
 ```json
 [
-    {
-        "name": "Alex",
-        "type": "Entity",
-        "attributes": {"role": "partner"},
-        "relations": [
-            {
-                "type": "LIKES",
-                "target_name": "Thai Food",
-                "target_type": "Entity"
-            }
-        ]
-    }
+  {
+    "name": "Alex",
+    "type": "Entity",
+    "attributes": { "role": "partner" },
+    "relations": [
+      {
+        "type": "LIKES",
+        "target_name": "Thai Food",
+        "target_type": "Entity"
+      }
+    ]
+  }
 ]
 ```
 
@@ -253,22 +268,24 @@ Extract entities from conversation text.
 Resolve contradictions between facts.
 
 **Request:**
+
 ```json
 {
-    "node1_name": "Manager: Bob",
-    "node1_description": "User's manager is Bob",
-    "node1_created_at": "2024-01-15T10:00:00Z",
-    "node2_name": "Manager: Alice",
-    "node2_description": "User's manager is Alice",
-    "node2_created_at": "2024-06-20T14:00:00Z"
+  "node1_name": "Manager: Bob",
+  "node1_description": "User's manager is Bob",
+  "node1_created_at": "2024-01-15T10:00:00Z",
+  "node2_name": "Manager: Alice",
+  "node2_description": "User's manager is Alice",
+  "node2_created_at": "2024-06-20T14:00:00Z"
 }
 ```
 
 **Response:**
+
 ```json
 {
-    "winner_index": 2,
-    "reason": "More recent timestamp"
+  "winner_index": 2,
+  "reason": "More recent timestamp"
 }
 ```
 
@@ -279,23 +296,23 @@ Resolve contradictions between facts.
 Synthesize a brief from facts and insights.
 
 **Request:**
+
 ```json
 {
-    "query": "Tell me about my projects",
-    "context": "Work-related query",
-    "facts": [
-        {"name": "Project Alpha", "description": "Main project"}
-    ],
-    "insights": [],
-    "proactive_alerts": ["Project deadline approaching"]
+  "query": "Tell me about my projects",
+  "context": "Work-related query",
+  "facts": [{ "name": "Project Alpha", "description": "Main project" }],
+  "insights": [],
+  "proactive_alerts": ["Project deadline approaching"]
 }
 ```
 
 **Response:**
+
 ```json
 {
-    "brief": "You're working on Project Alpha. Note: the deadline is approaching.",
-    "confidence": 0.85
+  "brief": "You're working on Project Alpha. Note: the deadline is approaching.",
+  "confidence": 0.85
 }
 ```
 
@@ -306,27 +323,29 @@ Synthesize a brief from facts and insights.
 Evaluate potential insights between nodes.
 
 **Request:**
+
 ```json
 {
-    "node1_name": "Thai Food",
-    "node1_type": "Entity",
-    "node1_description": "Cuisine preference",
-    "node2_name": "Peanut Allergy",
-    "node2_type": "Fact",
-    "node2_description": "User is allergic to peanuts",
-    "path_exists": false,
-    "path_length": 0
+  "node1_name": "Thai Food",
+  "node1_type": "Entity",
+  "node1_description": "Cuisine preference",
+  "node2_name": "Peanut Allergy",
+  "node2_type": "Fact",
+  "node2_description": "User is allergic to peanuts",
+  "path_exists": false,
+  "path_length": 0
 }
 ```
 
 **Response:**
+
 ```json
 {
-    "has_insight": true,
-    "insight_type": "warning",
-    "summary": "Thai food commonly contains peanuts",
-    "action_suggestion": "Warn about peanuts when Thai food is discussed",
-    "confidence": 0.91
+  "has_insight": true,
+  "insight_type": "warning",
+  "summary": "Thai food commonly contains peanuts",
+  "action_suggestion": "Warn about peanuts when Thai food is discussed",
+  "confidence": 0.91
 }
 ```
 
@@ -337,18 +356,20 @@ Evaluate potential insights between nodes.
 Generate a conversational response.
 
 **Request:**
+
 ```json
 {
-    "query": "What should we have for dinner?",
-    "context": "Alex loves Thai food. User has peanut allergy.",
-    "proactive_alerts": ["Mention peanut risk with Thai food"]
+  "query": "What should we have for dinner?",
+  "context": "Alex loves Thai food. User has peanut allergy.",
+  "proactive_alerts": ["Mention peanut risk with Thai food"]
 }
 ```
 
 **Response:**
+
 ```json
 {
-    "response": "How about Thai food since Alex loves it? Just be careful about peanuts!"
+  "response": "How about Thai food since Alex loves it? Just be careful about peanuts!"
 }
 ```
 
@@ -359,11 +380,72 @@ Generate a conversational response.
 Health check.
 
 **Response:**
+
 ```json
 {
-    "status": "healthy"
+  "status": "healthy"
 }
 ```
+
+---
+
+### POST /cognify-batch
+
+Batch extract entities from SQL/JSON records. See [AI Services](./ai-services.md#post-cognify-batch) for details.
+
+---
+
+### POST /summarize_batch
+
+Crystallize conversation batches for the Wisdom Layer. See [AI Services](./ai-services.md#post-summarize_batch) for details.
+
+---
+
+### POST /summarize-community
+
+Generate Layer 2 community summaries. See [AI Services](./ai-services.md#post-summarize-community) for details.
+
+---
+
+### POST /summarize-global
+
+Generate Layer 3 global overview. See [AI Services](./ai-services.md#post-summarize-global) for details.
+
+---
+
+### POST /expand-query
+
+Extract entity names and search terms from natural language. See [AI Services](./ai-services.md#post-expand-query) for details.
+
+---
+
+### POST /extract-vision
+
+Extract entities from images using vision LLM. See [AI Services](./ai-services.md#post-extract-vision) for details.
+
+---
+
+### POST /ingest-document
+
+Tiered document ingestion (rule-based → LLM). See [AI Services](./ai-services.md#post-ingest-document) for details.
+
+---
+
+### POST /ingest-vector-tree
+
+Vector-native document ingestion. See [AI Services](./ai-services.md#post-ingest-vector-tree) for details.
+
+---
+
+### POST /embed
+
+Generate embedding vector for text. See [AI Services](./ai-services.md#post-embed) for details.
+
+---
+
+### POST /semantic-search
+
+Semantic similarity search over candidates. See [AI Services](./ai-services.md#post-semantic-search) for details.
 
 ---
 
@@ -373,18 +455,18 @@ All endpoints return errors in this format:
 
 ```json
 {
-    "detail": "Error message describing what went wrong"
+  "detail": "Error message describing what went wrong"
 }
 ```
 
 Common HTTP status codes:
 
-| Code | Description |
-|------|-------------|
-| 400 | Bad Request - Invalid input |
-| 404 | Not Found - Resource doesn't exist |
-| 500 | Internal Server Error |
-| 503 | Service Unavailable - Dependency down |
+| Code | Description                           |
+| ---- | ------------------------------------- |
+| 400  | Bad Request - Invalid input           |
+| 404  | Not Found - Resource doesn't exist    |
+| 500  | Internal Server Error                 |
+| 503  | Service Unavailable - Dependency down |
 
 ---
 
@@ -392,8 +474,12 @@ Common HTTP status codes:
 
 Currently no rate limits are enforced. For production deployment, consider:
 
-| Endpoint | Suggested Limit |
-|----------|-----------------|
-| `/api/chat` | 60 req/min per user |
-| `/api/consult` | 120 req/min per user |
-| `/extract` | 30 req/min |
+| Endpoint           | Suggested Limit      |
+| ------------------ | -------------------- |
+| `/api/chat`        | 60 req/min per user  |
+| `/api/consult`     | 120 req/min per user |
+| `/extract`         | 30 req/min           |
+| `/cognify-batch`   | 10 req/min           |
+| `/ingest-document` | 5 req/min            |
+| `/embed`           | 100 req/min          |
+| `/semantic-search` | 50 req/min           |
