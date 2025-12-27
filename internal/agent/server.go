@@ -56,6 +56,11 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 	api.Handle("/stats", protect(s.handleStats)).Methods("GET")
 	api.Handle("/conversations", protect(s.handleConversations)).Methods("GET")
 
+	// Dashboard endpoints
+	api.Handle("/dashboard/stats", protect(s.GetDashboardStats)).Methods("GET")
+	api.Handle("/dashboard/graph", protect(s.GetVisualGraph)).Methods("GET")
+	api.Handle("/dashboard/ingestion", protect(s.GetIngestionStats)).Methods("GET")
+
 	// Groups
 	api.Handle("/groups", protect(s.handleCreateGroup)).Methods("POST")
 	api.Handle("/list-groups", protect(s.handleListGroups)).Methods("GET")
