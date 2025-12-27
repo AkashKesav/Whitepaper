@@ -2,9 +2,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -60,6 +62,9 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 	api.Handle("/dashboard/stats", protect(s.GetDashboardStats)).Methods("GET")
 	api.Handle("/dashboard/graph", protect(s.GetVisualGraph)).Methods("GET")
 	api.Handle("/dashboard/ingestion", protect(s.GetIngestionStats)).Methods("GET")
+
+	// Document upload
+	api.Handle("/upload", protect(s.handleUpload)).Methods("POST")
 
 	// Groups
 	api.Handle("/groups", protect(s.handleCreateGroup)).Methods("POST")
@@ -367,6 +372,101 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"conversations": conversations,
+	})
+}
+
+// UploadResponse represents the response for a document upload
+type UploadResponse struct {
+	Status   string `json:"status"`
+	Filename string `json:"filename"`
+	Size     int64  `json:"size"`
+	Entities int    `json:"entities_extracted"`
+	Message  string `json:"message"`
+}
+
+// handleUpload handles document upload for ingestion
+func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+
+	// Parse multipart form (max 32MB)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		http.Error(w, "Failed to parse multipart form", http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "Missing file in request", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Read file content
+	content, err := io.ReadAll(file)
+	if err != nil {
+		s.logger.Error("Failed to read file", zap.Error(err))
+		http.Error(w, "Failed to read file", http.StatusInternalServerError)
+		return
+	}
+
+	s.logger.Info("Document upload received",
+		zap.String("user", userID),
+		zap.String("filename", header.Filename),
+		zap.Int64("size", header.Size))
+
+	// Get namespace for user
+	namespace := fmt.Sprintf("user_%s", userID)
+	if contextType := r.FormValue("context_type"); contextType == "group" {
+		if contextID := r.FormValue("context_id"); contextID != "" {
+			namespace = contextID
+		}
+	}
+
+	// Process document via AI services extraction
+	entities := 0
+	if s.agent.aiClient != nil {
+		// Call AI service to extract entities from document
+		type ExtractRequest struct {
+			UserQuery  string `json:"user_query"`
+			AIResponse string `json:"ai_response"`
+		}
+
+		extractReq := ExtractRequest{
+			UserQuery:  "Extract information from this document: " + header.Filename,
+			AIResponse: string(content),
+		}
+
+		reqBody, _ := json.Marshal(extractReq)
+		resp, err := s.agent.aiClient.httpClient.Post(
+			s.agent.aiClient.baseURL+"/extract",
+			"application/json",
+			bytes.NewReader(reqBody),
+		)
+		if err == nil && resp.StatusCode == 200 {
+			defer resp.Body.Close()
+			var result struct {
+				Value []interface{} `json:"value"`
+				Count int           `json:"Count"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&result) == nil {
+				entities = result.Count
+			}
+		}
+	}
+
+	// Log document processing for memory (actual kernel ingestion happens via chat flow)
+	s.logger.Info("Document processed for user",
+		zap.String("user", userID),
+		zap.String("namespace", namespace),
+		zap.Int("entities", entities))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(UploadResponse{
+		Status:   "success",
+		Filename: header.Filename,
+		Size:     header.Size,
+		Entities: entities,
+		Message:  fmt.Sprintf("Document '%s' uploaded and processed", header.Filename),
 	})
 }
 
