@@ -1,0 +1,23 @@
+Meeting Notes - December 27, 2024
+
+Attendees:
+- John Smith (CEO, TechCorp Inc.)
+- Sarah Johnson (VP Engineering, TechCorp Inc.)
+- Michael Chen (Product Manager, Google)
+- Emily Davis (Data Scientist, Microsoft)
+
+Location: San Francisco, California
+
+Discussion Topics:
+1. John presented the Q4 sales report showing 30% growth in the European market.
+2. Sarah discussed the new AI initiative launching in January.
+3. Michael shared insights from Google's latest machine learning research.
+4. Emily proposed a partnership project with Microsoft Azure.
+
+Action Items:
+- John will schedule a follow-up meeting for January 15th.
+- Sarah will prepare the technical documentation.
+- Michael will provide the API specifications by next week.
+- Emily will coordinate with the Azure team in Seattle.
+
+Next Meeting: January 15, 2025 at 2:00 PM PST

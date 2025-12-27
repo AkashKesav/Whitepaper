@@ -184,8 +184,8 @@ func main() {
 	srv := &http.Server{
 		Handler:      corsObj(router),
 		Addr:         apiPort,
-		WriteTimeout: 15 * time.Second,
-		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 120 * time.Second,
+		ReadTimeout:  120 * time.Second,
 	}
 
 	// Graceful Shutdown
