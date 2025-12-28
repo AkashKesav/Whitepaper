@@ -534,13 +534,13 @@ func (c *Client) ExpandFromNode(ctx context.Context, opts ExpandOpts) (*ExpandRe
 }
 
 // GetSampleNodes returns sample nodes from the graph for visualization
-func (c *Client) GetSampleNodes(ctx context.Context, limit int) ([]Node, error) {
+func (c *Client) GetSampleNodes(ctx context.Context, namespace string, limit int) ([]Node, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 
-	query := fmt.Sprintf(`query SampleNodes {
-		nodes(func: has(name), first: %d) {
+	query := fmt.Sprintf(`query SampleNodes($namespace: string) {
+		nodes(func: has(name), first: %d) @filter(eq(namespace, $namespace)) {
 			uid
 			name
 			description
@@ -552,7 +552,9 @@ func (c *Client) GetSampleNodes(ctx context.Context, limit int) ([]Node, error) 
 		}
 	}`, limit)
 
-	resp, err := c.Query(ctx, query, nil)
+	vars := map[string]string{"$namespace": namespace}
+
+	resp, err := c.Query(ctx, query, vars)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query sample nodes: %w", err)
 	}

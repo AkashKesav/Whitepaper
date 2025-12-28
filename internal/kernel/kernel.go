@@ -628,3 +628,8 @@ func (k *Kernel) PersistEntities(ctx context.Context, namespace, userID, convers
 func (k *Kernel) PersistChunks(ctx context.Context, namespace, docID string, chunks []graph.DocumentChunk) error {
 	return k.ingestionPipeline.PersistChunks(ctx, namespace, docID, chunks)
 }
+
+// SearchNodes delegates to the graph client to perform a node search
+func (k *Kernel) SearchNodes(ctx context.Context, query string) ([]graph.Node, error) {
+	return k.graphClient.SearchNodes(ctx, query)
+}

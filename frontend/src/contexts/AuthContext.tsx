@@ -17,7 +17,7 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const API_BASE_URL = '';
 
 // Decode JWT payload without verification (for role extraction)
 function decodeJWT(token: string): { sub: string; role: string; exp: number } | null {

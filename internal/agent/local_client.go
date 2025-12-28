@@ -104,6 +104,6 @@ func (c *LocalKernelClient) TriggerReflection(ctx context.Context) error {
 }
 
 // GetSampleNodes returns sample nodes from the graph for visualization
-func (c *LocalKernelClient) GetSampleNodes(ctx context.Context, limit int) ([]graph.Node, error) {
-	return c.k.GetGraphClient().GetSampleNodes(ctx, limit)
+func (c *LocalKernelClient) GetSampleNodes(ctx context.Context, namespace string, limit int) ([]graph.Node, error) {
+	return c.k.GetGraphClient().GetSampleNodes(ctx, namespace, limit)
 }

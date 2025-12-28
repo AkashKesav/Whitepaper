@@ -192,7 +192,8 @@ func (s *Server) GetVisualGraph(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// Fallback: Get sample nodes from the graph
-		sampleNodes, err := s.agent.mkClient.GetSampleNodes(ctx, 30)
+		namespace := fmt.Sprintf("user_%s", userID)
+		sampleNodes, err := s.agent.mkClient.GetSampleNodes(ctx, namespace, 30)
 		if err == nil && len(sampleNodes) > 0 {
 			for i, n := range sampleNodes {
 				group := "Entity"

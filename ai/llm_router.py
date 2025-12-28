@@ -3,9 +3,16 @@ LLM Router - Routes requests to appropriate LLM providers.
 Supports NVIDIA NIM, OpenAI, and Anthropic.
 """
 import os
+from pathlib import Path
 from typing import Optional
 
 import httpx
+
+# Ensure environment variables are loaded from .env in parent directory
+from dotenv import load_dotenv
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
+print(f"DEBUG llm_router: Loaded .env from {env_path}, NVIDIA_API_KEY present: {bool(os.getenv('NVIDIA_API_KEY'))}", flush=True)
 
 
 class LLMRouter:
@@ -20,6 +27,9 @@ class LLMRouter:
         self.openai_key = os.getenv("OPENAI_API_KEY")
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         self.minimax_key = os.getenv("MINIMAX_API_KEY")
+        
+        # Ollama URL for local development fallback
+        self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
         print(f"DEBUG: ENV KEYS: {list(os.environ.keys())}", flush=True)
         
         # Determine available providers
@@ -32,8 +42,11 @@ class LLMRouter:
             self.providers.append("anthropic")
         if self.minimax_key:
             self.providers.append("minimax")
+        # Ollama is always available as local fallback
+        self.providers.append("ollama")
         
-        self.default_provider = "nvidia" # Forced per user request
+        # Force NVIDIA as default per user request
+        self.default_provider = "nvidia"
 
     async def generate(
         self,
@@ -55,14 +68,16 @@ class LLMRouter:
         print(f"DEBUG: Using provider={provider}, model={model}", flush=True)
         
         if provider == "nvidia":
-            return await self._call_nvidia(system, query, model or "deepseek-ai/deepseek-v3.2")
+            return await self._call_nvidia(system, query, model or "meta/llama-3.1-70b-instruct")
         elif provider == "openai":
             return await self._call_openai(system, query, model or "gpt-4o-mini")
         elif provider == "anthropic":
             return await self._call_anthropic(system, query, model or "claude-3-haiku-20240307")
+        elif provider == "ollama":
+            return await self._call_ollama(system, query, model or "llama3.2")
         else:
-            # Fallback to NVIDIA if unknown
-            return await self._call_nvidia(system, query, model or "deepseek-ai/deepseek-v3.2")
+            # Fallback to Ollama for local dev
+            return await self._call_ollama(system, query, model or "llama3.2")
 
     def _build_system_prompt(self, context: Optional[str], alerts: list) -> str:
         """Build the system prompt with context and alerts."""
@@ -222,34 +237,68 @@ class LLMRouter:
         """Call NVIDIA NIM API (OpenAI-compatible)."""
         # Use explicit timeout to prevent ReadTimeout on slow LLM responses
         timeout = httpx.Timeout(180.0, connect=30.0, read=180.0, write=30.0)
+        try:
+            print(f"DEBUG _call_nvidia: key_present={bool(self.nvidia_key)}, key_len={len(self.nvidia_key) if self.nvidia_key else 0}, model={model}", flush=True)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    "https://integrate.api.nvidia.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.nvidia_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": "You are a helpful AI assistant."},
+                            {"role": "user", "content": f"{system}\n\nUser Question: {query}"},
+                        ],
+                        "max_tokens": 1024,
+                        "temperature": 0.7,
+                    },
+                )
+                print(f"DEBUG _call_nvidia: response status={response.status_code}", flush=True)
+                if response.status_code != 200:
+                    print(f"DEBUG _call_nvidia ERROR: {response.text}", flush=True)
+                response.raise_for_status()
+                data = response.json()
+                content = data["choices"][0]["message"].get("content")
+                if content is None:
+                    # Check for refusal or other fields
+                    return "I apologize, but I cannot generate a response to this query."
+                
+                # Strip thinking tags from MiniMax-M2 responses
+                import re
+                content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+                return content
+        except httpx.HTTPStatusError as e:
+            print(f"DEBUG _call_nvidia HTTP ERROR: {e.response.status_code} - {e.response.text}", flush=True)
+            raise
+        except Exception as e:
+            print(f"DEBUG _call_nvidia EXCEPTION: {type(e).__name__}: {e}", flush=True)
+            raise
+
+    async def _call_ollama(self, system: str, query: str, model: str) -> str:
+        """Call local Ollama for development without API keys."""
+        timeout = httpx.Timeout(120.0, connect=10.0, read=120.0, write=10.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                "https://integrate.api.nvidia.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.nvidia_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "You are a helpful AI assistant."},
-                        {"role": "user", "content": f"{system}\n\nUser Question: {query}"},
-                    ],
-                    "max_tokens": 1024,
-                    "temperature": 0.7,
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-            content = data["choices"][0]["message"].get("content")
-            if content is None:
-                # Check for refusal or other fields
-                return "I apologize, but I cannot generate a response to this query."
-            
-            # Strip thinking tags from MiniMax-M2 responses
-            import re
-            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-            return content
+            try:
+                response = await client.post(
+                    f"{self.ollama_url}/api/chat",
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": query},
+                        ],
+                        "stream": False,
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data.get("message", {}).get("content", "No response from Ollama")
+            except Exception as e:
+                print(f"DEBUG: Ollama call failed: {e}", flush=True)
+                return f"Error: Ollama not available. Please ensure Ollama is running with 'ollama serve' and has the model '{model}' downloaded."
 
     async def _call_openai(self, system: str, query: str, model: str) -> str:
         """Call OpenAI API."""

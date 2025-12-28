@@ -56,6 +56,7 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 	}
 
 	api.Handle("/chat", protect(s.handleChat)).Methods("POST")
+	api.Handle("/search", protect(s.handleSearch)).Methods("GET")
 	api.Handle("/stats", protect(s.handleStats)).Methods("GET")
 	api.Handle("/conversations", protect(s.handleConversations)).Methods("GET")
 
@@ -315,6 +316,24 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		http.Error(w, "Query parameter 'q' is required", http.StatusBadRequest)
+		return
+	}
+
+	nodes, err := s.agent.mkClient.SearchNodes(r.Context(), query)
+	if err != nil {
+		s.logger.Error("Search failed", zap.Error(err))
+		http.Error(w, "Search failed", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(nodes)
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {

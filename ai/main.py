@@ -3,8 +3,15 @@ AI Services - FastAPI server for SLM orchestration.
 Provides extraction, curation, synthesis, and generation endpoints.
 """
 import os
+from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
+
+# Load environment variables from .env file in parent directory
+from dotenv import load_dotenv
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
+print(f"DEBUG: Loaded .env from {env_path}, NVIDIA_API_KEY present: {bool(os.getenv('NVIDIA_API_KEY'))}", flush=True)
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -163,6 +170,17 @@ class SummarizeBatchResponse(BaseModel):
 
 
 # Endpoints
+@app.get("/debug-router")
+async def debug_router():
+    """Debug endpoint to verify LLMRouter state"""
+    return {
+        "nvidia_key_present": bool(app.state.llm_router.nvidia_key),
+        "nvidia_key_length": len(app.state.llm_router.nvidia_key) if app.state.llm_router.nvidia_key else 0,
+        "nvidia_key_prefix": app.state.llm_router.nvidia_key[:15] + "..." if app.state.llm_router.nvidia_key else "None",
+        "default_provider": app.state.llm_router.default_provider,
+        "providers": app.state.llm_router.providers,
+    }
+
 @app.post("/cognify-batch", response_model=list[CognifyResult])
 async def cognify_batch(request: CognifyBatchRequest):
     """Batch extract entities from SQL/JSON records for migration. NO FALLBACKS - LLM required."""
@@ -485,6 +503,8 @@ async def synthesize_insight(request: InsightRequest):
 async def generate_response(request: GenerateRequest):
     """Generate a conversational response."""
     try:
+        # Debug: verify LLMRouter state
+        print(f"DEBUG /generate: nvidia_key_present={bool(app.state.llm_router.nvidia_key)}, key_len={len(app.state.llm_router.nvidia_key) if app.state.llm_router.nvidia_key else 0}", flush=True)
         print(f"DEBUG /generate: query='{request.query[:50]}...' context_len={len(request.context) if request.context else 0}", flush=True)
         if request.context:
             print(f"DEBUG /generate CONTEXT: {request.context[:200]}...", flush=True)

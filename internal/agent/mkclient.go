@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"go.uber.org/zap"
@@ -49,6 +50,9 @@ type MemoryKernel interface {
 	// Ingestion Persistence
 	PersistEntities(ctx context.Context, namespace, userID, conversationID string, entities []graph.ExtractedEntity) error
 	PersistChunks(ctx context.Context, namespace, docID string, chunks []graph.DocumentChunk) error
+
+	// Search
+	SearchNodes(ctx context.Context, query string) ([]graph.Node, error)
 }
 
 // MKClient is a client for consulting the Memory Kernel
@@ -535,11 +539,39 @@ func (c *MKClient) ExpandFromNode(ctx context.Context, opts graph.ExpandOpts) (*
 }
 
 // GetSampleNodes returns sample nodes for visualization
-func (c *MKClient) GetSampleNodes(ctx context.Context, limit int) ([]graph.Node, error) {
+func (c *MKClient) GetSampleNodes(ctx context.Context, namespace string, limit int) ([]graph.Node, error) {
 	if c.directKernel != nil {
-		return c.directKernel.GetGraphClient().GetSampleNodes(ctx, limit)
+		return c.directKernel.GetGraphClient().GetSampleNodes(ctx, namespace, limit)
 	}
 	return nil, fmt.Errorf("HTTP mode not supported for GetSampleNodes")
+}
+
+// SearchNodes searches for nodes matching a query string
+func (c *MKClient) SearchNodes(ctx context.Context, query string) ([]graph.Node, error) {
+	if c.directKernel != nil {
+		return c.directKernel.GetGraphClient().SearchNodes(ctx, query)
+	}
+	// HTTP implementation
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/api/search?q="+url.QueryEscape(query), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("search failed with status %d", resp.StatusCode)
+	}
+
+	var nodes []graph.Node
+	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
+		return nil, err
+	}
+	return nodes, nil
 }
 
 // ============================================================================

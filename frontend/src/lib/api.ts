@@ -1,11 +1,11 @@
 import { z } from "zod";
 
-// Configure API URL - pointing to the Go backend exposed via Docker
-const API_BASE_URL = 'http://localhost:3000';
+// Configure API URL - Proxy handles /api requests to backend
+const API_BASE_URL = '';
 
 // Helper to get auth headers
 const getAuthHeaders = (): HeadersInit => {
-    const token = localStorage.getItem('rmk_auth_token');
+    const token = localStorage.getItem('rmk_token');
     const headers: HeadersInit = { 'Content-Type': 'application/json' };
     if (token) {
         (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
@@ -262,7 +262,7 @@ export const api = {
             const formData = new FormData();
             formData.append('file', file);
 
-            const token = localStorage.getItem('rmk_auth_token');
+            const token = localStorage.getItem('rmk_token');
             const headers: Record<string, string> = {};
             if (token) {
                 headers['Authorization'] = `Bearer ${token}`;

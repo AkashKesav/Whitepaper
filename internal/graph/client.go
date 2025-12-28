@@ -613,6 +613,69 @@ func (c *Client) FindNodeByName(ctx context.Context, name string, nodeType NodeT
 	return &result.Node[0], nil
 }
 
+// SearchNodes searches for nodes matching a query string (fuzzy search)
+func (c *Client) SearchNodes(ctx context.Context, queryStr string) ([]Node, error) {
+	query := `query SearchNodes($term: string) {
+		nodes(func: anyoftext(name, $term)) {
+			uid
+			dgraph.type
+			name
+			description
+			attributes
+			created_at
+			updated_at
+			activation
+			namespace
+			entity_type
+		}
+		nodes_desc(func: anyoftext(description, $term)) {
+			uid
+			dgraph.type
+			name
+			description
+			attributes
+			created_at
+			updated_at
+			activation
+			namespace
+			entity_type
+		}
+	}`
+
+	vars := map[string]string{"$term": queryStr}
+	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, vars)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search nodes: %w", err)
+	}
+
+	var result struct {
+		Nodes     []Node `json:"nodes"`
+		NodesDesc []Node `json:"nodes_desc"`
+	}
+	if err := json.Unmarshal(resp.Json, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal search results: %w", err)
+	}
+
+	// Merge results and deduplicate by UID
+	seen := make(map[string]bool)
+	var merged []Node
+
+	for _, n := range result.Nodes {
+		if !seen[n.UID] {
+			seen[n.UID] = true
+			merged = append(merged, n)
+		}
+	}
+	for _, n := range result.NodesDesc {
+		if !seen[n.UID] {
+			seen[n.UID] = true
+			merged = append(merged, n)
+		}
+	}
+
+	return merged, nil
+}
+
 // GetNodesByNames fetches multiple nodes by name in a single query, scoped to namespace
 func (c *Client) GetNodesByNames(ctx context.Context, namespace string, names []string) (map[string]*Node, error) {
 	if len(names) == 0 {
@@ -662,6 +725,24 @@ func (c *Client) GetNodesByNames(ctx context.Context, namespace string, names []
 	// For now, robustly assume this is primarily for Entity nodes as per ingestion logic
 
 	return nodeMap, nil
+}
+
+// Query executes a DGraph query with optional variables
+func (c *Client) Query(ctx context.Context, query string, vars map[string]string) ([]byte, error) {
+	txn := c.dg.NewReadOnlyTxn()
+	var resp *api.Response
+	var err error
+
+	if len(vars) > 0 {
+		resp, err = txn.QueryWithVars(ctx, query, vars)
+	} else {
+		resp, err = txn.Query(ctx, query)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	return resp.Json, nil
 }
 
 // CreateEdge creates a relationship between two nodes
@@ -903,15 +984,6 @@ func edgeTypeToPredicateName(edgeType EdgeType) string {
 		return pred
 	}
 	return string(edgeType)
-}
-
-// Query executes a raw DGraph query
-func (c *Client) Query(ctx context.Context, query string, vars map[string]string) ([]byte, error) {
-	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, vars)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Json, nil
 }
 
 // GetNodesByUIDs fetches multiple nodes by their UIDs in a single query
