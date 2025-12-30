@@ -1,0 +1,23 @@
+[
+  {
+    "name": "John Smith",
+    "role": "Software Engineer",
+    "skills": ["Python", "Go", "JavaScript"],
+    "department": "Engineering",
+    "email": "john.smith@example.com"
+  },
+  {
+    "name": "Sarah Johnson",
+    "role": "Product Manager",
+    "skills": ["Product Strategy", "Agile", "User Research"],
+    "department": "Product",
+    "email": "sarah.johnson@example.com"
+  },
+  {
+    "name": "Mike Chen",
+    "role": "Data Scientist",
+    "skills": ["Machine Learning", "Python", "TensorFlow"],
+    "department": "Data Science",
+    "email": "mike.chen@example.com"
+  }
+]
