@@ -77,6 +77,10 @@ From [WORKSPACE_COLLABORATION.md](./WORKSPACE_COLLABORATION.md):
 
 ## 3. Operational Excellence Metrics
 
+This section provides a comprehensive framework for measuring and optimizing operational performance across the Reflective Memory Kernel platform.
+
+---
+
 ### 3.1 Pre-Cortex Cost Reduction
 
 From [precortex.go](../internal/precortex/precortex.go):
@@ -86,17 +90,47 @@ From [precortex.go](../internal/precortex/precortex.go):
 // before they reach the external LLM, reducing costs by 90%
 ```
 
-**How it works**:
-1. **Semantic Cache** - Returns cached responses for similar queries
-2. **Intent Classification** - Routes simple queries to deterministic handlers
-3. **DGraph Reflex** - Answers fact retrieval from graph without LLM
+#### How Pre-Cortex Works
 
-**KPIs**:
-| Metric | Source | Calculation |
-|--------|--------|-------------|
-| Cache Hit Rate | `precortex.Stats()` | `(cached + reflex) / total` |
-| LLM Cost Saved | API billing | `(total - llm_passthrough) × cost_per_query` |
-| Latency P95 | Observability | Time from query → response |
+| Layer | Function | Cost Impact |
+|-------|----------|-------------|
+| **Semantic Cache** | Returns cached responses for semantically similar queries | High savings |
+| **Intent Classification** | Routes simple queries (greetings, navigation) to deterministic handlers | Medium savings |
+| **DGraph Reflex** | Answers fact retrieval directly from graph without LLM | High savings |
+| **LLM Passthrough** | Only complex reasoning tasks reach the LLM | Necessary cost |
+
+#### Pre-Cortex KPIs
+
+| Metric | Target | Source | Calculation |
+|--------|--------|--------|-------------|
+| **Total Requests** | - | `precortex.Stats()` | All incoming queries |
+| **Cache Hit Rate** | > 60% | `precortex.Stats()` | `cached / total × 100` |
+| **Reflex Rate** | > 20% | `precortex.Stats()` | `reflex / total × 100` |
+| **LLM Passthrough** | < 20% | `precortex.Stats()` | `llm_calls / total × 100` |
+| **Cost per Query** | < $0.01 | API billing | `total_cost / total_queries` |
+| **Monthly LLM Savings** | > 60% | Billing comparison | `(baseline - actual) / baseline` |
+
+#### Cost Reduction Dashboard
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                PRE-CORTEX EFFICIENCY                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   Cache Hit Rate            Reflex Rate           LLM Calls     │
+│   ┌─────────────┐          ┌─────────────┐      ┌───────────┐  │
+│   │    68%      │          │    24%      │      │    8%     │  │
+│   │   ██████    │          │   ████      │      │   █       │  │
+│   └─────────────┘          └─────────────┘      └───────────┘  │
+│   Target: >60%              Target: >20%         Target: <20%   │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│   Monthly Cost Savings: $4,250 (72% reduction)                  │
+│   Baseline: $5,900 → Actual: $1,650                             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
 
 ### 3.2 Memory Quality Metrics
 
@@ -110,22 +144,231 @@ From [engine.go](../internal/reflection/engine.go):
 // 4. Anticipation (pattern detection)
 ```
 
-**KPIs**:
+#### Reflection Module KPIs
+
+| Module | Metric | Target | Description |
+|--------|--------|--------|-------------|
+| **Curation** | Contradictions Resolved/Day | > 95% auto-resolved | Facts with conflicts automatically archived |
+| **Curation** | Resolution Accuracy | > 98% | Correct fact retained |
+| **Prioritization** | Decay Efficiency | > 80% stale archived | Unused memories properly decayed |
+| **Prioritization** | Boost Accuracy | > 90% | Frequently accessed items stay accessible |
+| **Synthesis** | Insights Generated/Week | Monitor trend | New connections discovered |
+| **Synthesis** | Insight Quality Score | > 4.0/5 | User-rated insight usefulness |
+| **Anticipation** | Patterns Detected/Month | Monitor trend | Behavioral patterns identified |
+| **Anticipation** | Proactive Alert CTR | > 40% | Alerts acted upon by users |
+
+#### Memory Health Dashboard
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   MEMORY QUALITY                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   Total Nodes         Active Nodes        Archived Nodes        │
+│   45,231              38,450              6,781                 │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│   Contradictions      Insights            Patterns              │
+│   Resolved: 127       Generated: 89       Detected: 34          │
+│   Accuracy: 99.2%     Quality: 4.3/5      CTR: 45%              │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│   Average Activation: 0.72    Decay Rate: 0.05/cycle            │
+│   Last Reflection: 2 min ago  Cycle Duration: 3.2s              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 3.3 System Health Metrics
+
+#### Infrastructure KPIs
+
+| Component | Metric | Target | Alert Threshold |
+|-----------|--------|--------|-----------------|
+| **API Gateway** | Uptime | 99.9% | < 99.5% |
+| **API Gateway** | Latency (P95) | < 200ms | > 500ms |
+| **API Gateway** | Error Rate | < 0.1% | > 1% |
+| **Memory Kernel** | Uptime | 99.9% | < 99.5% |
+| **Memory Kernel** | Consultation Latency | < 500ms | > 1000ms |
+| **Memory Kernel** | Reflection Cycle Time | < 5s | > 10s |
+| **DGraph** | Query Latency | < 100ms | > 200ms |
+| **DGraph** | Connection Pool Usage | < 80% | > 90% |
+| **Redis** | Cache Latency | < 10ms | > 50ms |
+| **Redis** | Memory Usage | < 80% | > 90% |
+| **NATS** | Message Lag | < 1000 | > 5000 |
+| **NATS** | Consumer Ack Rate | > 99% | < 95% |
+| **Qdrant** | Search Latency | < 50ms | > 100ms |
+| **AI Services** | LLM Response Time | < 2s | > 5s |
+
+#### System Health Dashboard
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   SYSTEM HEALTH                                 │
+├────────────────┬────────────────┬────────────────┬──────────────┤
+│ Frontend Agent │ Memory Kernel  │ AI Services    │ DGraph       │
+│ ● HEALTHY      │ ● HEALTHY      │ ● HEALTHY      │ ● HEALTHY    │
+│ P95: 45ms      │ P95: 320ms     │ P95: 1.2s      │ P95: 85ms    │
+├────────────────┼────────────────┼────────────────┼──────────────┤
+│ Redis          │ NATS           │ Qdrant         │ Uptime       │
+│ ● HEALTHY      │ ● HEALTHY      │ ● HEALTHY      │ 99.97%       │
+│ Mem: 62%       │ Lag: 45        │ P95: 32ms      │ (30 days)    │
+└────────────────┴────────────────┴────────────────┴──────────────┘
+```
+
+---
+
+### 3.4 Ingestion Pipeline Metrics
+
+#### Document Processing KPIs
+
+| Metric | Target | Description |
+|--------|--------|-------------|
+| **Throughput** | > 100 docs/hour | Documents successfully processed |
+| **Success Rate** | > 99% | Documents without errors |
+| **Avg Processing Time** | < 30s | Time from upload to graph integration |
+| **Entity Extraction Accuracy** | > 95% | Correct entities identified |
+| **Relationship Inference Rate** | > 85% | Valid relationships discovered |
+
+#### Processing Status
+
+| Status | Count | Avg Time | Error Rate |
+|--------|-------|----------|------------|
+| Pending | 12 | - | - |
+| Processing | 3 | 15s | - |
+| Completed (24h) | 847 | 22s | 0.4% |
+| Failed (24h) | 4 | - | 100% |
+
+---
+
+### 3.5 User Engagement Metrics
+
+#### Activity KPIs
+
+| Metric | Target | Calculation |
+|--------|--------|-------------|
+| **DAU** | Monitor trend | Unique users/day |
+| **WAU** | Monitor trend | Unique users/week |
+| **MAU** | Monitor trend | Unique users/month |
+| **DAU/MAU Ratio** | > 20% | Stickiness indicator |
+| **Avg Session Duration** | > 5 min | Time per visit |
+| **Queries per Session** | > 3 | Engagement depth |
+| **Return Rate (7-day)** | > 40% | Users returning within 7 days |
+| **Return Rate (30-day)** | > 60% | Users returning within 30 days |
+
+#### Engagement Funnel
+
+| Stage | Metric | Target |
+|-------|--------|--------|
+| Registration | Completion Rate | > 90% |
+| Email Verification | Verification Rate | > 85% |
+| First Conversation | Activation Rate | > 70% |
+| Memory Created | Content Rate | > 55% |
+| Return Visit | Retention Rate | > 40% |
+| Upgrade | Conversion Rate | > 15% |
+
+---
+
+### 3.6 Team Performance Metrics
+
+#### Support Team KPIs
+
+| Metric | Target | Description |
+|--------|--------|-------------|
+| **First Response Time** | < 30 min | Time to initial reply |
+| **Resolution Time** | < 4 hours | Time to close ticket |
+| **Tickets Resolved/Day** | > 20 per agent | Productivity metric |
+| **CSAT Score** | > 4.5/5 | Customer satisfaction |
+| **Escalation Rate** | < 10% | Tickets requiring escalation |
+| **Quality Score** | > 90% | Peer review rating |
+
+#### Operations Team KPIs
+
+| Metric | Target | Description |
+|--------|--------|-------------|
+| **Campaign Conversion Rate** | > 5% | Email/push effectiveness |
+| **User Acquisition Cost** | < $50 | Cost per new paid user |
+| **Feature Adoption Rate** | > 60% | New feature usage |
+| **Churn Prevention Rate** | > 30% | At-risk users saved |
+
+---
+
+### 3.7 Financial Operations Metrics
+
+#### Revenue KPIs
+
 | Metric | Description |
 |--------|-------------|
-| Contradictions Resolved | Auto-fixed data conflicts (e.g., old manager → new manager) |
-| Insights Generated | New connections discovered |
-| Decay Efficiency | % stale facts auto-archived |
-| Recall Accuracy | Verified correct retrievals |
+| **MRR** | Monthly Recurring Revenue |
+| **ARR** | Annual Recurring Revenue |
+| **MRR Growth Rate** | Month-over-month change |
+| **Net Revenue Retention** | Revenue from existing customers (target: > 100%) |
+| **Gross Revenue Churn** | Revenue lost to cancellations |
+| **ARPU** | Average Revenue Per User |
+| **LTV** | Customer Lifetime Value |
+| **LTV:CAC Ratio** | Value vs acquisition cost (target: > 3:1) |
 
-### 3.3 System Health
+#### Cost KPIs
 
-| Metric | Target | Source |
-|--------|--------|--------|
-| API Uptime | 99.9% | `/health` endpoints |
-| DGraph Latency | <100ms | gRPC interceptor |
-| NATS Message Lag | <1000 | JetStream metrics |
-| Reflection Cycle Time | <5s | `engine.GetStats()` |
+| Metric | Target | Description |
+|--------|--------|-------------|
+| **Gross Margin** | > 70% | Revenue minus direct costs |
+| **LLM Cost % of Revenue** | < 15% | AI costs relative to revenue |
+| **Infrastructure Cost/User** | < $2/month | Hosting cost efficiency |
+| **Support Cost/Ticket** | < $10 | Support efficiency |
+
+---
+
+### 3.8 Security & Compliance Metrics
+
+#### Security KPIs
+
+| Metric | Target | Description |
+|--------|--------|-------------|
+| **Failed Login Attempts** | < 100/day | Monitor for attacks |
+| **2FA Adoption Rate** | > 50% | Security feature usage |
+| **Session Anomalies** | < 10/day | Suspicious activity detected |
+| **API Rate Limit Hits** | < 100/day | Potential abuse detection |
+
+#### Compliance KPIs
+
+| Metric | Target | Description |
+|--------|--------|-------------|
+| **Data Export Requests** | Track | GDPR compliance |
+| **Data Deletion Requests** | Track | GDPR compliance |
+| **Audit Log Retention** | 2 years | Compliance requirement |
+| **Access Log Completeness** | 100% | All access recorded |
+
+---
+
+### 3.9 Alerting Thresholds
+
+#### Critical Alerts (Immediate Response)
+
+| Condition | Threshold | Action |
+|-----------|-----------|--------|
+| API Uptime | < 99% | Page on-call |
+| Error Rate | > 5% | Page on-call |
+| DGraph Down | Any | Page on-call |
+| Security Breach | Any | Page security team |
+
+#### Warning Alerts (Business Hours)
+
+| Condition | Threshold | Action |
+|-----------|-----------|--------|
+| Latency (P95) | > 500ms | Investigate |
+| Cache Hit Rate | < 50% | Tune caching |
+| Memory Usage | > 80% | Plan scale-up |
+| Queue Length | > 1000 | Check consumers |
+
+#### Info Alerts (Weekly Review)
+
+| Condition | Threshold | Action |
+|-----------|-----------|--------|
+| DAU Drop | > 10% week | Analyze cause |
+| Churn Increase | > 5% month | Review retention |
+| Support Backlog | > 50 tickets | Add resources |
 
 ---
 
