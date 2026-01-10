@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -1407,9 +1408,17 @@ func (c *Client) IsGroupAdmin(ctx context.Context, groupNamespace, userID string
 
 // FindEntityInNamespace finds an entity by name in a specific namespace
 // Used for deduplication - returns existing entity if found, nil if not
+// Uses case-insensitive matching for better deduplication
 func (c *Client) FindEntityInNamespace(ctx context.Context, name, namespace string) (*Node, error) {
-	query := `query FindEntity($name: string, $ns: string) {
-		node(func: eq(name, $name)) @filter(eq(namespace, $ns)) {
+	// Normalize name: trim spaces and convert to lowercase for matching
+	normalizedName := strings.TrimSpace(strings.ToLower(name))
+	if normalizedName == "" {
+		return nil, nil
+	}
+
+	// Use regexp for case-insensitive matching
+	query := `query FindEntity($pattern: string, $ns: string) {
+		node(func: regexp(name, $pattern)) @filter(eq(namespace, $ns)) {
 			uid
 			dgraph.type
 			name
@@ -1420,9 +1429,18 @@ func (c *Client) FindEntityInNamespace(ctx context.Context, name, namespace stri
 		}
 	}`
 
-	vars := map[string]string{"$name": name, "$ns": namespace}
+	// Create case-insensitive regex pattern
+	pattern := fmt.Sprintf("/^%s$/i", regexp.QuoteMeta(normalizedName))
+	vars := map[string]string{"$pattern": pattern, "$ns": namespace}
+
+	c.logger.Debug("FindEntityInNamespace lookup",
+		zap.String("name", name),
+		zap.String("pattern", pattern),
+		zap.String("namespace", namespace))
+
 	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, vars)
 	if err != nil {
+		c.logger.Warn("FindEntityInNamespace query failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to find entity: %w", err)
 	}
 
@@ -1432,6 +1450,10 @@ func (c *Client) FindEntityInNamespace(ctx context.Context, name, namespace stri
 	if err := json.Unmarshal(resp.Json, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal: %w", err)
 	}
+
+	c.logger.Debug("FindEntityInNamespace result",
+		zap.String("name", name),
+		zap.Int("matches", len(result.Node)))
 
 	if len(result.Node) == 0 {
 		return nil, nil
