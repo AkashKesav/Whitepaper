@@ -374,6 +374,119 @@ func isValidEntityName(name string) bool {
 	return true
 }
 
+// resolveEntityWithAI uses an LLM to decide if a new entity is semantically the same as existing candidates
+func (p *IngestionPipeline) resolveEntityWithAI(ctx context.Context, newEntity string, candidates []string) (string, error) {
+	type ResolutionRequest struct {
+		Entity     string   `json:"entity"`
+		Candidates []string `json:"candidates"`
+	}
+
+	reqBody := ResolutionRequest{
+		Entity:     newEntity,
+		Candidates: candidates,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		p.aiServicesURL+"/resolve-entity",
+		bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// If service not implemented or error, fallback to no match
+		return "", fmt.Errorf("resolution service returned status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Match string `json:"match"` // The matching candidate or empty string
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	return result.Match, nil
+}
+
+// findSemanticMatch attempts to find an existing node UID that semantically matches the given name
+func (p *IngestionPipeline) findSemanticMatch(ctx context.Context, namespace, name string) (string, error) {
+	if p.localEmbedder == nil || p.vectorIndex == nil {
+		return "", nil // Feature disabled
+	}
+
+	// 1. Embed the name
+	vec, err := p.localEmbedder.Embed(name)
+	if err != nil {
+		return "", err
+	}
+
+	// 2. Search Vector Index for Entity candidates (threshold 0.85)
+	// We only look for "Entity" type nodes to merge with
+	uids, scores, payloads, err := p.vectorIndex.Search(ctx, namespace, vec, 5)
+	if err != nil {
+		return "", err
+	}
+
+	if len(uids) == 0 {
+		return "", nil
+	}
+
+	// 3. Filter candidates
+	var candidates []string
+	uidToName := make(map[string]string)
+
+	for i, uid := range uids {
+		if scores[i] < 0.85 {
+			continue // Skip weak matches
+		}
+
+		// Get name from payload if available, or we might need to query DGraph
+		// Assuming payload has "text" or we assume the search result is an entity
+		if text, ok := payloads[i]["text"].(string); ok {
+			candidates = append(candidates, text)
+			uidToName[text] = uid
+		}
+	}
+
+	if len(candidates) == 0 {
+		return "", nil
+	}
+
+	// 4. Use LLM to Judge ("The Judge")
+	// If the vector match is extremely high (>0.95), we might skip LLM for speed?
+	// For now, let's enable LLM check for accuracy.
+	matchName, err := p.resolveEntityWithAI(ctx, name, candidates)
+	if err != nil {
+		p.logger.Warn("Semantic resolution failed", zap.Error(err))
+		return "", nil
+	}
+
+	if matchName != "" {
+		if uid, ok := uidToName[matchName]; ok {
+			p.logger.Info("Semantic Deduplication: Merged entity",
+				zap.String("new", name),
+				zap.String("existing", matchName),
+				zap.String("uid", uid))
+			return uid, nil
+		}
+	}
+
+	return "", nil
+}
+
 // basicEntityExtraction provides fallback entity extraction without AI
 func (p *IngestionPipeline) basicEntityExtraction(event *graph.TranscriptEvent) []graph.ExtractedEntity {
 	// This is a simple fallback that creates a Fact node for the conversation
@@ -441,6 +554,19 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, namespac
 		}
 
 		if _, exists := existingNodes[e.Name]; !exists {
+			// Phase 1 Optimization: Semantic Deduplication (The "Judge")
+			// If not found by exact string match, try to find a semantic match using Vector Search + LLM
+			if uid, err := p.findSemanticMatch(ctx, namesp, e.Name); err == nil && uid != "" {
+				// Found a semantic match! Map this name to the existing UID.
+				// This prevents creating a duplicate node for "Pizza" vs "pizza" vs "Italian Pie"
+				existingNodes[e.Name] = &graph.Node{UID: uid, Name: e.Name}
+				p.logger.Info("Semantic Dedup: Merged source entity",
+					zap.String("new_name", e.Name),
+					zap.String("merged_uid", uid))
+			}
+		}
+
+		if _, exists := existingNodes[e.Name]; !exists {
 			// Normalize type
 			dtype := e.Type
 			if dtype == "" {
@@ -462,6 +588,16 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, namespac
 		}
 
 		for _, r := range e.Relations {
+			if _, exists := existingNodes[r.TargetName]; !exists {
+				// Semantic Dedup for Target
+				if uid, err := p.findSemanticMatch(ctx, namesp, r.TargetName); err == nil && uid != "" {
+					existingNodes[r.TargetName] = &graph.Node{UID: uid, Name: r.TargetName}
+					p.logger.Info("Semantic Dedup: Merged target entity",
+						zap.String("new_name", r.TargetName),
+						zap.String("merged_uid", uid))
+				}
+			}
+
 			if _, exists := existingNodes[r.TargetName]; !exists {
 				// Normalize target type
 				dtype := r.TargetType

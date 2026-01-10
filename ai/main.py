@@ -444,6 +444,53 @@ async def summarize_batch(request: SummarizeBatchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+class ResolutionRequest(BaseModel):
+    entity: str
+    candidates: list[str]
+
+
+class ResolutionResponse(BaseModel):
+    match: str
+
+
+@app.post("/resolve-entity", response_model=ResolutionResponse)
+async def resolve_entity_endpoint(request: ResolutionRequest):
+    """Determine if a new entity matches any existing candidates semantically."""
+    try:
+        # Prompt construction
+        candidates_str = "\n".join([f"- {c}" for c in request.candidates])
+        prompt = f"""You are a semantic entity judge.
+Does the new entity "{request.entity}" refer to the exact same real-world concept as any of these existing entities?
+
+Existing Candidates:
+{candidates_str}
+
+Rules:
+1. "Pizza" and "pizza" -> MATCH
+2. "The Big Apple" and "New York City" -> MATCH
+3. "Apple" (Fruit) and "Apple Inc" (Company) -> NO MATCH
+4. If strict semantic match found, return the EXACT candidate name.
+5. If no match or unsure, return empty string.
+6. Return JSON: {{ "match": "Matching Candidate Name" }} or {{ "match": "" }}
+
+JSON:"""
+
+        response = await app.state.llm_router.extract_json(prompt)
+        match = response.get("match", "")
+        
+        # Verify match is actually in candidates (hallucination check)
+        if match and match not in request.candidates:
+            print(f"DEBUG: LLM hallucinated match '{match}' not in candidates", flush=True)
+            match = ""
+
+        return ResolutionResponse(match=match)
+    except Exception as e:
+        print(f"DEBUG /resolve-entity error: {e}", flush=True)
+        # Fail safe: return no match
+        return ResolutionResponse(match="")
+
+
 @app.post("/curate", response_model=CurationResponse)
 async def curate_contradiction(request: CurationRequest):
     """Determine which of two contradicting facts is more reliable."""
