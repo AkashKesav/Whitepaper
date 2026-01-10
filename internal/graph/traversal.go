@@ -540,7 +540,7 @@ func (c *Client) GetSampleNodes(ctx context.Context, namespace string, limit int
 	}
 
 	query := fmt.Sprintf(`query SampleNodes($namespace: string) {
-		nodes(func: has(name), first: %d) @filter(eq(namespace, $namespace)) {
+		nodes(func: has(name), first: %d, orderdesc: activation) @filter(eq(namespace, $namespace)) {
 			uid
 			name
 			description

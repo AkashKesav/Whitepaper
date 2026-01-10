@@ -192,7 +192,7 @@ func (c *Client) initSchema(ctx context.Context) error {
 		}
 
 		# Predicates with indexes
-		name: string @index(exact, term, fulltext) .
+		name: string @index(exact, term, fulltext, trigram) .
 		description: string @index(fulltext) .
 		attributes: [string] .
 		tags: [string] @index(term) .

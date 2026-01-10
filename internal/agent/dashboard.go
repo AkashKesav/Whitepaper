@@ -170,7 +170,7 @@ func (s *Server) GetVisualGraph(w http.ResponseWriter, r *http.Request) {
 				ID:    n.UID,
 				Label: n.Name,
 				Group: group,
-				Size:  10,
+				Size:  int(10 + (n.Activation * 20)), // Scale size by activation (10-30)
 			})
 
 			// Create edges between consecutive nodes for visualization
