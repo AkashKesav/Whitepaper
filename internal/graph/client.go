@@ -1478,30 +1478,71 @@ func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summar
 	nquads.WriteString(fmt.Sprintf(`%s <status> "crystallized" .
 `, summaryNode))
 
-	// 2. Process Entities
-	// We need to link them to the summary and creating them if missing
+	// 2. Process Entities with Deduplication
+	// Check if entity exists in namespace before creating; boost activation if found
 	now := time.Now().Format(time.RFC3339)
-	for i, e := range entities {
-		// Entity Node
-		entityNode := fmt.Sprintf("_:entity_%d", i)
+	newEntityCount := 0
+	boostedEntityCount := 0
 
-		nquads.WriteString(fmt.Sprintf(`%s <dgraph.type> "Entity" .
+	for i, e := range entities {
+		// Skip empty entity names
+		if e.Name == "" {
+			continue
+		}
+
+		// Check if entity already exists in this namespace
+		existingEntity, err := c.FindEntityInNamespace(ctx, e.Name, namespace)
+		if err != nil {
+			c.logger.Warn("Failed to check for existing entity", zap.String("name", e.Name), zap.Error(err))
+		}
+
+		if existingEntity != nil {
+			// Entity exists! Boost its activation instead of creating duplicate
+			newActivation := existingEntity.Activation + 0.1 // Boost by 0.1
+			if newActivation > 1.0 {
+				newActivation = 1.0 // Cap at 1.0
+			}
+
+			if err := c.BoostEntityActivation(ctx, existingEntity.UID, newActivation); err != nil {
+				c.logger.Warn("Failed to boost entity activation", zap.String("uid", existingEntity.UID), zap.Error(err))
+			} else {
+				boostedEntityCount++
+				c.logger.Debug("Boosted existing entity activation",
+					zap.String("name", e.Name),
+					zap.Float64("oldActivation", existingEntity.Activation),
+					zap.Float64("newActivation", newActivation))
+			}
+
+			// Link existing entity to this summary
+			nquads.WriteString(fmt.Sprintf(`<%s> <synthesized_from> %s .
+`, existingEntity.UID, summaryNode))
+		} else {
+			// Entity doesn't exist - create new one
+			entityNode := fmt.Sprintf("_:entity_%d", i)
+
+			nquads.WriteString(fmt.Sprintf(`%s <dgraph.type> "Entity" .
 `, entityNode))
-		nquads.WriteString(fmt.Sprintf(`%s <name> %q .
+			nquads.WriteString(fmt.Sprintf(`%s <name> %q .
 `, entityNode, e.Name))
-		nquads.WriteString(fmt.Sprintf(`%s <namespace> %q .
+			nquads.WriteString(fmt.Sprintf(`%s <namespace> %q .
 `, entityNode, namespace))
-		nquads.WriteString(fmt.Sprintf(`%s <description> %q .
+			nquads.WriteString(fmt.Sprintf(`%s <description> %q .
 `, entityNode, e.Description))
-		nquads.WriteString(fmt.Sprintf(`%s <activation> "0.8" .
+			nquads.WriteString(fmt.Sprintf(`%s <activation> "0.8" .
 `, entityNode))
-		nquads.WriteString(fmt.Sprintf(`%s <created_at> "%s"^^<xs:dateTime> .
+			nquads.WriteString(fmt.Sprintf(`%s <created_at> "%s"^^<xs:dateTime> .
 `, entityNode, now))
 
-		// Link Entity -> Summary (Derived From)
-		nquads.WriteString(fmt.Sprintf(`%s <synthesized_from> %s .
+			// Link Entity -> Summary (Derived From)
+			nquads.WriteString(fmt.Sprintf(`%s <synthesized_from> %s .
 `, entityNode, summaryNode))
+			newEntityCount++
+		}
 	}
+
+	c.logger.Info("Entity deduplication complete",
+		zap.Int("new_entities", newEntityCount),
+		zap.Int("boosted_entities", boostedEntityCount))
 
 	c.logger.Debug("Writing Wisdom Batch", zap.String("namespace", namespace))
 
