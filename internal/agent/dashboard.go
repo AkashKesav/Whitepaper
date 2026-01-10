@@ -28,10 +28,11 @@ type GraphData struct {
 }
 
 type GraphNode struct {
-	ID    string `json:"id"`
-	Label string `json:"label,omitempty"`
-	Group string `json:"group,omitempty"` // Person, Skill, Location, Department
-	Size  int    `json:"size,omitempty"`
+	ID         string  `json:"id"`
+	Label      string  `json:"label,omitempty"`
+	Group      string  `json:"group,omitempty"` // Person, Skill, Location, Department
+	Size       int     `json:"size,omitempty"`
+	Activation float64 `json:"activation,omitempty"` // For frontend sizing
 }
 
 type GraphEdge struct {
@@ -167,10 +168,11 @@ func (s *Server) GetVisualGraph(w http.ResponseWriter, r *http.Request) {
 				group = n.DType[0]
 			}
 			nodes = append(nodes, GraphNode{
-				ID:    n.UID,
-				Label: n.Name,
-				Group: group,
-				Size:  int(10 + (n.Activation * 20)), // Scale size by activation (10-30)
+				ID:         n.UID,
+				Label:      n.Name,
+				Group:      group,
+				Size:       int(10 + (n.Activation * 20)), // Scale size by activation (10-30)
+				Activation: n.Activation,                  // Pass to frontend for additional scaling
 			})
 
 			// Create edges between consecutive nodes for visualization
