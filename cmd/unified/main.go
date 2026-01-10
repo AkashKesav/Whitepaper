@@ -35,7 +35,7 @@ func main() {
 		RedisAddress:           getEnv("REDIS_URL", "localhost:6479"),
 		AIServicesURL:          getEnv("AI_SERVICES_URL", "http://localhost:8000"),
 		ReflectionInterval:     5 * time.Minute,
-		ActivationDecayRate:    0.05,
+		ActivationDecayRate:    0.002, // ~0.2% per hour = ~5% per day (gentle)
 		MinReflectionBatch:     10,
 		MaxReflectionBatch:     100,
 		IngestionBatchSize:     50,

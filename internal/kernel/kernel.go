@@ -65,7 +65,7 @@ func DefaultConfig() Config {
 		AIServicesURL:          "http://localhost:8000",
 		QdrantURL:              "http://localhost:6333",
 		ReflectionInterval:     5 * time.Minute,
-		ActivationDecayRate:    0.05,
+		ActivationDecayRate:    0.002, // ~0.2% per hour = ~5% per day (gentle)
 		MinReflectionBatch:     10,
 		MaxReflectionBatch:     100,
 		IngestionBatchSize:     50,
@@ -535,8 +535,9 @@ func (k *Kernel) runDecayLoop() {
 
 	k.logger.Info("Starting decay loop")
 
-	// Run decay every 1 minute (for testing - originally 1 hour)
-	ticker := time.NewTicker(1 * time.Minute)
+	// Run decay every 1 hour (production setting)
+	// Decay rate is applied once per hour, targeting ~5% loss per day
+	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
 	for {
