@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/reflective-memory-kernel/internal/graph"
+	"github.com/reflective-memory-kernel/internal/policy"
 	"github.com/reflective-memory-kernel/internal/precortex"
 )
 
@@ -40,14 +42,15 @@ func DefaultConfig() Config {
 
 // Agent is the Front-End Agent - fast, conversational interface
 type Agent struct {
-	config      Config
-	logger      *zap.Logger
-	natsConn    *nats.Conn
-	js          nats.JetStreamContext
-	mkClient    *MKClient
-	aiClient    *AIClient
-	RedisClient *redis.Client        // Exposed for user authentication
-	preCortex   *precortex.PreCortex // Cognitive firewall for cost reduction
+	config        Config
+	logger        *zap.Logger
+	natsConn      *nats.Conn
+	js            nats.JetStreamContext
+	mkClient      *MKClient
+	aiClient      *AIClient
+	RedisClient   *redis.Client         // Exposed for user authentication
+	preCortex     *precortex.PreCortex  // Cognitive firewall for cost reduction
+	PolicyManager *policy.PolicyManager // Policy enforcement
 
 	// Active conversations
 	conversations map[string]*Conversation
@@ -126,6 +129,10 @@ func (a *Agent) Start() error {
 	}
 
 	a.logger.Info("Front-End Agent started successfully")
+
+	// Initialize Policy Manager
+	a.InitPolicyManager()
+
 	return nil
 }
 
@@ -145,12 +152,29 @@ func (a *Agent) SetIngestChannel(ch chan *graph.TranscriptEvent) {
 	a.logger.Info("Direct Ingestion Channel configured (Zero-Copy enabled)")
 }
 
-// SetKernel enables direct consultation mode (Zero-Copy)
 func (a *Agent) SetKernel(k MemoryKernel) {
 	if a.mkClient != nil {
 		a.mkClient.SetDirectKernel(k)
 		a.logger.Info("Direct Kernel access configured (Zero-Copy enabled)")
+		// Re-initialize Policy Manager to pick up Graph Client
+		a.InitPolicyManager()
 	}
+}
+
+// InitPolicyManager initializes the policy manager
+func (a *Agent) InitPolicyManager() {
+	// Try to get graph client (may be nil if no direct kernel)
+	graphClient := a.mkClient.GetGraphClient()
+
+	config := policy.PolicyManagerConfig{
+		Enabled:              true,
+		AuditEnabled:         true,
+		RateLimitEnabled:     true,
+		ContentFilterEnabled: true,
+	}
+
+	a.PolicyManager = policy.NewPolicyManager(config, graphClient, a.natsConn, a.RedisClient, a.logger)
+	a.logger.Info("Policy Manager initialized", zap.Bool("has_graph_client", graphClient != nil))
 }
 
 // SetPreCortex configures the Pre-Cortex cognitive firewall for cost reduction
@@ -167,6 +191,23 @@ func (a *Agent) Chat(ctx context.Context, userID, conversationID, namespace, mes
 		zap.String("user_id", userID),
 		zap.String("namespace", namespace),
 		zap.String("message", message))
+
+	// --- POLICY CHECK: Content Filtering ---
+	if a.PolicyManager != nil && a.PolicyManager.ContentFilter != nil {
+		result, err := a.PolicyManager.ContentFilter.Filter(ctx, userID, message)
+		if err != nil {
+			a.logger.Error("Content filter error", zap.Error(err))
+		} else if !result.IsClean {
+			if result.Action == policy.ActionBlock {
+				return fmt.Sprintf("Message blocked: Content contains prohibited content (%s).", result.FilterType), nil
+			}
+			// If Mask, replace message
+			if result.Action == policy.ActionMask {
+				message = result.MaskedText
+				a.logger.Info("Message masked by policy")
+			}
+		}
+	}
 
 	// --- PRE-CORTEX: Try to handle locally first (90% cost reduction) ---
 	if a.preCortex != nil {
@@ -234,7 +275,27 @@ func (a *Agent) Chat(ctx context.Context, userID, conversationID, namespace, mes
 	var contextBrief string
 	var proactiveAlerts []string
 	if mkResponse != nil && mkErr == nil {
+		// --- POLICY CHECK: Filter retrieved facts ---
+		originalFactCount := len(mkResponse.RelevantFacts)
+		mkResponse.RelevantFacts = a.filterFactsByPolicy(ctx, userID, namespace, mkResponse.RelevantFacts)
+
 		contextBrief = mkResponse.SynthesizedBrief
+
+		if len(mkResponse.RelevantFacts) < originalFactCount {
+			a.logger.Info("Policy filtering applied",
+				zap.Int("original", originalFactCount),
+				zap.Int("allowed", len(mkResponse.RelevantFacts)))
+
+			// REGENERATE BRIEF: The detailed brief from MK might contain secrets from denied facts.
+			// We must reconstruct it from only the allowed facts.
+			var sb strings.Builder
+			sb.WriteString("Context retrieved from memory:\n")
+			for _, f := range mkResponse.RelevantFacts {
+				sb.WriteString(fmt.Sprintf("- %s: %s\n", f.Name, f.Description))
+			}
+			contextBrief = sb.String()
+			a.logger.Info("Context brief regenerated due to policy filtering")
+		}
 		proactiveAlerts = mkResponse.ProactiveAlerts
 		a.logger.Info("Context brief from MK",
 			zap.String("brief", contextBrief),
@@ -395,4 +456,75 @@ func (t Turn) MarshalJSON() ([]byte, error) {
 		Response:  t.Response,
 		LatencyMs: t.Latency.Milliseconds(),
 	})
+}
+
+// filterFactsByPolicy removes facts that the user is denied access to by policy
+func (a *Agent) filterFactsByPolicy(ctx context.Context, userID, namespace string, facts []graph.Node) []graph.Node {
+	if a.PolicyManager == nil || a.PolicyManager.Engine == nil {
+		return facts // No policy enforcement configured
+	}
+
+	// Build user context for policy evaluation
+	userContext := policy.UserContext{
+		UserID:    userID,
+		Groups:    a.getUserGroupsForPolicy(ctx, userID),
+		Clearance: 0, // Default clearance level
+	}
+
+	// Load policies for the namespace (caches internally)
+	if err := a.PolicyManager.LoadPolicies(ctx, "system"); err != nil {
+		a.logger.Warn("Failed to load policies", zap.Error(err))
+	}
+
+	a.logger.Debug("Policy filtering starting",
+		zap.Int("facts_count", len(facts)),
+		zap.String("user_id", userID),
+		zap.Strings("user_groups", userContext.Groups))
+
+	var allowed []graph.Node
+	for i := range facts {
+		fact := &facts[i]
+
+		a.logger.Debug("Evaluating fact against policy",
+			zap.String("fact_uid", fact.UID),
+			zap.String("fact_name", fact.Name),
+			zap.String("fact_type", string(fact.GetType())),
+			zap.Strings("fact_dtype", fact.DType))
+
+		effect, err := a.PolicyManager.Evaluate(ctx, userContext, fact, policy.ActionRead)
+		if err != nil {
+			a.logger.Info("Policy DENIED fact with error",
+				zap.String("fact_uid", fact.UID),
+				zap.String("fact_name", fact.Name),
+				zap.Error(err))
+			continue // Skip denied facts
+		}
+		if effect == policy.EffectAllow {
+			allowed = append(allowed, *fact)
+		} else {
+			a.logger.Info("Policy DENIED fact (explicit DENY)",
+				zap.String("fact_uid", fact.UID),
+				zap.String("fact_name", fact.Name))
+		}
+	}
+	return allowed
+}
+
+// getUserGroupsForPolicy retrieves the user's group memberships for policy evaluation
+func (a *Agent) getUserGroupsForPolicy(ctx context.Context, userID string) []string {
+	// If we have a direct kernel connection, query for group memberships
+	if a.mkClient != nil && a.mkClient.directKernel != nil {
+		if graphClient := a.mkClient.GetGraphClient(); graphClient != nil {
+			groups, err := graphClient.ListUserGroups(ctx, userID)
+			if err == nil {
+				var groupNames []string
+				for _, g := range groups {
+					groupNames = append(groupNames, g.Name)
+				}
+				return groupNames
+			}
+			a.logger.Debug("Failed to get user groups for policy", zap.Error(err))
+		}
+	}
+	return nil // No groups - policy will evaluate without group context
 }

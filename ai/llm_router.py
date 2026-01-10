@@ -249,8 +249,8 @@ class LLMRouter:
                     json={
                         "model": model,
                         "messages": [
-                            {"role": "system", "content": "You are a helpful AI assistant."},
-                            {"role": "user", "content": f"{system}\n\nUser Question: {query}"},
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": query},
                         ],
                         "max_tokens": 1024,
                         "temperature": 0.7,

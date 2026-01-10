@@ -9,21 +9,32 @@ import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import {
     ArrowLeft,
+    LayoutDashboard,
     Users,
-    Settings,
     Activity,
-    Layers,
-    RefreshCw,
-    Trash2,
     Shield,
     ShieldCheck,
     Loader2,
     BarChart3,
+    Layers,
+    RefreshCw,
+    Trash2,
     Zap,
     Database,
     CheckCircle2,
     XCircle,
+    DollarSign,
+    LifeBuoy,
+    Share2,
+    Megaphone,
+    Settings,
+    AlertTriangle,
+    Lock,
+    Plus,
+    X,
 } from 'lucide-react';
+
+import { api } from '@/lib/api';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
@@ -84,6 +95,16 @@ interface UserDetails {
     group_count: number;
 }
 
+interface Policy {
+    id: string;
+    description: string;
+    subjects: string[];
+    resources: string[];
+    actions: string[];
+    effect: 'ALLOW' | 'DENY';
+    conditions?: Record<string, string>;
+}
+
 export default function Admin() {
     const navigate = useNavigate();
     const { user, isAdmin, logout } = useAuth();
@@ -105,6 +126,41 @@ export default function Admin() {
     const [trialDays, setTrialDays] = useState(7);
     const [selectedUsernames, setSelectedUsernames] = useState<Set<string>>(new Set());
 
+    // Phase 2 State
+    const [revenue, setRevenue] = useState<any>(null);
+    const [tickets, setTickets] = useState<any[]>([]);
+    const [affiliates, setAffiliates] = useState<any[]>([]);
+    const [campaigns, setCampaigns] = useState<any[]>([]);
+    const [flags, setFlags] = useState<any[]>([]);
+    const [emergencyRequests, setEmergencyRequests] = useState<any[]>([]);
+
+    // Policy Management State
+    const [policies, setPolicies] = useState<Policy[]>([]);
+    const [isLoadingPolicies, setIsLoadingPolicies] = useState(true);
+    const [showCreatePolicy, setShowCreatePolicy] = useState(false);
+    const [newPolicy, setNewPolicy] = useState<Policy>({
+        id: '',
+        description: '',
+        subjects: [],
+        resources: [],
+        actions: [],
+        effect: 'DENY',
+    });
+    const [subjectInput, setSubjectInput] = useState('');
+    const [resourceInput, setResourceInput] = useState('');
+
+    // Create User State
+    const [showCreateUser, setShowCreateUser] = useState(false);
+    const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' });
+
+    // Create Affiliate State
+    const [showCreateAffiliate, setShowCreateAffiliate] = useState(false);
+    const [newAffiliate, setNewAffiliate] = useState({ code: '', user: '', commission_rate: 0.1 });
+
+    // Create Campaign State
+    const [showCreateCampaign, setShowCreateCampaign] = useState(false);
+    const [newCampaign, setNewCampaign] = useState({ id: '', name: '', type: 'email', target_audience: 'all', status: 'draft' });
+
     // Redirect non-admins
     useEffect(() => {
         if (!isAdmin && user) {
@@ -117,36 +173,25 @@ export default function Admin() {
     // Fetch users
     useEffect(() => {
         async function fetchUsers() {
-            if (!user?.token) return;
             try {
-                const response = await fetch(`${API_BASE_URL}/api/admin/users`, {
-                    headers: { Authorization: `Bearer ${user.token}` },
-                });
-                if (response.ok) {
-                    const data = await response.json();
-                    setUsers(data.users || []);
-                }
+                const data = await api.admin.getUsers();
+                setUsers(data);
             } catch (error) {
                 console.error('Failed to fetch users:', error);
+                toast({ variant: 'destructive', title: 'Error', description: 'Failed to load users' });
             } finally {
                 setIsLoadingUsers(false);
             }
         }
         fetchUsers();
-    }, [user?.token]);
+    }, [user?.token, toast]);
 
     // Fetch stats
     useEffect(() => {
         async function fetchStats() {
-            if (!user?.token) return;
             try {
-                const response = await fetch(`${API_BASE_URL}/api/admin/system/stats`, {
-                    headers: { Authorization: `Bearer ${user.token}` },
-                });
-                if (response.ok) {
-                    const data = await response.json();
-                    setStats(data);
-                }
+                const data = await api.admin.getStats();
+                setStats(data);
             } catch (error) {
                 console.error('Failed to fetch stats:', error);
             } finally {
@@ -159,15 +204,9 @@ export default function Admin() {
     // Fetch activity
     useEffect(() => {
         async function fetchActivity() {
-            if (!user?.token) return;
             try {
-                const response = await fetch(`${API_BASE_URL}/api/admin/activity`, {
-                    headers: { Authorization: `Bearer ${user.token}` },
-                });
-                if (response.ok) {
-                    const data = await response.json();
-                    setActivities(data.activities || []);
-                }
+                const data = await api.admin.getActivityLog();
+                setActivities(data);
             } catch (error) {
                 console.error('Failed to fetch activity:', error);
             } finally {
@@ -177,42 +216,140 @@ export default function Admin() {
         fetchActivity();
     }, [user?.token]);
 
-    const handleToggleRole = async (username: string, currentRole: string) => {
+    // Fetch Phase 2, 3 & 4 Data
+    useEffect(() => {
         if (!user?.token) return;
+        async function loadPhase2() {
+            try {
+                const [revData, tktData, affData, cmpData, flgData, emgData] = await Promise.all([
+                    api.finance.getRevenue().catch(() => null),
+                    api.support.getTickets().catch(() => []),
+                    api.affiliates.getList().catch(() => []),
+                    api.operations.getCampaigns().catch(() => []),
+                    api.system.getFlags().catch(() => []),
+                    api.emergency.getRequests().catch(() => [])
+                ]);
+                setRevenue(revData);
+                setTickets(tktData);
+                setAffiliates(affData);
+                setCampaigns(cmpData);
+                setFlags(flgData);
+                setEmergencyRequests(emgData);
+            } catch (e) {
+                console.error("Failed to load Phase 2/3/4 data", e);
+            }
+        }
+        loadPhase2();
+    }, [user?.token]);
+
+    // Fetch Policies
+    useEffect(() => {
+        if (!user?.token) return;
+        async function fetchPolicies() {
+            try {
+                const data = await api.admin.getPolicies();
+                setPolicies(data.policies || []);
+            } catch (error) {
+                console.error('Failed to fetch policies:', error);
+            } finally {
+                setIsLoadingPolicies(false);
+            }
+        }
+        fetchPolicies();
+        fetchPolicies();
+    }, [user?.token]);
+
+    const handleCreateUser = async () => {
+        setIsProcessing('create-user');
+        try {
+            await api.admin.createUser(newUser);
+            toast({ title: 'User created', description: `${newUser.username} added successfully` });
+            setUsers([...users, { username: newUser.username, role: newUser.role as 'admin' | 'user' }]);
+            setShowCreateUser(false);
+            setNewUser({ username: '', password: '', role: 'user' });
+        } catch (error) {
+            toast({ variant: 'destructive', title: 'Failed to create user', description: String(error) });
+        } finally {
+            setIsProcessing(null);
+        }
+    };
+
+    const handleCreateAffiliate = async () => {
+        setIsProcessing('create-affiliate');
+        try {
+            await api.affiliates.create(newAffiliate);
+            toast({ title: 'Affiliate created', description: `${newAffiliate.code} added successfully` });
+            setAffiliates([...affiliates, { ...newAffiliate, total_earnings: 0, active: true }]);
+            setShowCreateAffiliate(false);
+            setNewAffiliate({ code: '', user: '', commission_rate: 0.1 });
+        } catch (error) {
+            toast({ variant: 'destructive', title: 'Failed to create affiliate', description: String(error) });
+        } finally {
+            setIsProcessing(null);
+        }
+    };
+
+    const handleDeleteAffiliate = async (code: string) => {
+         if (!confirm('Are you sure you want to delete this affiliate?')) return;
+         setIsProcessing(code);
+         try {
+             await api.affiliates.delete(code);
+             setAffiliates(affiliates.filter(a => a.code !== code));
+             toast({ title: 'Affiliate deleted' });
+         } catch (error) {
+             toast({ variant: 'destructive', title: 'Failed to delete affiliate', description: String(error) });
+         } finally {
+             setIsProcessing(null);
+         }
+    };
+
+    const handleCreateCampaign = async () => {
+        setIsProcessing('create-campaign');
+        try {
+            await api.operations.createCampaign(newCampaign);
+            toast({ title: 'Campaign created', description: `${newCampaign.name} added successfully` });
+            setCampaigns([...campaigns, { ...newCampaign, conversion_rate: 0, created_at: new Date().toISOString() } as any]);
+            setShowCreateCampaign(false);
+            setNewCampaign({ id: '', name: '', type: 'email', target_audience: 'all', status: 'draft' });
+        } catch (error) {
+             toast({ variant: 'destructive', title: 'Failed to create campaign', description: String(error) });
+        } finally {
+            setIsProcessing(null);
+        }
+    };
+
+    const handleDeleteCampaign = async (id: string) => {
+         if (!confirm('Are you sure you want to delete this campaign?')) return;
+         setIsProcessing(id);
+         try {
+             await api.operations.deleteCampaign(id);
+             setCampaigns(campaigns.filter(c => c.id !== id));
+             toast({ title: 'Campaign deleted' });
+         } catch (error) {
+             toast({ variant: 'destructive', title: 'Failed to delete campaign', description: String(error) });
+         } finally {
+             setIsProcessing(null);
+         }
+    };
+
+    const handleToggleRole = async (username: string, currentRole: string) => {
         const newRole = currentRole === 'admin' ? 'user' : 'admin';
         setIsProcessing(username);
 
         try {
-            const response = await fetch(`${API_BASE_URL}/api/admin/users/${username}/role`, {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${user.token}`,
-                },
-                body: JSON.stringify({ role: newRole }),
+            await api.admin.updateUserRole(username, newRole);
+            setUsers(users.map(u =>
+                u.username === username ? { ...u, role: newRole as 'admin' | 'user' } : u
+            ));
+            toast({
+                title: 'Role updated',
+                description: `${username} is now a ${newRole}`,
             });
-
-            if (response.ok) {
-                setUsers(users.map(u =>
-                    u.username === username ? { ...u, role: newRole as 'admin' | 'user' } : u
-                ));
-                toast({
-                    title: 'Role updated',
-                    description: `${username} is now a ${newRole}`,
-                });
-            } else {
-                const errorText = await response.text();
-                toast({
-                    variant: 'destructive',
-                    title: 'Failed to update role',
-                    description: errorText,
-                });
-            }
         } catch (error) {
             toast({
                 variant: 'destructive',
-                title: 'Error',
-                description: 'Network error',
+                title: 'Failed to update role',
+                description: String(error),
             });
         } finally {
             setIsProcessing(null);
@@ -220,36 +357,22 @@ export default function Admin() {
     };
 
     const handleDeleteUser = async (username: string) => {
-        if (!user?.token) return;
         if (!confirm(`Are you sure you want to delete user "${username}"?`)) return;
 
         setIsProcessing(username);
 
         try {
-            const response = await fetch(`${API_BASE_URL}/api/admin/users/${username}`, {
-                method: 'DELETE',
-                headers: { Authorization: `Bearer ${user.token}` },
+            await api.admin.deleteUser(username);
+            setUsers(users.filter(u => u.username !== username));
+            toast({
+                title: 'User deleted',
+                description: `${username} has been removed`,
             });
-
-            if (response.ok) {
-                setUsers(users.filter(u => u.username !== username));
-                toast({
-                    title: 'User deleted',
-                    description: `${username} has been removed`,
-                });
-            } else {
-                const errorText = await response.text();
-                toast({
-                    variant: 'destructive',
-                    title: 'Failed to delete user',
-                    description: errorText,
-                });
-            }
         } catch (error) {
             toast({
                 variant: 'destructive',
-                title: 'Error',
-                description: 'Network error',
+                title: 'Failed to delete user',
+                description: String(error),
             });
         } finally {
             setIsProcessing(null);
@@ -257,31 +380,18 @@ export default function Admin() {
     };
 
     const handleTriggerReflection = async () => {
-        if (!user?.token) return;
         setIsProcessing('reflection');
 
         try {
-            const response = await fetch(`${API_BASE_URL}/api/admin/system/reflection`, {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${user.token}` },
+            await api.admin.triggerReflection();
+            toast({
+                title: 'Reflection triggered',
+                description: 'The memory kernel is processing a reflection cycle',
             });
-
-            if (response.ok) {
-                toast({
-                    title: 'Reflection triggered',
-                    description: 'The memory kernel is processing a reflection cycle',
-                });
-            } else {
-                toast({
-                    variant: 'destructive',
-                    title: 'Failed to trigger reflection',
-                });
-            }
         } catch (error) {
             toast({
                 variant: 'destructive',
-                title: 'Error',
-                description: 'Network error',
+                title: 'Failed to trigger reflection',
             });
         } finally {
             setIsProcessing(null);
@@ -289,29 +399,16 @@ export default function Admin() {
     };
 
     const viewUserDetails = async (username: string) => {
-        if (!user?.token) return;
         setIsProcessing(username);
 
         try {
-            const response = await fetch(`${API_BASE_URL}/api/admin/users/${username}/details`, {
-                headers: { Authorization: `Bearer ${user.token}` },
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                setSelectedUser(data);
-                setShowUserDetails(true);
-            } else {
-                toast({
-                    variant: 'destructive',
-                    title: 'Failed to load user details',
-                });
-            }
+            const data = await api.admin.getUserDetails(username);
+            setSelectedUser(data);
+            setShowUserDetails(true);
         } catch (error) {
             toast({
                 variant: 'destructive',
-                title: 'Error',
-                description: 'Network error',
+                title: 'Failed to load user details',
             });
         } finally {
             setIsProcessing(null);
@@ -319,40 +416,22 @@ export default function Admin() {
     };
 
     const handleExtendTrial = async (username: string, days: number) => {
-        if (!user?.token) return;
         setIsProcessing('trial-' + username);
 
         try {
-            const response = await fetch(`${API_BASE_URL}/api/admin/users/${username}/trial`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${user.token}`,
-                },
-                body: JSON.stringify({ days }),
+            const data = await api.admin.extendTrial(username, days);
+            toast({
+                title: 'Trial extended',
+                description: `${username}'s trial extended until ${new Date(data.expires_at).toLocaleDateString()}`,
             });
-
-            if (response.ok) {
-                const data = await response.json();
-                toast({
-                    title: 'Trial extended',
-                    description: `${username}'s trial extended until ${new Date(data.expires_at).toLocaleDateString()}`,
-                });
-                // Refresh user details
-                if (selectedUser?.username === username) {
-                    viewUserDetails(username);
-                }
-            } else {
-                toast({
-                    variant: 'destructive',
-                    title: 'Failed to extend trial',
-                });
+            // Refresh user details
+            if (selectedUser?.username === username) {
+                viewUserDetails(username);
             }
         } catch (error) {
             toast({
                 variant: 'destructive',
-                title: 'Error',
-                description: 'Network error',
+                title: 'Failed to extend trial',
             });
         } finally {
             setIsProcessing(null);
@@ -393,29 +472,18 @@ export default function Admin() {
 
     // Batch role update
     const handleBatchRole = async (role: 'admin' | 'user') => {
-        if (!user?.token || selectedUsernames.size === 0) return;
+        if (selectedUsernames.size === 0) return;
         setIsProcessing('batch-role');
 
         try {
-            const response = await fetch(`${API_BASE_URL}/api/admin/batch/role`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${user.token}`,
-                },
-                body: JSON.stringify({ usernames: Array.from(selectedUsernames), role }),
+            const data = await api.admin.batchUpdateRole(Array.from(selectedUsernames), role);
+            toast({
+                title: 'Batch update complete',
+                description: `Updated ${data.updated} users to ${role}`,
             });
-
-            if (response.ok) {
-                const data = await response.json();
-                toast({
-                    title: 'Batch update complete',
-                    description: `Updated ${data.updated} users to ${role}`,
-                });
-                // Refresh users
-                setSelectedUsernames(new Set());
-                window.location.reload();
-            }
+            // Refresh users
+            setSelectedUsernames(new Set());
+            window.location.reload();
         } catch (error) {
             toast({ variant: 'destructive', title: 'Batch update failed' });
         } finally {
@@ -425,30 +493,19 @@ export default function Admin() {
 
     // Batch delete
     const handleBatchDelete = async () => {
-        if (!user?.token || selectedUsernames.size === 0) return;
+        if (selectedUsernames.size === 0) return;
         if (!confirm(`Delete ${selectedUsernames.size} users? This cannot be undone.`)) return;
 
         setIsProcessing('batch-delete');
 
         try {
-            const response = await fetch(`${API_BASE_URL}/api/admin/batch/delete`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${user.token}`,
-                },
-                body: JSON.stringify({ usernames: Array.from(selectedUsernames) }),
+            const data = await api.admin.batchDeleteUsers(Array.from(selectedUsernames));
+            toast({
+                title: 'Batch delete complete',
+                description: `Deleted ${data.deleted} users`,
             });
-
-            if (response.ok) {
-                const data = await response.json();
-                toast({
-                    title: 'Batch delete complete',
-                    description: `Deleted ${data.deleted} users`,
-                });
-                setSelectedUsernames(new Set());
-                window.location.reload();
-            }
+            setSelectedUsernames(new Set());
+            window.location.reload();
         } catch (error) {
             toast({ variant: 'destructive', title: 'Batch delete failed' });
         } finally {
@@ -521,6 +578,30 @@ export default function Admin() {
                                 <BarChart3 className="w-4 h-4" />
                                 Metrics
                             </TabsTrigger>
+                            <TabsTrigger value="finance" className="gap-2">
+                                <DollarSign className="w-4 h-4" />
+                                Finance
+                            </TabsTrigger>
+                            <TabsTrigger value="support" className="gap-2">
+                                <LifeBuoy className="w-4 h-4" />
+                                Support
+                            </TabsTrigger>
+                            <TabsTrigger value="affiliates" className="gap-2">
+                                <Share2 className="w-4 h-4" />
+                                Affiliates
+                            </TabsTrigger>
+                            <TabsTrigger value="operations" className="gap-2">
+                                <Megaphone className="w-4 h-4" />
+                                Operations
+                            </TabsTrigger>
+                            <TabsTrigger value="policies" className="gap-2">
+                                <Lock className="w-4 h-4" />
+                                Policies
+                            </TabsTrigger>
+                            <TabsTrigger value="emergency" className="gap-2 text-red-400 data-[state=active]:text-red-300">
+                                <AlertTriangle className="w-4 h-4" />
+                                Emergency
+                            </TabsTrigger>
                         </TabsList>
 
                         {/* Users Tab */}
@@ -566,6 +647,10 @@ export default function Admin() {
                                         </Button>
                                         <Button variant="outline" size="sm" onClick={() => handleExportUsers('json')}>
                                             Export JSON
+                                        </Button>
+                                        <Button size="sm" onClick={() => setShowCreateUser(true)}>
+                                            <Plus className="w-4 h-4 mr-2" />
+                                            Add User
                                         </Button>
                                     </div>
 
@@ -673,6 +758,59 @@ export default function Admin() {
                                                     </div>
                                                 </div>
                                             ))}
+                                        </div>
+                                    )}
+
+                                    {/* Create User Modal */}
+                                    {showCreateUser && (
+                                        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowCreateUser(false)}>
+                                            <div className="bg-background rounded-xl p-6 max-w-md w-full mx-4 border border-border shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                                                <div className="flex items-center justify-between mb-4">
+                                                    <h3 className="text-lg font-semibold">Add New User</h3>
+                                                    <button onClick={() => setShowCreateUser(false)} className="text-muted-foreground hover:text-foreground">
+                                                        <X className="w-5 h-5" />
+                                                    </button>
+                                                </div>
+                                                <div className="space-y-4">
+                                                    <div>
+                                                        <label className="text-sm font-medium mb-1 block">Username</label>
+                                                        <input
+                                                            type="text"
+                                                            value={newUser.username}
+                                                            onChange={(e) => setNewUser({...newUser, username: e.target.value})}
+                                                            className="w-full px-3 py-2 rounded-lg border border-border bg-muted/30"
+                                                            placeholder="jdoe"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-sm font-medium mb-1 block">Password</label>
+                                                        <input
+                                                            type="password"
+                                                            value={newUser.password}
+                                                            onChange={(e) => setNewUser({...newUser, password: e.target.value})}
+                                                            className="w-full px-3 py-2 rounded-lg border border-border bg-muted/30"
+                                                            placeholder="••••••••"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-sm font-medium mb-1 block">Role</label>
+                                                        <select
+                                                            value={newUser.role}
+                                                            onChange={(e) => setNewUser({...newUser, role: e.target.value})}
+                                                            className="w-full px-3 py-2 rounded-lg border border-border bg-muted/30"
+                                                        >
+                                                            <option value="user">User</option>
+                                                            <option value="admin">Admin</option>
+                                                        </select>
+                                                    </div>
+                                                    <div className="pt-2 flex justify-end gap-2">
+                                                        <Button variant="ghost" onClick={() => setShowCreateUser(false)}>Cancel</Button>
+                                                        <Button onClick={handleCreateUser} disabled={!newUser.username || !newUser.password || isProcessing === 'create-user'}>
+                                                            {isProcessing === 'create-user' ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create User'}
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
                                     )}
 
@@ -902,7 +1040,7 @@ export default function Admin() {
                                                             <Layers className="w-6 h-6 text-blue-500" />
                                                         </div>
                                                         <div>
-                                                            <p className="text-2xl font-bold">{stats?.kernel_stats?.total_groups || 0}</p>
+                                                            <p className="text-2xl font-bold">{String(stats?.kernel_stats?.total_groups || 0)}</p>
                                                             <p className="text-sm text-muted-foreground">Total Groups</p>
                                                         </div>
                                                     </div>
@@ -915,7 +1053,7 @@ export default function Admin() {
                                                             <Activity className="w-6 h-6 text-green-500" />
                                                         </div>
                                                         <div>
-                                                            <p className="text-2xl font-bold">{stats?.kernel_stats?.active_groups || 0}</p>
+                                                            <p className="text-2xl font-bold">{String(stats?.kernel_stats?.active_groups || 0)}</p>
                                                             <p className="text-sm text-muted-foreground">Active Groups</p>
                                                         </div>
                                                     </div>
@@ -1204,6 +1342,586 @@ export default function Admin() {
                                 </Card>
                             </div>
                         </TabsContent>
+
+                        {/* Finance Tab */}
+                        <TabsContent value="finance" className="space-y-6">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                <Card className="border-cyan-500/20 bg-cyan-900/10 backdrop-blur-sm">
+                                    <div className="p-6">
+                                        <h3 className="text-lg font-semibold mb-2">Total Revenue</h3>
+                                        <p className="text-3xl font-bold text-cyan-400">
+                                            ${revenue?.total_revenue?.toLocaleString() || '0.00'}
+                                        </p>
+                                    </div>
+                                </Card>
+                                <Card className="border-indigo-500/20 bg-indigo-900/10 backdrop-blur-sm">
+                                    <div className="p-6">
+                                        <h3 className="text-lg font-semibold mb-2">MRR</h3>
+                                        <p className="text-3xl font-bold text-indigo-400">
+                                            ${revenue?.mrr?.toLocaleString() || '0.00'}
+                                        </p>
+                                    </div>
+                                </Card>
+                                <Card className="border-amber-500/20 bg-amber-900/10 backdrop-blur-sm">
+                                    <div className="p-6">
+                                        <h3 className="text-lg font-semibold mb-2">ARR</h3>
+                                        <p className="text-3xl font-bold text-amber-400">
+                                            ${revenue?.arr?.toLocaleString() || '0.00'}
+                                        </p>
+                                    </div>
+                                </Card>
+                            </div>
+                        </TabsContent>
+
+                        {/* Support Tab */}
+                        <TabsContent value="support" className="space-y-6">
+                            <Card className="border-indigo-500/20 bg-black/40 backdrop-blur-xl">
+                                <div className="p-6">
+                                    <h2 className="text-xl font-bold mb-4">Support Tickets</h2>
+                                    <div className="space-y-4">
+                                        {tickets.map(t => (
+                                            <div key={t.id} className="flex justify-between items-center p-4 rounded-lg bg-white/5 border border-white/10">
+                                                <div>
+                                                    <h4 className="font-semibold text-indigo-300">{t.title}</h4>
+                                                    <div className="text-sm text-gray-400 flex gap-4 mt-1">
+                                                        <span>Priority: {t.priority}</span>
+                                                        <span>Status: {t.status}</span>
+                                                        <span>From: {t.created_by}</span>
+                                                    </div>
+                                                </div>
+                                                <Button variant="outline" size="sm" onClick={() => api.support.resolveTicket(t.id)}>
+                                                    Resolve
+                                                </Button>
+                                            </div>
+                                        ))}
+                                        {tickets.length === 0 && <p className="text-gray-500">No active tickets</p>}
+                                    </div>
+                                </div>
+                            </Card>
+                        </TabsContent>
+
+                        {/* Affiliates Tab */}
+                        <TabsContent value="affiliates" className="space-y-6">
+                            <Card className="border-indigo-500/20 bg-black/40 backdrop-blur-xl">
+                                <div className="p-6">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h2 className="text-xl font-bold">Affiliate Program</h2>
+                                        <Button size="sm" onClick={() => setShowCreateAffiliate(true)}>
+                                            <Plus className="w-4 h-4 mr-2" />
+                                            Add Affiliate
+                                        </Button>
+                                    </div>
+                                    <div className="space-y-4">
+                                        {affiliates.map(a => (
+                                            <div key={a.code} className="flex justify-between items-center p-4 rounded-lg bg-white/5 border border-white/10">
+                                                <div>
+                                                    <h4 className="font-semibold text-emerald-300">{a.code}</h4>
+                                                    <div className="text-sm text-gray-400 flex gap-4 mt-1">
+                                                        <span>User: {a.user}</span>
+                                                        <span>Rate: {a.commission_rate * 100}%</span>
+                                                        <span>Earnings: ${a.total_earnings}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <Badge variant={a.active ? 'default' : 'secondary'}>
+                                                        {a.active ? 'Active' : 'Inactive'}
+                                                    </Badge>
+                                                    <Button variant="ghost" size="icon" onClick={() => handleDeleteAffiliate(a.code)} disabled={isProcessing === a.code}>
+                                                        {isProcessing === a.code ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4 text-red-400" />}
+                                                    </Button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                        {affiliates.length === 0 && <p className="text-gray-500">No affiliates found</p>}
+                                    </div>
+                                </div>
+                            </Card>
+
+                             {/* Create Affiliate Modal */}
+                             {showCreateAffiliate && (
+                                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowCreateAffiliate(false)}>
+                                    <div className="bg-background rounded-xl p-6 max-w-md w-full mx-4 border border-border shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                                        <div className="flex items-center justify-between mb-4">
+                                            <h3 className="text-lg font-semibold">Add New Affiliate</h3>
+                                            <button onClick={() => setShowCreateAffiliate(false)} className="text-muted-foreground hover:text-foreground">
+                                                <X className="w-5 h-5" />
+                                            </button>
+                                        </div>
+                                        <div className="space-y-4">
+                                            <div>
+                                                <label className="text-sm font-medium mb-1 block">Affiliate Code</label>
+                                                <input
+                                                    type="text"
+                                                    value={newAffiliate.code}
+                                                    onChange={(e) => setNewAffiliate({...newAffiliate, code: e.target.value})}
+                                                    className="w-full px-3 py-2 rounded-lg border border-border bg-muted/30"
+                                                    placeholder="SUMMER2025"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-sm font-medium mb-1 block">User</label>
+                                                <input
+                                                    type="text"
+                                                    value={newAffiliate.user}
+                                                    onChange={(e) => setNewAffiliate({...newAffiliate, user: e.target.value})}
+                                                    className="w-full px-3 py-2 rounded-lg border border-border bg-muted/30"
+                                                    placeholder="username"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-sm font-medium mb-1 block">Commission Rate</label>
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    value={newAffiliate.commission_rate}
+                                                    onChange={(e) => setNewAffiliate({...newAffiliate, commission_rate: Number(e.target.value)})}
+                                                    className="w-full px-3 py-2 rounded-lg border border-border bg-muted/30"
+                                                />
+                                            </div>
+                                            <div className="pt-2 flex justify-end gap-2">
+                                                <Button variant="ghost" onClick={() => setShowCreateAffiliate(false)}>Cancel</Button>
+                                                <Button onClick={handleCreateAffiliate} disabled={!newAffiliate.code || !newAffiliate.user || isProcessing === 'create-affiliate'}>
+                                                    {isProcessing === 'create-affiliate' ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create Affiliate'}
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </TabsContent>
+
+                        {/* Operations Tab */}
+                        <TabsContent value="operations" className="space-y-6">
+                             <Card className="border-indigo-500/20 bg-black/40 backdrop-blur-xl">
+                                <div className="p-6">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h2 className="text-xl font-bold">Marketing Campaigns</h2>
+                                        <Button size="sm" onClick={() => setShowCreateCampaign(true)}>
+                                            <Plus className="w-4 h-4 mr-2" />
+                                            Create Campaign
+                                        </Button>
+                                    </div>
+                                    <div className="space-y-4">
+                                        {campaigns.map(c => (
+                                            <div key={c.id} className="flex justify-between items-center p-4 rounded-lg bg-white/5 border border-white/10">
+                                                <div>
+                                                    <h4 className="font-semibold text-pink-300">{c.name}</h4>
+                                                    <div className="text-sm text-gray-400 flex gap-4 mt-1">
+                                                        <span>Type: {c.type}</span>
+                                                        <span>Audience: {c.target_audience}</span>
+                                                        <span>Conv: {(c.conversion_rate * 100).toFixed(1)}%</span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <Badge>{c.status}</Badge>
+                                                    <Button variant="ghost" size="icon" onClick={() => handleDeleteCampaign(c.id)} disabled={isProcessing === c.id}>
+                                                        {isProcessing === c.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4 text-red-400" />}
+                                                    </Button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </Card>
+
+                            {/* Create Campaign Modal */}
+                            {showCreateCampaign && (
+                                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowCreateCampaign(false)}>
+                                    <div className="bg-background rounded-xl p-6 max-w-md w-full mx-4 border border-border shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                                        <div className="flex items-center justify-between mb-4">
+                                            <h3 className="text-lg font-semibold">Create New Campaign</h3>
+                                            <button onClick={() => setShowCreateCampaign(false)} className="text-muted-foreground hover:text-foreground">
+                                                <X className="w-5 h-5" />
+                                            </button>
+                                        </div>
+                                        <div className="space-y-4">
+                                            <div>
+                                                <label className="text-sm font-medium mb-1 block">Campaign ID</label>
+                                                <input
+                                                    type="text"
+                                                    value={newCampaign.id}
+                                                    onChange={(e) => setNewCampaign({...newCampaign, id: e.target.value})}
+                                                    className="w-full px-3 py-2 rounded-lg border border-border bg-muted/30"
+                                                    placeholder="cmp_new"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-sm font-medium mb-1 block">Name</label>
+                                                <input
+                                                    type="text"
+                                                    value={newCampaign.name}
+                                                    onChange={(e) => setNewCampaign({...newCampaign, name: e.target.value})}
+                                                    className="w-full px-3 py-2 rounded-lg border border-border bg-muted/30"
+                                                    placeholder="Campaign Name"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-sm font-medium mb-1 block">Type</label>
+                                                <select
+                                                    value={newCampaign.type}
+                                                    onChange={(e) => setNewCampaign({...newCampaign, type: e.target.value})}
+                                                    className="w-full px-3 py-2 rounded-lg border border-border bg-muted/30"
+                                                >
+                                                    <option value="email">Email</option>
+                                                    <option value="in-app">In-App</option>
+                                                    <option value="push">Push Notification</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="text-sm font-medium mb-1 block">Status</label>
+                                                 <select
+                                                    value={newCampaign.status}
+                                                    onChange={(e) => setNewCampaign({...newCampaign, status: e.target.value})}
+                                                    className="w-full px-3 py-2 rounded-lg border border-border bg-muted/30"
+                                                >
+                                                    <option value="draft">Draft</option>
+                                                    <option value="active">Active</option>
+                                                </select>
+                                            </div>
+                                            <div className="pt-2 flex justify-end gap-2">
+                                                <Button variant="ghost" onClick={() => setShowCreateCampaign(false)}>Cancel</Button>
+                                                <Button onClick={handleCreateCampaign} disabled={!newCampaign.id || !newCampaign.name || isProcessing === 'create-campaign'}>
+                                                    {isProcessing === 'create-campaign' ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create Campaign'}
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </TabsContent>
+
+                        {/* System Tab */}
+                        <TabsContent value="system" className="space-y-6">
+                             <Card className="border-indigo-500/20 bg-black/40 backdrop-blur-xl">
+                                <div className="p-6">
+                                    <h2 className="text-xl font-bold mb-4">Feature Flags</h2>
+                                    <div className="space-y-4">
+                                        {flags.map(f => (
+                                            <div key={f.key} className="flex justify-between items-center p-4 rounded-lg bg-white/5 border border-white/10">
+                                                <div>
+                                                    <h4 className="font-semibold text-blue-300">{f.name}</h4>
+                                                    <p className="text-sm text-gray-400">{f.description}</p>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <Badge variant={f.is_enabled ? 'default' : 'secondary'}>
+                                                        {f.is_enabled ? 'Active' : 'Disabled'}
+                                                    </Badge>
+                                                    <Button variant="ghost" size="sm" onClick={async () => {
+                                                        await api.system.toggleFlag(f.key, !f.is_enabled);
+                                                        setFlags(flags.map(fl => fl.key === f.key ? { ...fl, is_enabled: !f.is_enabled } : fl));
+                                                    }}>Toggle</Button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </Card>
+                        </TabsContent>
+
+                        {/* Emergency Tab */}
+                        <TabsContent value="emergency" className="space-y-6">
+                             <Card className="border-red-500/20 bg-red-900/10 backdrop-blur-xl">
+                                <div className="p-6">
+                                    <div className="flex items-center gap-3 mb-4">
+                                        <AlertTriangle className="w-6 h-6 text-red-500" />
+                                        <h2 className="text-xl font-bold text-red-100">Emergency Access Requests</h2>
+                                    </div>
+                                    <p className="text-gray-400 mb-6">Manage strictly audited privileged access requests here.</p>
+                                    
+                                    <div className="space-y-4">
+                                        {emergencyRequests.map(r => (
+                                            <div key={r.id} className="flex justify-between items-center p-4 rounded-lg bg-red-500/5 border border-red-500/10 hover:border-red-500/30 transition-colors">
+                                                <div>
+                                                    <h4 className="font-semibold text-red-200">{r.reason}</h4>
+                                                    <div className="text-sm text-gray-400 flex gap-4 mt-1">
+                                                        <span>User: {r.requested_by}</span>
+                                                        <span>Duration: {r.duration}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <Badge variant={r.status === 'pending' ? 'outline' : 'secondary'} className={r.status === 'pending' ? 'text-yellow-400 border-yellow-400/50' : ''}>
+                                                        {r.status.toUpperCase()}
+                                                    </Badge>
+                                                    {r.status === 'pending' && (
+                                                        <div className="flex gap-2 ml-4">
+                                                            <Button size="sm" variant="destructive" onClick={async () => {
+                                                                await api.emergency.deny(r.id);
+                                                                setEmergencyRequests(emergencyRequests.map(er => er.id === r.id ? { ...er, status: 'denied' } : er));
+                                                            }}>Deny</Button>
+                                                            <Button size="sm" className="bg-red-600 hover:bg-red-700" onClick={async () => {
+                                                                await api.emergency.approve(r.id);
+                                                                setEmergencyRequests(emergencyRequests.map(er => er.id === r.id ? { ...er, status: 'approved' } : er));
+                                                            }}>Approve</Button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ))}
+                                        {emergencyRequests.length === 0 && <p className="text-gray-500">No pending emergency requests</p>}
+                                    </div>
+                                </div>
+                            </Card>
+                        </TabsContent>
+
+                        {/* Policies Tab */}
+                        <TabsContent value="policies">
+                            <Card>
+                                <CardHeader>
+                                    <div className="flex justify-between items-center">
+                                        <div>
+                                            <CardTitle className="flex items-center gap-2">
+                                                <Lock className="w-5 h-5" />
+                                                Access Control Policies
+                                            </CardTitle>
+                                            <CardDescription>
+                                                Manage ALLOW/DENY policies for fine-grained access control
+                                            </CardDescription>
+                                        </div>
+                                        <Button onClick={() => setShowCreatePolicy(true)} className="gap-2">
+                                            <Plus className="w-4 h-4" />
+                                            Create Policy
+                                        </Button>
+                                    </div>
+                                </CardHeader>
+                                <CardContent>
+                                    {isLoadingPolicies ? (
+                                        <div className="flex justify-center py-8">
+                                            <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                                        </div>
+                                    ) : policies.length === 0 ? (
+                                        <div className="text-center py-12">
+                                            <Lock className="w-12 h-12 mx-auto mb-4 text-muted-foreground/50" />
+                                            <p className="text-muted-foreground">No policies defined</p>
+                                            <p className="text-sm text-muted-foreground/70 mt-1">Create your first policy to control access to resources</p>
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-4">
+                                            {policies.map((p) => (
+                                                <div
+                                                    key={p.id}
+                                                    className={`p-4 rounded-lg border ${
+                                                        p.effect === 'DENY' 
+                                                            ? 'border-red-500/30 bg-red-500/5' 
+                                                            : 'border-green-500/30 bg-green-500/5'
+                                                    }`}
+                                                >
+                                                    <div className="flex justify-between items-start">
+                                                        <div className="flex-1">
+                                                            <div className="flex items-center gap-3 mb-2">
+                                                                <Badge 
+                                                                    variant={p.effect === 'DENY' ? 'destructive' : 'default'}
+                                                                    className={p.effect === 'ALLOW' ? 'bg-green-600' : ''}
+                                                                >
+                                                                    {p.effect}
+                                                                </Badge>
+                                                                <span className="font-mono text-sm text-muted-foreground">{p.id}</span>
+                                                            </div>
+                                                            <p className="text-sm mb-3">{p.description || 'No description'}</p>
+                                                            <div className="grid grid-cols-3 gap-4 text-sm">
+                                                                <div>
+                                                                    <p className="text-muted-foreground text-xs mb-1">Subjects</p>
+                                                                    <div className="flex flex-wrap gap-1">
+                                                                        {p.subjects.map((s, i) => (
+                                                                            <span key={i} className="px-2 py-0.5 rounded bg-muted text-xs">{s}</span>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                                <div>
+                                                                    <p className="text-muted-foreground text-xs mb-1">Resources</p>
+                                                                    <div className="flex flex-wrap gap-1">
+                                                                        {p.resources.map((r, i) => (
+                                                                            <span key={i} className="px-2 py-0.5 rounded bg-muted text-xs">{r}</span>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                                <div>
+                                                                    <p className="text-muted-foreground text-xs mb-1">Actions</p>
+                                                                    <div className="flex flex-wrap gap-1">
+                                                                        {p.actions.map((a, i) => (
+                                                                            <span key={i} className="px-2 py-0.5 rounded bg-muted text-xs">{a}</span>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="sm"
+                                                            className="text-red-500 hover:text-red-400 hover:bg-red-500/10"
+                                                            onClick={async () => {
+                                                                if (!confirm(`Delete policy "${p.id}"?`)) return;
+                                                                try {
+                                                                    await api.admin.deletePolicy(p.id);
+                                                                    setPolicies(policies.filter(pol => pol.id !== p.id));
+                                                                    toast({ title: 'Policy deleted', description: `Policy ${p.id} has been removed` });
+                                                                } catch (error) {
+                                                                    toast({ variant: 'destructive', title: 'Failed to delete policy' });
+                                                                }
+                                                            }}
+                                                        >
+                                                            <Trash2 className="w-4 h-4" />
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    {/* Create Policy Modal */}
+                                    {showCreatePolicy && (
+                                        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowCreatePolicy(false)}>
+                                            <div className="bg-background rounded-xl p-6 max-w-lg w-full mx-4 border border-border shadow-2xl max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                                                <div className="flex items-center justify-between mb-4">
+                                                    <h3 className="text-lg font-semibold">Create New Policy</h3>
+                                                    <button onClick={() => setShowCreatePolicy(false)} className="text-muted-foreground hover:text-foreground">
+                                                        <X className="w-5 h-5" />
+                                                    </button>
+                                                </div>
+                                                <div className="space-y-4">
+                                                    <div>
+                                                        <label className="text-sm font-medium mb-1 block">Policy ID</label>
+                                                        <input
+                                                            type="text"
+                                                            value={newPolicy.id}
+                                                            onChange={(e) => setNewPolicy({...newPolicy, id: e.target.value})}
+                                                            placeholder="e.g., deny_confidential_data"
+                                                            className="w-full px-3 py-2 rounded-lg border border-border bg-muted/30 focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-sm font-medium mb-1 block">Description</label>
+                                                        <input
+                                                            type="text"
+                                                            value={newPolicy.description}
+                                                            onChange={(e) => setNewPolicy({...newPolicy, description: e.target.value})}
+                                                            placeholder="What does this policy do?"
+                                                            className="w-full px-3 py-2 rounded-lg border border-border bg-muted/30 focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-sm font-medium mb-1 block">Effect</label>
+                                                        <select
+                                                            value={newPolicy.effect}
+                                                            onChange={(e) => setNewPolicy({...newPolicy, effect: e.target.value as 'ALLOW' | 'DENY'})}
+                                                            className="w-full px-3 py-2 rounded-lg border border-border bg-muted/30 focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                                        >
+                                                            <option value="DENY">DENY</option>
+                                                            <option value="ALLOW">ALLOW</option>
+                                                        </select>
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-sm font-medium mb-1 block">Subjects (user:id or group:name)</label>
+                                                        <div className="flex gap-2 mb-2">
+                                                            <input
+                                                                type="text"
+                                                                value={subjectInput}
+                                                                onChange={(e) => setSubjectInput(e.target.value)}
+                                                                placeholder="e.g., user:john or group:admins"
+                                                                className="flex-1 px-3 py-2 rounded-lg border border-border bg-muted/30 focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                                                onKeyDown={(e) => {
+                                                                    if (e.key === 'Enter' && subjectInput.trim()) {
+                                                                        setNewPolicy({...newPolicy, subjects: [...newPolicy.subjects, subjectInput.trim()]});
+                                                                        setSubjectInput('');
+                                                                    }
+                                                                }}
+                                                            />
+                                                            <Button variant="outline" onClick={() => {
+                                                                if (subjectInput.trim()) {
+                                                                    setNewPolicy({...newPolicy, subjects: [...newPolicy.subjects, subjectInput.trim()]});
+                                                                    setSubjectInput('');
+                                                                }
+                                                            }}>Add</Button>
+                                                        </div>
+                                                        <div className="flex flex-wrap gap-1">
+                                                            {newPolicy.subjects.map((s, i) => (
+                                                                <span key={i} className="px-2 py-1 rounded bg-muted text-xs flex items-center gap-1">
+                                                                    {s}
+                                                                    <button onClick={() => setNewPolicy({...newPolicy, subjects: newPolicy.subjects.filter((_, idx) => idx !== i)})} className="text-muted-foreground hover:text-red-400">×</button>
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-sm font-medium mb-1 block">Resources (node:id, type:NodeType, or *)</label>
+                                                        <div className="flex gap-2 mb-2">
+                                                            <input
+                                                                type="text"
+                                                                value={resourceInput}
+                                                                onChange={(e) => setResourceInput(e.target.value)}
+                                                                placeholder="e.g., type:Fact or *"
+                                                                className="flex-1 px-3 py-2 rounded-lg border border-border bg-muted/30 focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                                                onKeyDown={(e) => {
+                                                                    if (e.key === 'Enter' && resourceInput.trim()) {
+                                                                        setNewPolicy({...newPolicy, resources: [...newPolicy.resources, resourceInput.trim()]});
+                                                                        setResourceInput('');
+                                                                    }
+                                                                }}
+                                                            />
+                                                            <Button variant="outline" onClick={() => {
+                                                                if (resourceInput.trim()) {
+                                                                    setNewPolicy({...newPolicy, resources: [...newPolicy.resources, resourceInput.trim()]});
+                                                                    setResourceInput('');
+                                                                }
+                                                            }}>Add</Button>
+                                                        </div>
+                                                        <div className="flex flex-wrap gap-1">
+                                                            {newPolicy.resources.map((r, i) => (
+                                                                <span key={i} className="px-2 py-1 rounded bg-muted text-xs flex items-center gap-1">
+                                                                    {r}
+                                                                    <button onClick={() => setNewPolicy({...newPolicy, resources: newPolicy.resources.filter((_, idx) => idx !== i)})} className="text-muted-foreground hover:text-red-400">×</button>
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-sm font-medium mb-1 block">Actions</label>
+                                                        <div className="flex flex-wrap gap-2">
+                                                            {['READ', 'WRITE', 'DELETE', 'ADMIN'].map((action) => (
+                                                                <label key={action} className="flex items-center gap-2">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={newPolicy.actions.includes(action)}
+                                                                        onChange={(e) => {
+                                                                            if (e.target.checked) {
+                                                                                setNewPolicy({...newPolicy, actions: [...newPolicy.actions, action]});
+                                                                            } else {
+                                                                                setNewPolicy({...newPolicy, actions: newPolicy.actions.filter(a => a !== action)});
+                                                                            }
+                                                                        }}
+                                                                        className="w-4 h-4 rounded"
+                                                                    />
+                                                                    <span className="text-sm">{action}</span>
+                                                                </label>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                    <div className="pt-4 border-t border-border flex justify-end gap-2">
+                                                        <Button variant="outline" onClick={() => setShowCreatePolicy(false)}>Cancel</Button>
+                                                        <Button
+                                                            disabled={!newPolicy.id || newPolicy.subjects.length === 0 || newPolicy.resources.length === 0 || newPolicy.actions.length === 0}
+                                                            onClick={async () => {
+                                                                try {
+                                                                    await api.admin.createPolicy(newPolicy);
+                                                                    setPolicies([...policies, newPolicy]);
+                                                                    setShowCreatePolicy(false);
+                                                                    setNewPolicy({ id: '', description: '', subjects: [], resources: [], actions: [], effect: 'DENY' });
+                                                                    toast({ title: 'Policy created', description: `Policy ${newPolicy.id} has been created` });
+                                                                } catch (error) {
+                                                                    toast({ variant: 'destructive', title: 'Failed to create policy' });
+                                                                }
+                                                            }}
+                                                        >
+                                                            Create Policy
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </CardContent>
+                            </Card>
+                        </TabsContent>
+
                     </Tabs>
                 </motion.div>
             </main>

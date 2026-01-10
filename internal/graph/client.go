@@ -318,6 +318,11 @@ func (c *Client) NewTxn() *dgo.Txn {
 	return c.dg.NewTxn()
 }
 
+// GetDgraphClient returns the underlying DGraph client for advanced operations
+func (c *Client) GetDgraphClient() *dgo.Dgraph {
+	return c.dg
+}
+
 // NewReadOnlyTxn creates a new read-only transaction
 func (c *Client) NewReadOnlyTxn() *dgo.Txn {
 	return c.dg.NewReadOnlyTxn()
@@ -1032,7 +1037,7 @@ func (c *Client) Mutate(ctx context.Context, mutation *api.Mutation) (*api.Respo
 }
 
 // EnsureUserNode creates a User node in DGraph if it doesn't exist (idempotent)
-func (c *Client) EnsureUserNode(ctx context.Context, username string) error {
+func (c *Client) EnsureUserNode(ctx context.Context, username, role string) error {
 	// Check if user already exists
 	existing, err := c.FindNodeByName(ctx, username, NodeTypeUser)
 	if err != nil {
@@ -1048,10 +1053,11 @@ func (c *Client) EnsureUserNode(ctx context.Context, username string) error {
 		_:user <dgraph.type> "User" .
 		_:user <name> %q .
 		_:user <namespace> %q .
+		_:user <role> %q .
 		_:user <created_at> %q .
 		_:user <updated_at> %q .
 		_:user <activation> "0.5" .
-	`, username, fmt.Sprintf("user_%s", username), now, now)
+	`, username, fmt.Sprintf("user_%s", username), role, now, now)
 
 	txn := c.dg.NewTxn()
 	defer txn.Discard(ctx)
@@ -1425,6 +1431,7 @@ func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summar
 
 	// 2. Process Entities
 	// We need to link them to the summary and creating them if missing
+	now := time.Now().Format(time.RFC3339)
 	for i, e := range entities {
 		// Entity Node
 		entityNode := fmt.Sprintf("_:entity_%d", i)
@@ -1435,6 +1442,12 @@ func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summar
 `, entityNode, e.Name))
 		nquads.WriteString(fmt.Sprintf(`%s <namespace> %q .
 `, entityNode, namespace))
+		nquads.WriteString(fmt.Sprintf(`%s <description> %q .
+`, entityNode, e.Description))
+		nquads.WriteString(fmt.Sprintf(`%s <activation> "0.8" .
+`, entityNode))
+		nquads.WriteString(fmt.Sprintf(`%s <created_at> "%s"^^<xs:dateTime> .
+`, entityNode, now))
 
 		// Link Entity -> Summary (Derived From)
 		nquads.WriteString(fmt.Sprintf(`%s <synthesized_from> %s .
@@ -1801,6 +1814,35 @@ func (c *Client) GetPendingInvitations(ctx context.Context, userID string) ([]Wo
 	}`
 
 	resp, err := c.Query(ctx, query, map[string]string{"$user": userID})
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Invites []WorkspaceInvitation `json:"invites"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+
+	return result.Invites, nil
+}
+
+// GetWorkspaceSentInvitations returns all pending invitations sent FROM a specific workspace
+func (c *Client) GetWorkspaceSentInvitations(ctx context.Context, workspaceNS string) ([]WorkspaceInvitation, error) {
+	query := `query GetWorkspaceInvites($ws: string) {
+		invites(func: type(WorkspaceInvitation)) @filter(eq(workspace_id, $ws) AND eq(status, "pending")) {
+			uid
+			workspace_id
+			invitee_user_id
+			role
+			status
+			created_at
+			created_by
+		}
+	}`
+
+	resp, err := c.Query(ctx, query, map[string]string{"$ws": workspaceNS})
 	if err != nil {
 		return nil, err
 	}

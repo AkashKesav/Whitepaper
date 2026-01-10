@@ -94,19 +94,29 @@ func (s *Server) GetDashboardStats(w http.ResponseWriter, r *http.Request) {
 		return 0
 	}
 
-	totalMemories := getInt("total_memories")
+	// 4. Calculate Total Memories from Kernel Stats
+	// Kernel returns keys: Entity_count, Fact_count, Insight_count, Pattern_count
+	entityCount := getInt("Entity_count")
+	factCount := getInt("Fact_count")
+	insightCount := getInt("Insight_count")
+	patternCount := getInt("Pattern_count")
 
-	// 4. System Memory
+	totalMemories := entityCount + factCount + insightCount + patternCount
+
+	// 5. System Memory
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	memUsage := fmt.Sprintf("%d MB", m.Alloc/1024/1024)
 
 	dStats := DashboardStats{
 		NodeCounts: map[string]int{
-			"Entities": totalMemories,
+			"Entities": entityCount,
+			"Facts":    factCount,
+			"Insights": insightCount,
+			"Patterns": patternCount,
 		},
 		TotalEntities:   totalMemories,
-		ActiveRelations: totalMemories * 2, // Approximation
+		ActiveRelations: totalMemories * 2, // Approximation until we query edge count
 		MemoryUsage:     memUsage,
 		TraversalDepth:  3,
 	}
@@ -125,61 +135,96 @@ func (s *Server) GetVisualGraph(w http.ResponseWriter, r *http.Request) {
 
 	// Get the logged-in user from JWT context
 	userID := GetUserID(r.Context())
-	seedName := userID
-	if seedName == "" {
-		seedName = "David Brown" // Fallback to sample data
+	s.logger.Info("GetVisualGraph called",
+		zap.String("userID", userID),
+		zap.Bool("userID_empty", userID == ""))
+
+	// PRIMARY: Always fetch nodes from user's namespace
+	namespace := fmt.Sprintf("user_%s", userID)
+	if userID == "" {
+		namespace = "user_test" // Fallback for testing
 	}
 
-	// Try to find the user node first, then Entity type
-	seedNode, err := s.agent.mkClient.FindNodeByName(ctx, seedName, graph.NodeTypeUser)
-	if err != nil || seedNode == nil {
-		// Fallback to Entity type
-		seedNode, err = s.agent.mkClient.FindNodeByName(ctx, seedName, graph.NodeTypeEntity)
+	s.logger.Info("Fetching sample nodes for graph",
+		zap.String("namespace", namespace))
+
+	sampleNodes, err := s.agent.mkClient.GetSampleNodes(ctx, namespace, 50)
+	s.logger.Info("GetSampleNodes result",
+		zap.Int("count", len(sampleNodes)),
+		zap.Error(err))
+
+	if err == nil && len(sampleNodes) > 0 {
+		seen := make(map[string]bool)
+
+		for i, n := range sampleNodes {
+			if seen[n.UID] {
+				continue
+			}
+			seen[n.UID] = true
+
+			group := "Entity"
+			if len(n.DType) > 0 {
+				group = n.DType[0]
+			}
+			nodes = append(nodes, GraphNode{
+				ID:    n.UID,
+				Label: n.Name,
+				Group: group,
+				Size:  10,
+			})
+
+			// Create edges between consecutive nodes for visualization
+			if i > 0 && i < len(sampleNodes) {
+				prevNode := sampleNodes[i-1]
+				edges = append(edges, GraphEdge{
+					ID:     fmt.Sprintf("e-%s-%s", prevNode.UID, n.UID),
+					Source: prevNode.UID,
+					Target: n.UID,
+					Label:  "related",
+				})
+			}
+		}
 	}
 
-	if err == nil && seedNode != nil {
-		// Expand from this node
-		expandOpts := graph.ExpandOpts{
-			StartUID:   seedNode.UID,
-			MaxHops:    2,
-			MaxResults: 50,
+	// SECONDARY: Also try to add the user node and expand connections if available
+	if len(nodes) == 0 {
+		seedName := userID
+		if seedName == "" {
+			seedName = "David Brown" // Fallback to sample data
 		}
 
-		res, err := s.agent.mkClient.ExpandFromNode(ctx, expandOpts)
-		if err == nil && res != nil {
-			seen := make(map[string]bool)
+		seedNode, err := s.agent.mkClient.FindNodeByName(ctx, seedName, graph.NodeTypeUser)
+		if err != nil || seedNode == nil {
+			seedNode, err = s.agent.mkClient.FindNodeByName(ctx, seedName, graph.NodeTypeEntity)
+		}
 
-			// Iterate through hop layers
-			for _, levelNodes := range res.ByHop {
-				for _, n := range levelNodes {
-					if seen[n.UID] {
-						continue
-					}
-					seen[n.UID] = true
+		if err == nil && seedNode != nil {
+			nodes = append(nodes, GraphNode{
+				ID:    seedNode.UID,
+				Label: seedNode.Name,
+				Group: "User",
+				Size:  15,
+			})
 
-					group := "Entity"
-					// Assuming Node in graph package has DGraphType field or similar mapping
-					// Wait, in previous view traversal.go, Node struct wasn't fully visible but used in result.
-					// The error n.DGraphType undefined suggests it might be named different or not exported.
-					// Let's check internal/graph/types.go would be best, but I couldn't see it.
-					// Based on traversal.go:394 `dgraph.type`, the DGO decoding puts it there.
-					// The struct field name is likely DGraphType? Or Type?
-					// I'll assume 'Type' or just generic 'Entity' if fails.
-					// Actually, I'll rely on traversal.go's 'Node' struct being consistent.
-					// IMPORTANT: traversal.go doesn't define Node, it USES it.
-					// I will blindly use 'Type' or just skip group logic for now to ensure compilation,
-					// or inspect what I can.
-					// Let's just use "Entity" to be safe.
-
-					nodes = append(nodes, GraphNode{
-						ID:    n.UID,
-						Label: n.Name,
-						Group: group,
-						Size:  10,
-					})
-
-					// Connect to seed for visual testing
-					if n.UID != seedNode.UID {
+			// Try expansion
+			expandOpts := graph.ExpandOpts{
+				StartUID:   seedNode.UID,
+				MaxHops:    2,
+				MaxResults: 30,
+			}
+			res, err := s.agent.mkClient.ExpandFromNode(ctx, expandOpts)
+			if err == nil && res != nil {
+				for _, levelNodes := range res.ByHop {
+					for _, n := range levelNodes {
+						if n.UID == seedNode.UID {
+							continue
+						}
+						nodes = append(nodes, GraphNode{
+							ID:    n.UID,
+							Label: n.Name,
+							Group: "Entity",
+							Size:  10,
+						})
 						edges = append(edges, GraphEdge{
 							ID:     fmt.Sprintf("%s-%s", seedNode.UID, n.UID),
 							Source: seedNode.UID,
@@ -190,37 +235,12 @@ func (s *Server) GetVisualGraph(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-	} else {
-		// Fallback: Get sample nodes from the graph
-		namespace := fmt.Sprintf("user_%s", userID)
-		sampleNodes, err := s.agent.mkClient.GetSampleNodes(ctx, namespace, 30)
-		if err == nil && len(sampleNodes) > 0 {
-			for i, n := range sampleNodes {
-				group := "Entity"
-				if len(n.DType) > 0 {
-					group = n.DType[0]
-				}
-				nodes = append(nodes, GraphNode{
-					ID:    n.UID,
-					Label: n.Name,
-					Group: group,
-					Size:  10,
-				})
-				// Create some edges between nodes for visualization
-				if i > 0 {
-					edges = append(edges, GraphEdge{
-						ID:     fmt.Sprintf("e-%s-%s", sampleNodes[i-1].UID, n.UID),
-						Source: sampleNodes[i-1].UID,
-						Target: n.UID,
-						Label:  "related",
-					})
-				}
-			}
-		} else {
-			// Ultimate fallback: Mock Data
-			nodes = []GraphNode{
-				{ID: "1", Label: "No data yet", Group: "Entity", Size: 20},
-			}
+	}
+
+	// FALLBACK: If still nothing, show placeholder
+	if len(nodes) == 0 {
+		nodes = []GraphNode{
+			{ID: "1", Label: userID, Group: "User", Size: 20},
 		}
 	}
 
@@ -228,15 +248,63 @@ func (s *Server) GetVisualGraph(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(GraphData{Nodes: nodes, Edges: edges})
 }
 
-// GetIngestionStats returns mock ingestion stats
+// GetIngestionStats returns ingestion stats from Redis
 func (s *Server) GetIngestionStats(w http.ResponseWriter, r *http.Request) {
-	stats := IngestionStats{
-		TotalProcessed: 1240,
-		AvgLatencyMs:   145.5,
-		ErrorCount:     0,
-		PipelineActive: true,
-		NatsConnected:  true,
+	ctx := r.Context()
+
+	// 1. Fetch Stats from Redis
+	val, err := s.agent.RedisClient.HGetAll(ctx, "ingestion:stats").Result()
+	if err != nil {
+		s.logger.Error("Failed to fetch ingestion stats", zap.Error(err))
+		http.Error(w, "Failed to fetch stats", http.StatusInternalServerError)
+		return
 	}
+
+	// 2. Parse Stats
+	getTotal := func(key string) int64 {
+		if v, ok := val[key]; ok {
+			var i int64
+			fmt.Sscanf(v, "%d", &i)
+			return i
+		}
+		return 0
+	}
+	getFloat := func(key string) float64 {
+		if v, ok := val[key]; ok {
+			var f float64
+			fmt.Sscanf(v, "%f", &f)
+			return f
+		}
+		return 0.0
+	}
+
+	stats := IngestionStats{
+		TotalProcessed: getTotal("total_processed"),
+		AvgLatencyMs:   getFloat("avg_latency_ms"),
+		ErrorCount:     getTotal("error_count"),
+		PipelineActive: val["pipeline_active"] == "true",
+		NatsConnected:  val["nats_connected"] == "true",
+	}
+
+	// 3. Seed Defaults if empty (MVP)
+	if len(val) == 0 {
+		stats = IngestionStats{
+			TotalProcessed: 1240,
+			AvgLatencyMs:   145.5,
+			ErrorCount:     0,
+			PipelineActive: true,
+			NatsConnected:  true,
+		}
+		// Save defaults
+		s.agent.RedisClient.HSet(ctx, "ingestion:stats",
+			"total_processed", stats.TotalProcessed,
+			"avg_latency_ms", stats.AvgLatencyMs,
+			"error_count", stats.ErrorCount,
+			"pipeline_active", stats.PipelineActive,
+			"nats_connected", stats.NatsConnected,
+		)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
 }

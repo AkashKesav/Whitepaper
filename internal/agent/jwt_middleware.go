@@ -119,7 +119,7 @@ func GetUserIDFromRequest(r *http.Request) string {
 }
 
 // GenerateToken creates a new JWT token for a user
-func GenerateToken(username string) (string, error) {
+func GenerateToken(username, role string) (string, error) {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
 		secret = "dev-secret-change-in-production"
@@ -127,9 +127,10 @@ func GenerateToken(username string) (string, error) {
 
 	// Create claims
 	claims := jwt.MapClaims{
-		"sub": username,
-		"exp": jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
-		"iat": jwt.NewNumericDate(time.Now()),
+		"sub":  username,
+		"role": role,
+		"exp":  jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+		"iat":  jwt.NewNumericDate(time.Now()),
 	}
 
 	// Create token with claims

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { api, GraphData } from '@/lib/api';
@@ -9,18 +9,23 @@ import { cn } from '@/lib/utils';
 import {
     Lightbulb, TrendingUp, AlertTriangle, Calendar,
     MessageCircle, Users, Settings, Upload, BarChart3,
-    Globe, BookOpen, Shield
+    Globe, BookOpen, Shield, Bell
 } from 'lucide-react';
 
-const SidebarItem = ({ icon, label, active = false, onClick }: { icon: React.ReactNode, label: string, active?: boolean, onClick?: () => void }) => (
+const SidebarItem = ({ icon, label, active = false, onClick, badge }: { icon: React.ReactNode, label: string, active?: boolean, onClick?: () => void, badge?: number }) => (
     <a href="#" onClick={onClick} className={cn(
-        "mx-3 px-3 py-2 rounded-lg flex items-center gap-3 transition-colors",
+        "mx-3 px-3 py-2 rounded-lg flex items-center gap-3 transition-colors relative",
         active
             ? "bg-purple-500/10 text-purple-400 border border-purple-500/20"
             : "text-zinc-400 hover:text-white hover:bg-white/5"
     )}>
         {icon}
         <span className="hidden lg:block font-medium">{label}</span>
+        {badge && badge > 0 && (
+            <span className="absolute right-2 top-1/2 -translate-y-1/2 min-w-[18px] h-[18px] flex items-center justify-center text-[10px] font-bold bg-red-500 text-white rounded-full">
+                {badge > 99 ? '99+' : badge}
+            </span>
+        )}
     </a>
 )
 
@@ -42,6 +47,22 @@ export const Dashboard = () => {
     const [operationLog, setOperationLog] = useState<string[]>([]);
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+    const [pendingInvitations, setPendingInvitations] = useState(0);
+
+    // Fetch notification count
+    useEffect(() => {
+        const fetchNotifications = async () => {
+            try {
+                const invitations = await api.getPendingInvitations();
+                setPendingInvitations(invitations.filter((inv: any) => inv.status === 'pending').length);
+            } catch (e) {
+                console.warn("Failed to fetch notifications");
+            }
+        };
+        fetchNotifications();
+        const interval = setInterval(fetchNotifications, 30000);
+        return () => clearInterval(interval);
+    }, []);
 
     // Add log entry
     const log = (message: string) => {
@@ -149,6 +170,19 @@ export const Dashboard = () => {
                 </form>
 
                 <div className="flex items-center gap-4 text-sm text-zinc-400">
+                    {/* Notification Bell */}
+                    <button
+                        onClick={() => navigate('/notifications')}
+                        className="relative p-2 hover:bg-white/5 rounded-lg transition-colors"
+                        title="Notifications"
+                    >
+                        <Bell className="w-5 h-5 text-zinc-400" />
+                        {pendingInvitations > 0 && (
+                            <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] flex items-center justify-center text-[10px] font-bold bg-red-500 text-white rounded-full">
+                                {pendingInvitations > 9 ? '9+' : pendingInvitations}
+                            </span>
+                        )}
+                    </button>
                     <span className="flex items-center gap-2 px-3 py-1 rounded-full bg-green-500/10 text-green-400 border border-green-500/20">
                         <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
                         System Online
@@ -169,6 +203,7 @@ export const Dashboard = () => {
 
                     <div className="px-4 text-xs font-semibold text-zinc-500 mb-2 mt-6 uppercase tracking-wider hidden lg:block">Social</div>
                     <SidebarItem onClick={() => navigate('/groups')} icon={<Users className="w-5 h-5" />} label="Groups" />
+                    <SidebarItem onClick={() => navigate('/notifications')} icon={<Bell className="w-5 h-5" />} label="Notifications" badge={pendingInvitations} />
 
                     <div className="px-4 text-xs font-semibold text-zinc-500 mb-2 mt-6 uppercase tracking-wider hidden lg:block">Analysis</div>
                     <SidebarItem onClick={handleCommunityDetection} icon={<Globe className="w-5 h-5" />} label="Communities" />

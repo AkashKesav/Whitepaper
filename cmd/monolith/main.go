@@ -55,6 +55,9 @@ func main() {
 	if ai := os.Getenv("AI_SERVICES_URL"); ai != "" {
 		kernelCfg.AIServicesURL = ai
 	}
+	if qdrant := os.Getenv("QDRANT_URL"); qdrant != "" {
+		kernelCfg.QdrantURL = qdrant
+	}
 
 	k, err := kernel.New(kernelCfg, logger.Named("kernel"))
 	if err != nil {

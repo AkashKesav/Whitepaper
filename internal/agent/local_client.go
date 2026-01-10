@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"github.com/reflective-memory-kernel/internal/graph"
 	"github.com/reflective-memory-kernel/internal/kernel"
@@ -30,8 +31,8 @@ func (c *LocalKernelClient) GetStats(ctx context.Context) (map[string]interface{
 	return c.k.GetStats(ctx)
 }
 
-func (c *LocalKernelClient) EnsureUserNode(ctx context.Context, username string) error {
-	return c.k.EnsureUserNode(ctx, username)
+func (c *LocalKernelClient) EnsureUserNode(ctx context.Context, username, role string) error {
+	return c.k.EnsureUserNode(ctx, username, role)
 }
 
 func (c *LocalKernelClient) CreateGroup(ctx context.Context, name, description, ownerID string) (string, error) {
@@ -106,4 +107,103 @@ func (c *LocalKernelClient) TriggerReflection(ctx context.Context) error {
 // GetSampleNodes returns sample nodes from the graph for visualization
 func (c *LocalKernelClient) GetSampleNodes(ctx context.Context, namespace string, limit int) ([]graph.Node, error) {
 	return c.k.GetGraphClient().GetSampleNodes(ctx, namespace, limit)
+}
+
+// GetGraphClient returns the underlying graph client
+func (c *LocalKernelClient) GetGraphClient() *graph.Client {
+	return c.k.GetGraphClient()
+}
+
+// Speculate triggers a speculative context lookup
+func (c *LocalKernelClient) Speculate(ctx context.Context, req *graph.ConsultationRequest) error {
+	// Speculative lookup - just warm the cache, no response needed
+	_, err := c.k.Consult(ctx, req)
+	return err
+}
+
+// DeleteGroup deletes a group
+func (c *LocalKernelClient) DeleteGroup(ctx context.Context, groupID string) error {
+	return c.k.DeleteGroup(ctx, groupID)
+}
+
+// ============================================================================
+// Workspace Collaboration Methods
+// ============================================================================
+
+// InviteToWorkspace invites a user to join a workspace
+func (c *LocalKernelClient) InviteToWorkspace(ctx context.Context, workspaceNS, inviterID, inviteeUsername, role string) (*graph.WorkspaceInvitation, error) {
+	return c.k.InviteToWorkspace(ctx, workspaceNS, inviterID, inviteeUsername, role)
+}
+
+// AcceptInvitation accepts a pending invitation
+func (c *LocalKernelClient) AcceptInvitation(ctx context.Context, invitationUID, userID string) error {
+	return c.k.AcceptInvitation(ctx, invitationUID, userID)
+}
+
+// DeclineInvitation declines a pending invitation
+func (c *LocalKernelClient) DeclineInvitation(ctx context.Context, invitationUID, userID string) error {
+	return c.k.DeclineInvitation(ctx, invitationUID, userID)
+}
+
+// GetPendingInvitations gets all pending invitations for a user
+func (c *LocalKernelClient) GetPendingInvitations(ctx context.Context, userID string) ([]graph.WorkspaceInvitation, error) {
+	return c.k.GetPendingInvitations(ctx, userID)
+}
+
+// GetWorkspaceSentInvitations gets all pending invitations sent by a workspace
+func (c *LocalKernelClient) GetWorkspaceSentInvitations(ctx context.Context, workspaceNS string) ([]graph.WorkspaceInvitation, error) {
+	return c.k.GetWorkspaceSentInvitations(ctx, workspaceNS)
+}
+
+// CreateShareLink creates a shareable link for a workspace
+func (c *LocalKernelClient) CreateShareLink(ctx context.Context, workspaceNS, creatorID string, maxUses int, expiresAt *time.Time) (*graph.ShareLink, error) {
+	return c.k.CreateShareLink(ctx, workspaceNS, creatorID, maxUses, expiresAt)
+}
+
+// JoinViaShareLink joins a workspace using a share link
+func (c *LocalKernelClient) JoinViaShareLink(ctx context.Context, token, userID string) (*graph.ShareLink, error) {
+	return c.k.JoinViaShareLink(ctx, token, userID)
+}
+
+// RevokeShareLink revokes a share link
+func (c *LocalKernelClient) RevokeShareLink(ctx context.Context, token, userID string) error {
+	return c.k.RevokeShareLink(ctx, token, userID)
+}
+
+// GetWorkspaceMembers gets all members of a workspace
+func (c *LocalKernelClient) GetWorkspaceMembers(ctx context.Context, workspaceNS string) ([]graph.WorkspaceMember, error) {
+	return c.k.GetWorkspaceMembers(ctx, workspaceNS)
+}
+
+// IsWorkspaceMember checks if a user is a member of a workspace
+func (c *LocalKernelClient) IsWorkspaceMember(ctx context.Context, workspaceNS, userID string) (bool, error) {
+	return c.k.IsWorkspaceMember(ctx, workspaceNS, userID)
+}
+
+// ============================================================================
+// Ingestion Persistence Methods
+// ============================================================================
+
+// PersistEntities persists extracted entities to the graph
+func (c *LocalKernelClient) PersistEntities(ctx context.Context, namespace, userID, conversationID string, entities []graph.ExtractedEntity) error {
+	return c.k.PersistEntities(ctx, namespace, userID, conversationID, entities)
+}
+
+// PersistChunks persists document chunks to Qdrant
+func (c *LocalKernelClient) PersistChunks(ctx context.Context, namespace, docID string, chunks []graph.DocumentChunk) error {
+	return c.k.PersistChunks(ctx, namespace, docID, chunks)
+}
+
+// ============================================================================
+// Search Methods
+// ============================================================================
+
+// SearchNodes searches for nodes matching a query string
+func (c *LocalKernelClient) SearchNodes(ctx context.Context, query string) ([]graph.Node, error) {
+	return c.k.GetGraphClient().SearchNodes(ctx, query)
+}
+
+// ListUserGroups lists groups the user is a member of
+func (c *LocalKernelClient) ListUserGroups(ctx context.Context, userID string) ([]graph.Group, error) {
+	return c.k.ListUserGroups(ctx, userID)
 }

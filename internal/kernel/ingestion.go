@@ -165,6 +165,7 @@ func (p *IngestionPipeline) Ingest(ctx context.Context, event *graph.TranscriptE
 	embedStart := time.Now()
 
 	// Use local embedder if available
+	var chatNodeUID string // Will hold DGraph UID for unified ID approach
 	if p.localEmbedder != nil {
 		vec, err := p.localEmbedder.Embed(event.UserQuery)
 		if err != nil {
@@ -173,7 +174,68 @@ func (p *IngestionPipeline) Ingest(ctx context.Context, event *graph.TranscriptE
 			p.logger.Info("Generated local embedding (Hot Path)",
 				zap.Int("dims", len(vec)),
 				zap.Duration("latency", time.Since(embedStart)))
-			// TODO: Store vector in Redis/RingBuffer (Hot Store)
+
+			// UNIFIED ID APPROACH: Create DGraph node first to get UID
+			// This ensures policy matching works (policies target DGraph UIDs)
+			if p.graphClient != nil {
+				chatNode := &graph.Node{
+					DType:                []string{string(graph.NodeTypeFact)},
+					Name:                 fmt.Sprintf("Chat: %s", truncateString(event.UserQuery, 50)),
+					Description:          event.UserQuery,
+					Namespace:            namespace,
+					SourceConversationID: event.ConversationID,
+					Activation:           0.8, // High initial activation for recent chat
+					Confidence:           0.9,
+					Tags:                 []string{"chat", "memory"},
+					CreatedAt:            time.Now(),
+					LastAccessed:         time.Now(),
+				}
+
+				// Create in DGraph and get UID
+				uids, err := p.graphClient.CreateNodes(ctx, []*graph.Node{chatNode})
+				if err != nil {
+					p.logger.Warn("Failed to create chat node in DGraph", zap.Error(err))
+				} else if len(uids) > 0 {
+					// Get the UID that was assigned
+					for name, uid := range uids {
+						p.logger.Debug("Created DGraph node", zap.String("name", name), zap.String("uid", uid))
+						chatNodeUID = uid
+						break
+					}
+				}
+			}
+
+			// STORE EMBEDDING IN QDRANT with DGraph UID (Unified ID)
+			// This enables semantic search AND policy matching
+			if p.vectorIndex != nil && chatNodeUID != "" {
+				// Metadata for retrieval
+				metadata := map[string]interface{}{
+					"text":            event.UserQuery,
+					"ai_response":     event.AIResponse,
+					"conversation_id": event.ConversationID,
+					"type":            "chat",
+					"timestamp":       event.Timestamp.Format(time.RFC3339),
+				}
+
+				if err := p.vectorIndex.Store(ctx, namespace, chatNodeUID, vec, metadata); err != nil {
+					p.logger.Warn("Failed to store embedding in vector index", zap.Error(err))
+				} else {
+					p.logger.Debug("Stored chat embedding in Qdrant with unified UID", zap.String("uid", chatNodeUID))
+				}
+			} else if p.vectorIndex != nil && chatNodeUID == "" {
+				// Fallback: store with synthetic UID if DGraph failed
+				uid := fmt.Sprintf("chat_%s_%d", event.ConversationID, time.Now().UnixNano())
+				metadata := map[string]interface{}{
+					"text":            event.UserQuery,
+					"ai_response":     event.AIResponse,
+					"conversation_id": event.ConversationID,
+					"type":            "chat",
+					"timestamp":       event.Timestamp.Format(time.RFC3339),
+				}
+				if err := p.vectorIndex.Store(ctx, namespace, uid, vec, metadata); err != nil {
+					p.logger.Warn("Failed to store embedding in vector index (fallback)", zap.Error(err))
+				}
+			}
 		}
 	} else {
 		p.logger.Warn("Local embedder is nil, skipping Hot Path embedding")
@@ -635,4 +697,12 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// truncateString truncates a string to maxLen characters
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

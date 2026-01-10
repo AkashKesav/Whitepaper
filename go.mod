@@ -12,6 +12,7 @@ require (
 	github.com/gorilla/websocket v1.5.1
 	github.com/nats-io/nats.go v1.31.0
 	github.com/redis/go-redis/v9 v9.3.0
+	github.com/stretchr/testify v1.10.0
 	go.uber.org/zap v1.26.0
 	golang.org/x/crypto v0.46.0
 	google.golang.org/grpc v1.66.0
@@ -20,6 +21,7 @@ require (
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/felixge/httpsnoop v1.0.3 // indirect
@@ -28,7 +30,7 @@ require (
 	github.com/nats-io/nkeys v0.4.5 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/stretchr/testify v1.10.0 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect

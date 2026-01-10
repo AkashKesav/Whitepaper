@@ -85,7 +85,61 @@ var FunctionalEdges = map[EdgeType]bool{
 	EdgeTypeWorksAt:    true,
 }
 
-// Node represents a node in the knowledge graph
+type Ticket struct {
+	UID         string    `json:"uid,omitempty"`
+	DType       []string  `json:"dgraph.type,omitempty"`
+	Title       string    `json:"title,omitempty"`
+	Description string    `json:"description,omitempty"`
+	Status      string    `json:"status,omitempty"`   // open, closed, pending
+	Priority    string    `json:"priority,omitempty"` // low, medium, high
+	Category    string    `json:"category,omitempty"`
+	CreatedBy   string    `json:"created_by,omitempty"` // Username
+	AssignedTo  string    `json:"assigned_to,omitempty"`
+	CreatedAt   time.Time `json:"created_at,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at,omitempty"`
+}
+
+type Affiliate struct {
+	UID            string   `json:"uid,omitempty"`
+	DType          []string `json:"dgraph.type,omitempty"`
+	Code           string   `json:"code,omitempty"`
+	UserUID        string   `json:"user_uid,omitempty"`
+	CommissionRate float64  `json:"commission_rate,omitempty"`
+	TotalEarnings  float64  `json:"total_earnings,omitempty"`
+}
+
+type Campaign struct {
+	UID            string    `json:"uid,omitempty"`
+	DType          []string  `json:"dgraph.type,omitempty"`
+	Name           string    `json:"name,omitempty"`
+	Type           string    `json:"type,omitempty"`   // email, in-app
+	Status         string    `json:"status,omitempty"` // draft, active, completed
+	TargetAudience string    `json:"target_audience,omitempty"`
+	ConversionRate float64   `json:"conversion_rate,omitempty"`
+	CreatedAt      time.Time `json:"created_at,omitempty"`
+}
+
+type FeatureFlag struct {
+	UID         string   `json:"uid,omitempty"`
+	DType       []string `json:"dgraph.type,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	Key         string   `json:"key,omitempty"`
+	IsEnabled   bool     `json:"is_enabled,omitempty"`
+	Description string   `json:"description,omitempty"`
+}
+
+type EmergencyRequest struct {
+	UID         string    `json:"uid,omitempty"`
+	DType       []string  `json:"dgraph.type,omitempty"`
+	Reason      string    `json:"reason,omitempty"`
+	Duration    string    `json:"duration,omitempty"` // e.g., "1h", "24h"
+	Status      string    `json:"status,omitempty"`   // pending, approved, denied, active, expired
+	RequestedBy string    `json:"requested_by,omitempty"`
+	ApprovedBy  string    `json:"approved_by,omitempty"`
+	CreatedAt   time.Time `json:"created_at,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at,omitempty"`
+}
+
 // Node represents a node in the knowledge graph
 type Node struct {
 	UID         string            `json:"uid,omitempty"`
@@ -99,6 +153,24 @@ type Node struct {
 	CreatedAt    time.Time `json:"created_at,omitempty"`
 	UpdatedAt    time.Time `json:"updated_at,omitempty"`
 	LastAccessed time.Time `json:"last_accessed,omitempty"`
+
+	// User Metadata
+	Role string `json:"role,omitempty"` // "admin" or "user"
+
+	// User Specific
+	Username     string `json:"username,omitempty"`
+	Email        string `json:"email,omitempty"`
+	PasswordHash string `json:"password_hash,omitempty"`
+
+	// Subscription & Finance
+	SubscriptionPlan   string    `json:"subscription_plan,omitempty"`   // free, pro, enterprise
+	SubscriptionStatus string    `json:"subscription_status,omitempty"` // active, trial, cancelled
+	TrialEndsAt        time.Time `json:"trial_ends_at,omitempty"`
+	StripeCustomerID   string    `json:"stripe_customer_id,omitempty"`
+
+	// Affiliate
+	AffiliateCode string `json:"affiliate_code,omitempty"`
+	ReferredBy    string `json:"referred_by,omitempty"`
 
 	// Activation for dynamic prioritization
 	Activation  float64 `json:"activation,omitempty"`

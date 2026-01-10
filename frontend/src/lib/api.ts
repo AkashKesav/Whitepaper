@@ -115,7 +115,8 @@ export const api = {
 
     getGraph: async (): Promise<GraphData> => {
         try {
-            const res = await fetch(`${API_BASE_URL}/api/dashboard/graph`);
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/dashboard/graph`, { headers });
             if (!res.ok) throw new Error("Failed to fetch graph");
             return await res.json();
         } catch (e) {
@@ -132,6 +133,157 @@ export const api = {
         } catch (e) {
             console.warn("Using mock ingestion stats", e);
             return MOCK_INGESTION;
+        }
+    },
+
+    // User Management (Admin API)
+    getAllUsers: async (): Promise<any[]> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        try {
+            // Use /api/users for all authenticated users (not admin-only)
+            const res = await fetch(`${API_BASE_URL}/api/users`, { headers });
+            if (!res.ok) {
+                console.warn("Failed to fetch users");
+                return [];
+            }
+            const data = await res.json();
+            return data.users || [];
+        } catch (e) {
+            console.warn("Error fetching users", e);
+            return [];
+        }
+    },
+
+    createUser: async (username: string, password: string, role: string = 'user'): Promise<any> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        const res = await fetch(`${API_BASE_URL}/api/admin/users`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ username, password, role }),
+        });
+        if (!res.ok) {
+            const msg = await res.text();
+            throw new Error(msg || "Failed to create user");
+        }
+        return await res.json();
+    },
+
+    // Groups API
+    getGroups: async (): Promise<any[]> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        const res = await fetch(`${API_BASE_URL}/api/groups`, { headers });
+        if (!res.ok) {
+            console.warn("Failed to fetch groups, returning empty array");
+            return [];
+        }
+        const data = await res.json();
+        return data.groups || [];
+    },
+
+    createGroup: async (name: string, description: string): Promise<any> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        const res = await fetch(`${API_BASE_URL}/api/groups`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ name, description }),
+        });
+        if (!res.ok) throw new Error("Failed to create group");
+        return await res.json();
+    },
+
+    getGroupMembers: async (groupId: string): Promise<any[]> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        const res = await fetch(`${API_BASE_URL}/api/groups/${groupId}/members`, { headers });
+        if (!res.ok) {
+            console.warn("Failed to fetch group members");
+            return [];
+        }
+        const data = await res.json();
+        return data.members || [];
+    },
+
+    addGroupMember: async (groupId: string, username: string): Promise<void> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        const res = await fetch(`${API_BASE_URL}/api/groups/${groupId}/members`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ username }),
+        });
+        if (!res.ok) throw new Error("Failed to add member");
+    },
+
+    removeGroupMember: async (groupId: string, username: string): Promise<void> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        const res = await fetch(`${API_BASE_URL}/api/groups/${groupId}/members/${username}`, {
+            method: 'DELETE',
+            headers,
+        });
+        if (!res.ok) throw new Error("Failed to remove member");
+    },
+
+    deleteGroup: async (groupId: string): Promise<void> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        const res = await fetch(`${API_BASE_URL}/api/groups/${groupId}`, {
+            method: 'DELETE',
+            headers,
+        });
+        if (!res.ok) throw new Error("Failed to delete group");
+    },
+
+    // Invitation/Notification APIs
+    getPendingInvitations: async (): Promise<any[]> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        const res = await fetch(`${API_BASE_URL}/api/invitations`, { headers });
+        if (!res.ok) {
+            console.warn("Failed to fetch invitations");
+            return [];
+        }
+        const data = await res.json();
+        return data.invitations || [];
+    },
+
+    sendInvitation: async (workspaceId: string, username: string, role: string = 'member'): Promise<any> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        const res = await fetch(`${API_BASE_URL}/api/workspaces/${workspaceId}/invite`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ username, role }),
+        });
+        if (!res.ok) throw new Error("Failed to send invitation");
+        return await res.json();
+    },
+
+    acceptInvitation: async (invitationId: string): Promise<void> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        const res = await fetch(`${API_BASE_URL}/api/invitations/${invitationId}/accept`, {
+            method: 'POST',
+            headers,
+        });
+        if (!res.ok) throw new Error("Failed to accept invitation");
+    },
+
+    declineInvitation: async (invitationId: string): Promise<void> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        const res = await fetch(`${API_BASE_URL}/api/invitations/${invitationId}/decline`, {
+            method: 'POST',
+            headers,
+        });
+        if (!res.ok) throw new Error("Failed to decline invitation");
+    },
+
+    getWorkspaceSentInvitations: async (workspaceId: string): Promise<any[]> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        try {
+            const res = await fetch(`${API_BASE_URL}/api/workspaces/${workspaceId}/invitations/sent`, { headers });
+            if (!res.ok) {
+                console.warn("Failed to fetch workspace sent invitations");
+                return [];
+            }
+            const data = await res.json();
+            return data.invitations || [];
+        } catch (e) {
+            console.warn("Error fetching workspace sent invitations", e);
+            return [];
         }
     },
 
@@ -210,48 +362,43 @@ export const api = {
         }
     },
 
-    // Groups
-    getGroups: async (): Promise<any[]> => {
-        try {
-            const res = await fetch(`${API_BASE_URL}/api/list-groups`, {
-                headers: (getAuthHeaders() as Record<string, string>),
-            });
-            if (!res.ok) throw new Error("Failed to fetch groups");
-            const data = await res.json();
-            return data.groups || [];
-        } catch (e) {
-            console.error("Fetch groups error:", e);
-            return [];
-        }
-    },
-
-    createGroup: async (name: string, description: string): Promise<any> => {
-        try {
-            const res = await fetch(`${API_BASE_URL}/api/groups`, {
-                method: 'POST',
-                headers: (getAuthHeaders() as Record<string, string>),
-                body: JSON.stringify({ name, description }),
-            });
-            if (!res.ok) throw new Error("Failed to create group");
-            return await res.json();
-        } catch (e) {
-            console.error("Create group error:", e);
-            throw e;
-        }
-    },
-
     // Chat
-    sendMessage: async (message: string, conversationId?: string): Promise<any> => {
+    sendMessage: async (message: string, conversationId?: string, namespace?: string): Promise<any> => {
         try {
+            const body: any = { message };
+            if (conversationId) body.conversation_id = conversationId;
+            if (namespace) body.namespace = namespace;
+            
             const res = await fetch(`${API_BASE_URL}/api/chat`, {
                 method: 'POST',
                 headers: (getAuthHeaders() as Record<string, string>),
-                body: JSON.stringify({ message, conversation_id: conversationId }),
+                body: JSON.stringify(body),
             });
             if (!res.ok) throw new Error("Failed to send message");
             return await res.json();
         } catch (e) {
             console.error("Chat error:", e);
+            throw e;
+        }
+    },
+
+    sendGroupMessage: async (message: string, groupNamespace: string, conversationId?: string): Promise<any> => {
+        try {
+            const body: any = { 
+                message, 
+                namespace: groupNamespace  // Use group's namespace for shared memory
+            };
+            if (conversationId) body.conversation_id = conversationId;
+            
+            const res = await fetch(`${API_BASE_URL}/api/chat`, {
+                method: 'POST',
+                headers: (getAuthHeaders() as Record<string, string>),
+                body: JSON.stringify(body),
+            });
+            if (!res.ok) throw new Error("Failed to send group message");
+            return await res.json();
+        } catch (e) {
+            console.error("Group chat error:", e);
             throw e;
         }
     },
@@ -296,4 +443,272 @@ export const api = {
             return [];
         }
     },
+
+    // Admin
+    admin: {
+        getStats: async (): Promise<any> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/system/stats`, { headers });
+            if (!res.ok) throw new Error("Failed to fetch system stats");
+            return await res.json();
+        },
+
+        getUsers: async (): Promise<any[]> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/users`, { headers });
+            if (!res.ok) throw new Error("Failed to fetch users");
+            const data = await res.json();
+            return data.users || [];
+        },
+
+        createUser: async (user: any): Promise<void> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/users`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(user),
+            });
+            if (!res.ok) throw new Error("Failed to create user");
+        },
+
+        updateUserRole: async (username: string, role: string): Promise<void> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/users/${username}/role`, {
+                method: 'PUT',
+                headers,
+                body: JSON.stringify({ role }),
+            });
+            if (!res.ok) throw new Error("Failed to update user role");
+        },
+
+        deleteUser: async (username: string): Promise<void> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/users/${username}`, {
+                method: 'DELETE',
+                headers
+            });
+            if (!res.ok) throw new Error("Failed to delete user");
+        },
+
+        getUserDetails: async (username: string): Promise<any> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/users/${username}/details`, { headers });
+            if (!res.ok) throw new Error("Failed to fetch user details");
+            return await res.json();
+        },
+
+        extendTrial: async (username: string, days: number): Promise<any> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/users/${username}/trial`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ days }),
+            });
+            if (!res.ok) throw new Error("Failed to extend trial");
+            return await res.json();
+        },
+
+        batchUpdateRole: async (usernames: string[], role: string): Promise<any> => {
+             const headers = getAuthHeaders() as Record<string, string>;
+             const res = await fetch(`${API_BASE_URL}/api/admin/batch/role`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ usernames, role }),
+            });
+            if (!res.ok) throw new Error("Failed to batch update roles");
+            return await res.json();
+        },
+
+        batchDeleteUsers: async (usernames: string[]): Promise<any> => {
+             const headers = getAuthHeaders() as Record<string, string>;
+             const res = await fetch(`${API_BASE_URL}/api/admin/batch/delete`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ usernames }),
+            });
+            if (!res.ok) throw new Error("Failed to batch delete users");
+            return await res.json();
+        },
+
+        triggerReflection: async (): Promise<void> => {
+             const headers = getAuthHeaders() as Record<string, string>;
+             const res = await fetch(`${API_BASE_URL}/api/admin/system/reflection`, {
+                method: 'POST',
+                headers
+            });
+            if (!res.ok) throw new Error("Failed to trigger reflection");
+        },
+
+        getActivityLog: async (limit: number = 50): Promise<any[]> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/activity?limit=${limit}`, { headers });
+            if (!res.ok) throw new Error("Failed to fetch activity log");
+            const data = await res.json();
+            return data.log || [];
+        },
+
+        // Policy Management
+        getPolicies: async (): Promise<{ policies: any[] }> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/policies`, { headers });
+            if (!res.ok) throw new Error("Failed to fetch policies");
+            return await res.json();
+        },
+
+        createPolicy: async (policy: {
+            id: string;
+            description: string;
+            subjects: string[];
+            resources: string[];
+            actions: string[];
+            effect: 'ALLOW' | 'DENY';
+            conditions?: Record<string, string>;
+        }): Promise<{ id: string; policy_id: string }> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/policies`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(policy),
+            });
+            if (!res.ok) throw new Error("Failed to create policy");
+            return await res.json();
+        },
+
+        deletePolicy: async (id: string): Promise<void> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/policies/${id}`, {
+                method: 'DELETE',
+                headers,
+            });
+            if (!res.ok) throw new Error("Failed to delete policy");
+        }
+    },
+
+    finance: {
+        getRevenue: async (): Promise<any> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/finance/revenue`, { headers });
+            if (!res.ok) throw new Error("Failed to fetch revenue");
+            return await res.json();
+        }
+    },
+
+    support: {
+        getTickets: async (): Promise<any[]> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/support/tickets`, { headers });
+            if (!res.ok) throw new Error("Failed to fetch tickets");
+            const data = await res.json();
+            return data.tickets || [];
+        },
+        resolveTicket: async (id: string): Promise<void> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/support/tickets/${id}/resolve`, {
+                method: 'POST',
+                headers
+            });
+            if (!res.ok) throw new Error("Failed to resolve ticket");
+        }
+    },
+
+    affiliates: {
+        getList: async (): Promise<any[]> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/affiliates`, { headers });
+            if (!res.ok) throw new Error("Failed to fetch affiliates");
+            const data = await res.json();
+            return data.affiliates || [];
+        },
+        create: async (data: any): Promise<any> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/affiliates`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(data),
+            });
+            if (!res.ok) throw new Error("Failed to create affiliate");
+            return await res.json();
+        },
+        delete: async (code: string): Promise<void> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/affiliates/${code}`, {
+                method: 'DELETE',
+                headers
+            });
+            if (!res.ok) throw new Error("Failed to delete affiliate");
+        }
+    },
+
+    operations: {
+        getCampaigns: async (): Promise<any[]> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/operations/campaigns`, { headers });
+            if (!res.ok) throw new Error("Failed to fetch campaigns");
+            const data = await res.json();
+            return data.campaigns || [];
+        },
+        createCampaign: async (data: any): Promise<any> => {
+             const headers = getAuthHeaders() as Record<string, string>;
+             const res = await fetch(`${API_BASE_URL}/api/admin/operations/campaigns`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(data),
+            });
+            if (!res.ok) throw new Error("Failed to create campaign");
+            return await res.json();
+        },
+        deleteCampaign: async (id: string): Promise<void> => {
+             const headers = getAuthHeaders() as Record<string, string>;
+             const res = await fetch(`${API_BASE_URL}/api/admin/operations/campaigns/${id}`, {
+                method: 'DELETE',
+                headers
+            });
+            if (!res.ok) throw new Error("Failed to delete campaign");
+        }
+    },
+
+    system: {
+        getFlags: async (): Promise<any[]> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/system/flags`, { headers });
+            if (!res.ok) throw new Error("Failed to fetch flags");
+            const data = await res.json();
+            return data.flags || [];
+        },
+        toggleFlag: async (key: string, is_enabled: boolean): Promise<void> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/system/flags/toggle`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ key, is_enabled })
+            });
+            if (!res.ok) throw new Error("Failed to toggle flag");
+        }
+    },
+
+    emergency: {
+        getRequests: async (): Promise<any[]> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/emergency/requests`, { headers });
+            if (!res.ok) throw new Error("Failed to fetch emergency requests");
+            const data = await res.json();
+            return data.requests || [];
+        },
+        approve: async (id: string): Promise<void> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/emergency/requests/${id}/approve`, {
+                method: 'POST',
+                headers
+            });
+            if (!res.ok) throw new Error("Failed to approve request");
+        },
+        deny: async (id: string): Promise<void> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/admin/emergency/requests/${id}/deny`, {
+                method: 'POST',
+                headers
+            });
+            if (!res.ok) throw new Error("Failed to deny request");
+        }
+    }
 };

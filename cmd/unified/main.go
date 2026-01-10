@@ -40,6 +40,9 @@ func main() {
 		MaxReflectionBatch:     100,
 		IngestionBatchSize:     50,
 		IngestionFlushInterval: 10 * time.Second,
+		WisdomBatchSize:        5,
+		WisdomFlushInterval:    5 * time.Second,
+		QdrantURL:              getEnv("QDRANT_URL", "http://localhost:6333"),
 	}
 
 	k, err := kernel.New(kernelCfg, logger)
@@ -70,7 +73,7 @@ func main() {
 
 	// zero-copy injection
 	localClient := agent.NewLocalKernelClient(k)
-	a.SetMemoryClient(localClient)
+	a.SetKernel(localClient)
 
 	if err := a.Start(); err != nil {
 		logger.Fatal("Failed to start agent", zap.Error(err))
@@ -80,7 +83,7 @@ func main() {
 	// ==========================================
 	// 3. Start HTTP Servers
 	// ==========================================
-	
+
 	// Agent Server (Port 3000)
 	agentRouter := mux.NewRouter()
 	agentServer := agent.NewServer(a, logger)
@@ -105,7 +108,7 @@ func main() {
 	// Kernel Server (Port 9000) - Optional, but keeping for debug/tooling compatibility
 	kernelRouter := mux.NewRouter()
 	setupKernelRoutes(kernelRouter, k, logger)
-	
+
 	portKernel := "9000"
 	httpServerKernel := &http.Server{
 		Addr:         ":" + portKernel,
@@ -167,7 +170,7 @@ func setupKernelRoutes(r *mux.Router, k *kernel.Kernel, logger *zap.Logger) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
 	}).Methods("POST")
-	
+
 	// Hot Cache Store endpoint
 	r.HandleFunc("/api/hot-cache/store", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

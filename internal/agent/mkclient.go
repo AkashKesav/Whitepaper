@@ -25,7 +25,7 @@ type MemoryKernel interface {
 	RemoveGroupMember(ctx context.Context, groupID, username string) error
 	DeleteGroup(ctx context.Context, groupID string) error
 	ShareToGroup(ctx context.Context, conversationID, groupID string) error
-	EnsureUserNode(ctx context.Context, username string) error
+	EnsureUserNode(ctx context.Context, username, role string) error
 	GetStats(ctx context.Context) (map[string]interface{}, error)
 	Speculate(ctx context.Context, req *graph.ConsultationRequest) error
 
@@ -34,6 +34,7 @@ type MemoryKernel interface {
 	AcceptInvitation(ctx context.Context, invitationUID, userID string) error
 	DeclineInvitation(ctx context.Context, invitationUID, userID string) error
 	GetPendingInvitations(ctx context.Context, userID string) ([]graph.WorkspaceInvitation, error)
+	GetWorkspaceSentInvitations(ctx context.Context, workspaceNS string) ([]graph.WorkspaceInvitation, error)
 	CreateShareLink(ctx context.Context, workspaceNS, creatorID string, maxUses int, expiresAt *time.Time) (*graph.ShareLink, error)
 	JoinViaShareLink(ctx context.Context, token, userID string) (*graph.ShareLink, error)
 	RevokeShareLink(ctx context.Context, token, userID string) error
@@ -150,6 +151,14 @@ func (c *MKClient) GetStats(ctx context.Context) (map[string]interface{}, error)
 	}
 
 	return stats, nil
+}
+
+// GetGraphClient retrieves the underlying Graph Client (Zero-Copy only)
+func (c *MKClient) GetGraphClient() *graph.Client {
+	if c.directKernel != nil {
+		return c.directKernel.GetGraphClient()
+	}
+	return nil
 }
 
 // CreateGroup creates a new group
@@ -387,13 +396,135 @@ func (c *MKClient) IsGroupAdmin(ctx context.Context, groupNamespace, userID stri
 	return result.IsAdmin, nil
 }
 
-// EnsureUserNode creates a User node in DGraph if it doesn't exist
-func (c *MKClient) EnsureUserNode(ctx context.Context, username string) error {
+// GetGroupMembers returns the members of a group
+func (c *MKClient) GetGroupMembers(ctx context.Context, groupNamespace string) ([]map[string]interface{}, error) {
 	if c.directKernel != nil {
-		return c.directKernel.EnsureUserNode(ctx, username)
+		// Get group info including members from the graph client
+		graphClient := c.directKernel.GetGraphClient()
+		if graphClient == nil {
+			return nil, fmt.Errorf("graph client not available")
+		}
+
+		// Query to get group with its members
+		query := `query GetGroupMembers($ns: string) {
+			g(func: eq(namespace, $ns)) @filter(type(Group)) {
+				uid
+				name
+				group_has_admin {
+					uid
+					name
+					username
+					role
+				}
+				group_has_member {
+					uid
+					name
+					username
+					role
+				}
+			}
+		}`
+
+		resp, err := graphClient.Query(ctx, query, map[string]string{"$ns": groupNamespace})
+		if err != nil {
+			return nil, err
+		}
+
+		var result struct {
+			G []struct {
+				UID    string `json:"uid"`
+				Name   string `json:"name"`
+				Admins []struct {
+					UID      string `json:"uid"`
+					Name     string `json:"name"`
+					Username string `json:"username"`
+					Role     string `json:"role"`
+				} `json:"group_has_admin"`
+				Members []struct {
+					UID      string `json:"uid"`
+					Name     string `json:"name"`
+					Username string `json:"username"`
+					Role     string `json:"role"`
+				} `json:"group_has_member"`
+			} `json:"g"`
+		}
+		if err := json.Unmarshal(resp, &result); err != nil {
+			return nil, err
+		}
+
+		if len(result.G) == 0 {
+			return []map[string]interface{}{}, nil
+		}
+
+		// Combine admins and members into a single list with role info
+		members := []map[string]interface{}{}
+		seenUIDs := make(map[string]bool)
+
+		// Add admins first
+		for _, admin := range result.G[0].Admins {
+			if !seenUIDs[admin.UID] {
+				seenUIDs[admin.UID] = true
+				members = append(members, map[string]interface{}{
+					"uid":      admin.UID,
+					"name":     admin.Name,
+					"username": admin.Username,
+					"role":     "admin",
+				})
+			}
+		}
+
+		// Add regular members
+		for _, member := range result.G[0].Members {
+			if !seenUIDs[member.UID] {
+				seenUIDs[member.UID] = true
+				members = append(members, map[string]interface{}{
+					"uid":      member.UID,
+					"name":     member.Name,
+					"username": member.Username,
+					"role":     "member",
+				})
+			}
+		}
+
+		return members, nil
 	}
 
-	payload := map[string]string{"username": username}
+	// HTTP fallback
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/api/groups/"+groupNamespace+"/members", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("MK returned status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Members []map[string]interface{} `json:"members"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	return result.Members, nil
+}
+
+// EnsureUserNode creates a User node in DGraph if it doesn't exist
+func (c *MKClient) EnsureUserNode(ctx context.Context, username, role string) error {
+	if c.directKernel != nil {
+		return c.directKernel.EnsureUserNode(ctx, username, role)
+	}
+
+	payload := map[string]string{
+		"username": username,
+		"role":     role,
+	}
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -452,6 +583,14 @@ func (c *MKClient) GetPendingInvitations(ctx context.Context, userID string) ([]
 		return c.directKernel.GetPendingInvitations(ctx, userID)
 	}
 	return nil, fmt.Errorf("HTTP mode not supported for GetPendingInvitations")
+}
+
+// GetWorkspaceSentInvitations gets all pending invitations sent by a workspace
+func (c *MKClient) GetWorkspaceSentInvitations(ctx context.Context, workspaceNS string) ([]graph.WorkspaceInvitation, error) {
+	if c.directKernel != nil {
+		return c.directKernel.GetWorkspaceSentInvitations(ctx, workspaceNS)
+	}
+	return nil, fmt.Errorf("HTTP mode not supported for GetWorkspaceSentInvitations")
 }
 
 // CreateShareLink creates a shareable link for a workspace

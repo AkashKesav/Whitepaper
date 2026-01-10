@@ -16,6 +16,7 @@ import (
 	"github.com/reflective-memory-kernel/internal/graph"
 	"github.com/reflective-memory-kernel/internal/kernel/wisdom"
 	"github.com/reflective-memory-kernel/internal/memory"
+	"github.com/reflective-memory-kernel/internal/policy"
 	"github.com/reflective-memory-kernel/internal/reflection"
 )
 
@@ -68,9 +69,9 @@ func DefaultConfig() Config {
 		MinReflectionBatch:     10,
 		MaxReflectionBatch:     100,
 		IngestionBatchSize:     50,
-		IngestionFlushInterval: 10 * time.Second,
-		WisdomBatchSize:        50,
-		WisdomFlushInterval:    30 * time.Second,
+		IngestionFlushInterval: 5 * time.Second,
+		WisdomBatchSize:        5,
+		WisdomFlushInterval:    5 * time.Second,
 	}
 }
 
@@ -101,6 +102,9 @@ type Kernel struct {
 
 	// Hot Cache for recent messages (Hot Path)
 	hotCache *memory.HotCache
+
+	// Policy Manager
+	policyManager *policy.PolicyManager
 
 	// Consultation handler
 	consultationHandler *ConsultationHandler
@@ -148,8 +152,8 @@ func (k *Kernel) AddGroupMember(ctx context.Context, groupID, username string) e
 }
 
 // EnsureUserNode creates a User node in DGraph if it doesn't exist
-func (k *Kernel) EnsureUserNode(ctx context.Context, username string) error {
-	return k.graphClient.EnsureUserNode(ctx, username)
+func (k *Kernel) EnsureUserNode(ctx context.Context, username, role string) error {
+	return k.graphClient.EnsureUserNode(ctx, username, role)
 }
 
 // RemoveGroupMember removes a user from a group
@@ -189,6 +193,11 @@ func (k *Kernel) DeclineInvitation(ctx context.Context, invitationUID, userID st
 // GetPendingInvitations gets all pending invitations for a user
 func (k *Kernel) GetPendingInvitations(ctx context.Context, userID string) ([]graph.WorkspaceInvitation, error) {
 	return k.graphClient.GetPendingInvitations(ctx, userID)
+}
+
+// GetWorkspaceSentInvitations gets all pending invitations sent by a workspace
+func (k *Kernel) GetWorkspaceSentInvitations(ctx context.Context, workspaceNS string) ([]graph.WorkspaceInvitation, error) {
+	return k.graphClient.GetWorkspaceSentInvitations(ctx, workspaceNS)
 }
 
 // CreateShareLink creates a shareable link for a workspace
@@ -349,6 +358,14 @@ func (k *Kernel) Start() error {
 		k.logger,
 	)
 
+	// Initialize Policy Manager
+	policyConfig := policy.PolicyManagerConfig{
+		Enabled:          true,
+		AuditEnabled:     true,
+		RateLimitEnabled: true,
+	}
+	k.policyManager = policy.NewPolicyManager(policyConfig, k.graphClient, k.natsConn, k.redisClient, k.logger)
+
 	// Initialize consultation handler with Hybrid RAG support
 	k.consultationHandler = NewConsultationHandler(
 		k.graphClient,
@@ -356,6 +373,7 @@ func (k *Kernel) Start() error {
 		k.redisClient,
 		k.vectorIndex,
 		k.localEmbedder,
+		k.policyManager,
 		k.config.AIServicesURL,
 		k.logger,
 	)

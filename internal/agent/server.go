@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	"github.com/reflective-memory-kernel/internal/graph"
+	"github.com/reflective-memory-kernel/internal/policy"
 	"go.uber.org/zap"
 )
 
@@ -43,17 +45,25 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 	// Create JWT middleware
 	jwtMiddleware := NewJWTMiddleware(s.logger)
 
+	// Register Admin Routes (Must be before /api to avoid shadowing)
+	s.SetupAdminRoutes(r)
+
+	// Register Policy Routes (Must be before /api to avoid shadowing)
+	s.SetupPolicyRoutes(r)
+
 	// API Router
 	api := r.PathPrefix("/api").Subrouter()
 
-	// Public routes
-	api.HandleFunc("/login", s.handleLogin).Methods("POST")
+	// Public Routes
 	api.HandleFunc("/register", s.handleRegister).Methods("POST")
+	api.HandleFunc("/login", s.handleLogin).Methods("POST")
 
 	// Protected routes (Wrap with Middleware manually to avoid subrouter conflict)
-	protect := func(h http.HandlerFunc) http.Handler {
-		return jwtMiddleware.Middleware(h)
+	protected := func(h http.HandlerFunc) http.Handler {
+		return jwtMiddleware.Middleware(s.rateLimitMiddleware(h))
 	}
+
+	protect := protected // Alias for backward compatibility if needed or just use protected
 
 	api.Handle("/chat", protect(s.handleChat)).Methods("POST")
 	api.Handle("/search", protect(s.handleSearch)).Methods("GET")
@@ -70,11 +80,16 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 
 	// Groups
 	api.Handle("/groups", protect(s.handleCreateGroup)).Methods("POST")
-	api.Handle("/list-groups", protect(s.handleListGroups)).Methods("GET")
+	api.Handle("/groups", protect(s.handleListGroups)).Methods("GET")
+	api.Handle("/list-groups", protect(s.handleListGroups)).Methods("GET") // Legacy endpoint
 	api.Handle("/groups/{id}/members", protect(s.handleAddGroupMember)).Methods("POST")
+	api.Handle("/groups/{id}/members", protect(s.handleGetGroupMembers)).Methods("GET")
 	api.Handle("/groups/{id}/members/{username}", protect(s.handleRemoveGroupMember)).Methods("DELETE")
 	api.Handle("/groups/{id}", protect(s.handleDeleteGroup)).Methods("DELETE")
 	api.Handle("/groups/{id}/subusers", protect(s.handleCreateSubuser)).Methods("POST")
+
+	// User listing (for invitation/member selection - available to all authenticated users)
+	api.Handle("/users", protect(s.handleListUsers)).Methods("GET")
 
 	// Workspace Collaboration
 	api.Handle("/workspaces/{id}/invite", protect(s.handleInviteToWorkspace)).Methods("POST")
@@ -83,6 +98,7 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 	api.Handle("/workspaces/{id}/members", protect(s.handleGetWorkspaceMembers)).Methods("GET")
 	api.Handle("/workspaces/{id}/members/{username}", protect(s.handleRemoveWorkspaceMember)).Methods("DELETE")
 	api.Handle("/invitations", protect(s.handleGetPendingInvitations)).Methods("GET")
+	api.Handle("/workspaces/{id}/invitations/sent", protect(s.handleGetWorkspaceSentInvitations)).Methods("GET")
 	api.Handle("/invitations/{id}/accept", protect(s.handleAcceptInvitation)).Methods("POST")
 	api.Handle("/invitations/{id}/decline", protect(s.handleDeclineInvitation)).Methods("POST")
 	api.Handle("/join/{token}", protect(s.handleJoinViaShareLink)).Methods("POST")
@@ -114,6 +130,7 @@ type ChatRequest struct {
 	Message        string `json:"message"`
 	ContextType    string `json:"context_type,omitempty"` // "user" or "group"
 	ContextID      string `json:"context_id,omitempty"`   // UserID or GroupID
+	Namespace      string `json:"namespace,omitempty"`    // Direct namespace specification (preferred)
 }
 
 // ChatResponse represents a chat response
@@ -133,6 +150,7 @@ type LoginRequest struct {
 type LoginResponse struct {
 	Token    string `json:"token"`
 	Username string `json:"username"`
+	Role     string `json:"role"`
 }
 
 // RegisterRequest represents a registration request
@@ -141,6 +159,7 @@ type RegisterRequest struct {
 	Password string `json:"password"`
 }
 
+// handleRegister registers a new user
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// Check if Redis is available
 	if s.agent.RedisClient == nil {
@@ -187,26 +206,40 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine Role (Bootstrap Admin)
+	role := "user"
+	isAdminInit, _ := s.agent.RedisClient.Get(ctx, "system:admin_initialized").Result()
+	if isAdminInit == "" || strings.HasPrefix(req.Username, "super_admin_") {
+		role = "admin"
+		if isAdminInit == "" {
+			s.agent.RedisClient.Set(ctx, "system:admin_initialized", "true", 0)
+		}
+	}
+
+	// Persist Role in Redis
+	s.agent.RedisClient.Set(ctx, "user_role:"+req.Username, role, 0)
+
 	// Create User node in DGraph via Memory Kernel for Group V2 support
-	if err := s.agent.mkClient.EnsureUserNode(ctx, req.Username); err != nil {
+	if err := s.agent.mkClient.EnsureUserNode(ctx, req.Username, role); err != nil {
 		s.logger.Warn("Failed to create User node in DGraph (groups may not work)", zap.Error(err))
 		// Non-fatal: registration succeeds but groups may not work until user does first chat
 	}
 
 	// Generate JWT token
-	token, err := GenerateToken(req.Username)
+	token, err := GenerateToken(req.Username, role)
 	if err != nil {
 		s.logger.Error("Failed to generate token", zap.Error(err))
 		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
 		return
 	}
 
-	s.logger.Info("User registered", zap.String("username", req.Username))
+	s.logger.Info("User registered", zap.String("username", req.Username), zap.String("role", role))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(LoginResponse{
 		Token:    token,
 		Username: req.Username,
+		Role:     role,
 	})
 }
 
@@ -242,8 +275,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get Role
+	role, err := s.agent.RedisClient.Get(ctx, "user_role:"+req.Username).Result()
+	if err != nil {
+		role = "user"
+	}
+
 	// Generate JWT token
-	token, err := GenerateToken(req.Username)
+	token, err := GenerateToken(req.Username, role)
 	if err != nil {
 		s.logger.Error("Failed to generate token", zap.Error(err))
 		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
@@ -256,6 +295,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(LoginResponse{
 		Token:    token,
 		Username: req.Username,
+		Role:     role,
 	})
 }
 
@@ -271,9 +311,27 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("Processing chat request", zap.String("user_id", userID))
 
 	// Determine Namespace
+	// Priority: 1. req.Namespace (direct), 2. context_type/context_id (legacy), 3. default user namespace
 	namespace := fmt.Sprintf("user_%s", userID) // Default to private
-	if req.ContextType == "group" && req.ContextID != "" {
-		// Check if user is a member of the workspace
+
+	if req.Namespace != "" {
+		// Direct namespace specification (preferred by frontend)
+		// For group namespaces, verify membership
+		if strings.HasPrefix(req.Namespace, "group_") {
+			isMember, err := s.agent.mkClient.IsWorkspaceMember(r.Context(), req.Namespace, userID)
+			if err != nil {
+				s.logger.Error("Failed to check workspace membership", zap.Error(err))
+				http.Error(w, "Failed to verify workspace access", http.StatusInternalServerError)
+				return
+			}
+			if !isMember {
+				http.Error(w, "You are not a member of this workspace", http.StatusForbidden)
+				return
+			}
+		}
+		namespace = req.Namespace
+	} else if req.ContextType == "group" && req.ContextID != "" {
+		// Legacy context_type/context_id approach
 		isMember, err := s.agent.mkClient.IsWorkspaceMember(r.Context(), req.ContextID, userID)
 		if err != nil {
 			s.logger.Error("Failed to check workspace membership", zap.Error(err))
@@ -720,7 +778,30 @@ func (s *Server) handleAddGroupMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Add Member
+	// 2. Check if user exists in Redis (primary user store)
+	exists, err := s.agent.RedisClient.Exists(r.Context(), "user:"+req.Username).Result()
+	if err != nil {
+		s.logger.Error("Failed to check user existence", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if exists == 0 {
+		http.Error(w, fmt.Sprintf("User '%s' not found", req.Username), http.StatusBadRequest)
+		return
+	}
+
+	// 3. Get user role and ensure they exist in DGraph
+	userRole, _ := s.agent.RedisClient.Get(r.Context(), "user_role:"+req.Username).Result()
+	if userRole == "" {
+		userRole = "user"
+	}
+	if err := s.agent.mkClient.EnsureUserNode(r.Context(), req.Username, userRole); err != nil {
+		s.logger.Error("Failed to ensure user node", zap.Error(err))
+		http.Error(w, "Failed to prepare user", http.StatusInternalServerError)
+		return
+	}
+
+	// 4. Add Member
 	if err := s.agent.mkClient.AddGroupMember(r.Context(), groupNamespace, req.Username); err != nil {
 		s.logger.Error("Failed to add member", zap.Error(err))
 		http.Error(w, fmt.Sprintf("Failed to add member: %v", err), http.StatusInternalServerError)
@@ -744,6 +825,45 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"groups": groups,
+	})
+}
+
+// handleListUsers returns all registered users (for invitation/member selection)
+func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	if s.agent.RedisClient == nil {
+		http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	ctx := r.Context()
+
+	// Get all user keys from Redis
+	keys, err := s.agent.RedisClient.Keys(ctx, "user:*").Result()
+	if err != nil {
+		s.logger.Error("Failed to fetch users", zap.Error(err))
+		http.Error(w, "Failed to fetch users", http.StatusInternalServerError)
+		return
+	}
+
+	var users []map[string]string
+	for _, key := range keys {
+		username := key[5:] // Remove "user:" prefix
+
+		// Get user role
+		role, err := s.agent.RedisClient.Get(ctx, "user_role:"+username).Result()
+		if err != nil {
+			role = "user"
+		}
+
+		users = append(users, map[string]string{
+			"username": username,
+			"role":     role,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"users": users,
 	})
 }
 
@@ -793,6 +913,52 @@ func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleGetGroupMembers returns the members of a group
+func (s *Server) handleGetGroupMembers(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	vars := mux.Vars(r)
+	groupID := vars["id"]
+
+	// Check if user is a member or admin of this group
+	groups, err := s.agent.mkClient.ListGroups(r.Context(), userID)
+	if err != nil {
+		s.logger.Error("Failed to check group membership", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Check if the user belongs to this group
+	isMember := false
+	for _, g := range groups {
+		if ns, ok := g["namespace"].(string); ok && ns == groupID {
+			isMember = true
+			break
+		}
+		if name, ok := g["name"].(string); ok && name == groupID {
+			isMember = true
+			break
+		}
+	}
+	if !isMember {
+		http.Error(w, "Forbidden: You are not a member of this group", http.StatusForbidden)
+		return
+	}
+
+	// Get group members via direct kernel access
+	members, err := s.agent.mkClient.GetGroupMembers(r.Context(), groupID)
+	if err != nil {
+		s.logger.Error("Failed to get group members", zap.Error(err))
+		http.Error(w, "Failed to get group members", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"group_id": groupID,
+		"members":  members,
+	})
+}
+
 type CreateSubuserRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -832,10 +998,13 @@ func (s *Server) handleCreateSubuser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Ensure User Node in Graph
-	if err := s.agent.mkClient.EnsureUserNode(ctx, req.Username); err != nil {
+	if err := s.agent.mkClient.EnsureUserNode(ctx, req.Username, "user"); err != nil {
 		s.logger.Error("Failed to ensure user node", zap.Error(err))
 		// Continue? If node missing, AddMember might fail or auto-create.
 	}
+
+	// Persist Role in Redis
+	s.agent.RedisClient.Set(ctx, "user_role:"+req.Username, "user", 0)
 
 	// 4. Add to Group
 	if err := s.agent.mkClient.AddGroupMember(ctx, groupID, req.Username); err != nil {
@@ -898,6 +1067,31 @@ func (s *Server) handleInviteToWorkspace(w http.ResponseWriter, r *http.Request)
 		req.Role = "subuser"
 	}
 
+	// Check if user exists in Redis (primary user store)
+	exists, err := s.agent.RedisClient.Exists(r.Context(), "user:"+req.Username).Result()
+	if err != nil {
+		s.logger.Error("Failed to check user existence in Redis", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if exists == 0 {
+		http.Error(w, fmt.Sprintf("User '%s' not found", req.Username), http.StatusBadRequest)
+		return
+	}
+
+	// Get user role from Redis
+	userRole, _ := s.agent.RedisClient.Get(r.Context(), "user_role:"+req.Username).Result()
+	if userRole == "" {
+		userRole = "user"
+	}
+
+	// Ensure user node exists in DGraph before creating invitation
+	if err := s.agent.mkClient.EnsureUserNode(r.Context(), req.Username, userRole); err != nil {
+		s.logger.Error("Failed to ensure user node", zap.Error(err), zap.String("username", req.Username))
+		http.Error(w, "Failed to prepare user for invitation", http.StatusInternalServerError)
+		return
+	}
+
 	invite, err := s.agent.mkClient.InviteToWorkspace(r.Context(), workspaceNS, userID, req.Username, req.Role)
 	if err != nil {
 		s.logger.Error("Failed to create invitation", zap.Error(err))
@@ -920,6 +1114,36 @@ func (s *Server) handleGetPendingInvitations(w http.ResponseWriter, r *http.Requ
 	invitations, err := s.agent.mkClient.GetPendingInvitations(r.Context(), userID)
 	if err != nil {
 		s.logger.Error("Failed to get invitations", zap.Error(err))
+		http.Error(w, "Failed to get invitations", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"invitations": invitations,
+	})
+}
+
+func (s *Server) handleGetWorkspaceSentInvitations(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	vars := mux.Vars(r)
+	workspaceNS := vars["id"]
+
+	// Check if user is a member of this workspace
+	isMember, err := s.agent.mkClient.IsWorkspaceMember(r.Context(), workspaceNS, userID)
+	if err != nil {
+		s.logger.Error("Failed to check membership", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !isMember {
+		http.Error(w, "You are not a member of this workspace", http.StatusForbidden)
+		return
+	}
+
+	invitations, err := s.agent.mkClient.GetWorkspaceSentInvitations(r.Context(), workspaceNS)
+	if err != nil {
+		s.logger.Error("Failed to get workspace invitations", zap.Error(err))
 		http.Error(w, "Failed to get invitations", http.StatusInternalServerError)
 		return
 	}
@@ -1162,5 +1386,42 @@ func (s *Server) handleRemoveWorkspaceMember(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":  "removed",
 		"message": fmt.Sprintf("User %s removed from workspace", targetUser),
+	})
+}
+
+// rateLimitMiddleware applies rate limiting policies
+func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.agent.PolicyManager == nil || s.agent.PolicyManager.RateLimiter == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		userID := GetUserID(r.Context())
+		if userID == "" {
+			// Skip rate limiting for unauthenticated users (or limit by IP if needed)
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// MVP: Default everyone to Pro tier
+		// Future: Look up user tier from Redis/Graph
+		tier := policy.TierPro
+
+		result, err := s.agent.PolicyManager.RateLimiter.Allow(r.Context(), userID, tier, r.URL.Path)
+		if err != nil {
+			s.logger.Error("Rate limit check failed", zap.Error(err))
+			// Fail open
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if !result.Allowed {
+			w.Header().Set("Retry-After", fmt.Sprintf("%.0f", result.RetryAfter.Seconds()))
+			http.Error(w, fmt.Sprintf("Rate limit exceeded. Try again in %s.", result.RetryAfter), 429)
+			return
+		}
+
+		next.ServeHTTP(w, r)
 	})
 }

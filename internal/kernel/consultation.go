@@ -19,6 +19,7 @@ import (
 
 	"github.com/reflective-memory-kernel/internal/ai/local"
 	"github.com/reflective-memory-kernel/internal/graph"
+	"github.com/reflective-memory-kernel/internal/policy"
 )
 
 // ConsultationHandler handles consultation requests from the Front-End Agent
@@ -32,6 +33,9 @@ type ConsultationHandler struct {
 	// Hybrid RAG components
 	embedder    local.LocalEmbedder
 	vectorIndex *VectorIndex
+
+	// Policy Manager
+	policyManager *policy.PolicyManager
 }
 
 // isUUIDLike checks if a string looks like a UUID (8-4-4-4-12 pattern)
@@ -51,6 +55,7 @@ func NewConsultationHandler(
 	redisClient *redis.Client,
 	vectorIndex *VectorIndex,
 	embedder local.LocalEmbedder,
+	policyManager *policy.PolicyManager,
 	aiServicesURL string,
 	logger *zap.Logger,
 ) *ConsultationHandler {
@@ -62,6 +67,7 @@ func NewConsultationHandler(
 		logger:        logger,
 		embedder:      embedder,
 		vectorIndex:   vectorIndex,
+		policyManager: policyManager,
 	}
 }
 
@@ -114,9 +120,49 @@ func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.Consultatio
 			h.logger.Warn("Failed to get user knowledge", zap.Error(err))
 		}
 	}
+	// STEP 1.5: Policy Enforcement (Filter Facts)
+	// Even if we found the facts, we must verify the user is allowed to see them.
+	// This enforces ABAC (Clearance) and RBAC (Policies) at the data retrieval layer.
+	var allowedFacts []graph.Node
+	if h.policyManager != nil {
+		// CRITICAL: Load policies from DGraph before evaluation
+		// Without this, the engine has no policies to check against!
+		if err := h.policyManager.LoadPolicies(ctx, namespace); err != nil {
+			h.logger.Warn("Failed to load policies from store", zap.Error(err))
+		}
+
+		// Build UserContext (fetch groups, clearance, etc.)
+		userCtx, err := h.buildUserContext(ctx, req.UserID)
+		if err != nil {
+			h.logger.Error("Failed to build user context for policy check", zap.Error(err))
+			// Fail safe: if we can't verify context, we assume minimal access (or deny all?)
+			// For now, we'll log and continue with minimal context (public only)
+			userCtx = policy.UserContext{UserID: req.UserID}
+		}
+
+		for _, fact := range facts {
+			// Evaluate "READ" action on this resource
+			effect, err := h.policyManager.Evaluate(ctx, userCtx, &fact, policy.ActionRead)
+			if err != nil {
+				h.logger.Warn("Policy evaluation error", zap.Error(err), zap.String("node", fact.UID))
+				continue // Skip on error
+			}
+
+			if effect == policy.EffectAllow {
+				allowedFacts = append(allowedFacts, fact)
+			} else {
+				h.logger.Info("Data access denied by policy",
+					zap.String("user", req.UserID),
+					zap.String("node", fact.UID),
+					zap.String("type", string(fact.GetType())))
+			}
+		}
+		facts = allowedFacts // Update facts with filtered list
+	}
+
 	response.RelevantFacts = facts
 
-	h.logger.Info("Retrieved user knowledge",
+	h.logger.Info("Retrieved user knowledge (after policy filter)",
 		zap.String("namespace", namespace),
 		zap.Int("facts_count", len(facts)))
 
@@ -152,6 +198,29 @@ func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.Consultatio
 		zap.Int("facts", len(facts)),
 		zap.Duration("latency", time.Since(startTime)))
 
+	// STEP 3: Async Activation Boost (Active Synthesis)
+	// Any node that was relevant (retrieved) gets a boost.
+	// This ensures that recalled memories stay active (Dynamic Prioritization).
+	if len(response.RelevantFacts) > 0 {
+		// Use a local copy of facts to avoid race conditions if facts slice is modified (it shouldn't be, but good practice)
+		factsToBoost := make([]graph.Node, len(response.RelevantFacts))
+		copy(factsToBoost, response.RelevantFacts)
+
+		go func(nodes []graph.Node) {
+			// Use a detached context with timeout for async updates
+			boostCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			config := graph.DefaultActivationConfig()
+			for _, node := range nodes {
+				if err := h.graphClient.IncrementAccessCount(boostCtx, node.UID, config); err != nil {
+					// Reduce log noise - maybe Debug
+					h.logger.Debug("Failed to boost activation", zap.String("uid", node.UID), zap.Error(err))
+				}
+			}
+		}(factsToBoost)
+	}
+
 	return response, nil
 }
 
@@ -171,8 +240,9 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace st
 		if node.Name == "" {
 			return false
 		}
-		// Skip User nodes
-		if node.Name == "User" {
+		// Skip User and Group nodes by checking dgraph.type (not name!)
+		nodeType := node.GetType()
+		if nodeType == graph.NodeTypeUser || nodeType == graph.NodeTypeGroup {
 			return false
 		}
 		// Skip Conversation_ nodes (these are conversation metadata, not facts)
@@ -185,6 +255,10 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace st
 		}
 		// Skip UUID-like names (8-4-4-4-12 pattern or just long hex strings)
 		if isUUIDLike(node.Name) {
+			return false
+		}
+		// Skip generic "Batch Summary" nodes - return the actual entities
+		if node.Name == "Batch Summary" {
 			return false
 		}
 		return true
@@ -256,6 +330,54 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace st
 				}
 			}
 		}
+	}
+
+	// STEP 1.5: SPREADING ACTIVATION (Multi-Hop Expansion)
+	// For seed nodes found via semantic search, spread activation to neighbors
+	// This enables multi-hop reasoning like "Who is my boss's wife?"
+	if len(merged) > 0 && h.graphClient != nil {
+		h.logger.Debug("Spreading activation from seed nodes", zap.Int("seeds", len(merged)))
+
+		// Use top 3 seeds to avoid explosion
+		seedCount := 3
+		if len(merged) < seedCount {
+			seedCount = len(merged)
+		}
+
+		for i := 0; i < seedCount; i++ {
+			seed := merged[i]
+			if seed.UID == "" {
+				continue
+			}
+
+			opts := graph.SpreadActivationOpts{
+				StartUID:      seed.UID,
+				Namespace:     namespace,
+				DecayFactor:   0.6, // Retain 60% per hop
+				MaxHops:       2,   // 2 hops for relationship traversal
+				MinActivation: 0.2, // Stop when activation < 20%
+				MaxResults:    10,
+			}
+
+			expanded, err := h.graphClient.SpreadActivation(ctx, opts)
+			if err != nil {
+				h.logger.Warn("Spreading activation failed", zap.Error(err), zap.String("seed", seed.UID))
+				continue
+			}
+
+			for _, an := range expanded {
+				if !seen[an.Node.UID] && isValidNode(an.Node) {
+					seen[an.Node.UID] = true
+					// Preserve the computed activation from traversal
+					node := an.Node
+					node.Activation = an.Activation
+					merged = append(merged, node)
+				}
+			}
+		}
+
+		h.logger.Info("Spreading activation complete",
+			zap.Int("total_nodes", len(merged)))
 	}
 
 	// STEP 2: Get nodes by activation and recency (existing logic)
@@ -769,4 +891,49 @@ func (h *ConsultationHandler) checkSpeculationCache(ctx context.Context, userID,
 	}
 
 	return nil, nil
+}
+
+// buildUserContext requires fetching user details (groups, clearance) from DGraph
+func (h *ConsultationHandler) buildUserContext(ctx context.Context, userID string) (policy.UserContext, error) {
+	// 1. Get Groups
+	graphGroups, err := h.graphClient.ListUserGroups(ctx, userID)
+	if err != nil {
+		return policy.UserContext{}, fmt.Errorf("failed to list groups: %w", err)
+	}
+	var groups []string
+	for _, g := range graphGroups {
+		groups = append(groups, g.Name)
+	}
+
+	// 2. Get Clearance (using specific query)
+	// Use a lightweight query to get just the clearance level
+	query := `query UserClearance($id: string) {
+		u(func: eq(username, $id)) {
+			clearance
+		}
+	}`
+	resp, err := h.graphClient.Query(ctx, query, map[string]string{"$id": userID})
+	if err != nil {
+		return policy.UserContext{}, fmt.Errorf("failed to query clearance: %w", err)
+	}
+
+	var result struct {
+		U []struct {
+			Clearance int `json:"clearance"`
+		} `json:"u"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return policy.UserContext{}, fmt.Errorf("failed to parse clearance: %w", err)
+	}
+
+	clearance := 0
+	if len(result.U) > 0 {
+		clearance = result.U[0].Clearance
+	}
+
+	return policy.UserContext{
+		UserID:    userID,
+		Groups:    groups,
+		Clearance: clearance,
+	}, nil
 }

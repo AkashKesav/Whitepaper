@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/nats-io/nats.go"
+	"github.com/redis/go-redis/v9"
 	"github.com/reflective-memory-kernel/internal/graph"
+	"go.uber.org/zap"
 )
 
 // Effect represents the outcome of a policy evaluation
@@ -64,6 +67,91 @@ func NewEngine() *DefaultEngine {
 	return &DefaultEngine{
 		policies: make([]Policy, 0),
 	}
+}
+
+// PolicyManager integrates all policy components for the kernel
+type PolicyManager struct {
+	Engine        *DefaultEngine
+	Store         *PolicyStore
+	AuditLogger   *AuditLogger
+	RateLimiter   *RateLimiter
+	ContentFilter *ContentFilter
+	enabled       bool
+}
+
+// PolicyManagerConfig configures the policy manager
+type PolicyManagerConfig struct {
+	Enabled              bool
+	AuditEnabled         bool
+	RateLimitEnabled     bool
+	ContentFilterEnabled bool
+}
+
+// NewPolicyManager creates a fully integrated policy manager
+func NewPolicyManager(config PolicyManagerConfig, graphClient *graph.Client, natsConn *nats.Conn, redisClient *redis.Client, logger *zap.Logger) *PolicyManager {
+	pm := &PolicyManager{
+		Engine:  NewEngine(),
+		enabled: config.Enabled,
+	}
+
+	// Initialize Store
+	if graphClient != nil {
+		pm.Store = NewPolicyStore(graphClient, logger)
+	}
+
+	// Initialize Audit Logger
+	auditConfig := AuditConfig{
+		Enabled:     config.AuditEnabled,
+		AsyncMode:   true,
+		NATSSubject: "audit",
+	}
+	pm.AuditLogger = NewAuditLogger(graphClient, natsConn, logger, auditConfig)
+
+	// Initialize Rate Limiter
+	pm.RateLimiter = NewRateLimiter(redisClient, logger, config.RateLimitEnabled)
+
+	// Initialize Content Filter
+	pm.ContentFilter = NewContentFilter(logger, pm.AuditLogger, config.ContentFilterEnabled)
+
+	return pm
+}
+
+// LoadPolicies loads policies from the store and adds them to the engine
+func (pm *PolicyManager) LoadPolicies(ctx context.Context, namespace string) error {
+	if pm.Store == nil {
+		return nil
+	}
+
+	policies, err := pm.Store.LoadPolicies(ctx, namespace)
+	if err != nil {
+		return err
+	}
+
+	for _, p := range policies {
+		pm.Engine.AddPolicy(p)
+	}
+
+	return nil
+}
+
+// Evaluate wraps the engine's evaluate with audit logging
+func (pm *PolicyManager) Evaluate(ctx context.Context, user UserContext, resource *graph.Node, action Action) (Effect, error) {
+	if !pm.enabled {
+		return EffectAllow, nil
+	}
+
+	effect, err := pm.Engine.Evaluate(ctx, user, resource, action)
+
+	// Log the policy decision
+	if pm.AuditLogger != nil {
+		reason := ""
+		if err != nil {
+			reason = err.Error()
+		}
+		pm.AuditLogger.LogPolicyCheck(ctx, user.UserID, resource.Namespace, action, resource.UID, effect, reason)
+	}
+
+	return effect, err
 }
 
 func (e *DefaultEngine) AddPolicy(policy Policy) error {
@@ -128,9 +216,11 @@ func (e *DefaultEngine) Evaluate(ctx context.Context, user UserContext, resource
 	// Let's iterate policies for explicit ALLOW/DENY overrides.
 
 	// Check for Deny first
-	for _, policy := range e.policies {
-		if policy.Effect == EffectDeny && e.matches(policy, user, resource, action) {
-			return EffectDeny, fmt.Errorf("explicitly denied by policy %s", policy.ID)
+	for _, pol := range e.policies {
+		if pol.Effect == EffectDeny {
+			if e.matches(pol, user, resource, action) {
+				return EffectDeny, fmt.Errorf("explicitly denied by policy %s", pol.ID)
+			}
 		}
 	}
 
@@ -145,7 +235,7 @@ func (e *DefaultEngine) matches(policy Policy, user UserContext, resource *graph
 	// Check Action
 	actionMatch := false
 	for _, a := range policy.Actions {
-		if a == action || a == "*" {
+		if a == action || a == "*" || string(a) == string(action) {
 			actionMatch = true
 			break
 		}
@@ -156,12 +246,13 @@ func (e *DefaultEngine) matches(policy Policy, user UserContext, resource *graph
 
 	// Check Subject
 	subjectMatch := false
+	expectedSubject := fmt.Sprintf("user:%s", user.UserID)
 	for _, s := range policy.Subjects {
 		if s == "*" {
 			subjectMatch = true
 			break
 		}
-		if s == fmt.Sprintf("user:%s", user.UserID) {
+		if s == expectedSubject {
 			subjectMatch = true
 			break
 		}
@@ -178,6 +269,7 @@ func (e *DefaultEngine) matches(policy Policy, user UserContext, resource *graph
 
 	// Check Resource
 	resourceMatch := false
+	resourceType := string(resource.GetType())
 	for _, r := range policy.Resources {
 		if r == "*" {
 			resourceMatch = true
@@ -187,7 +279,7 @@ func (e *DefaultEngine) matches(policy Policy, user UserContext, resource *graph
 			resourceMatch = true
 			break
 		}
-		if strings.HasPrefix(r, "type:") && string(resource.GetType()) == strings.TrimPrefix(r, "type:") {
+		if strings.HasPrefix(r, "type:") && resourceType == strings.TrimPrefix(r, "type:") {
 			resourceMatch = true
 			break
 		}

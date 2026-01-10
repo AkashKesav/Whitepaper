@@ -12,6 +12,7 @@ import Chat from "./pages/Chat";
 import Groups from "./pages/Groups";
 import Settings from "./pages/Settings";
 import Ingestion from "./pages/Ingestion";
+import Notifications from "./pages/Notifications";
 
 const queryClient = new QueryClient();
 
@@ -27,6 +28,7 @@ const App = () => (
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/groups" element={<Groups />} />
+            <Route path="/notifications" element={<Notifications />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/ingestion" element={<Ingestion />} />
             <Route
