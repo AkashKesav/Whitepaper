@@ -198,28 +198,25 @@ func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.Consultatio
 		zap.Int("facts", len(facts)),
 		zap.Duration("latency", time.Since(startTime)))
 
-	// STEP 3: Async Activation Boost (Active Synthesis)
-	// Any node that was relevant (retrieved) gets a boost.
-	// This ensures that recalled memories stay active (Dynamic Prioritization).
-	if len(response.RelevantFacts) > 0 {
-		// Use a local copy of facts to avoid race conditions if facts slice is modified (it shouldn't be, but good practice)
-		factsToBoost := make([]graph.Node, len(response.RelevantFacts))
-		copy(factsToBoost, response.RelevantFacts)
-
-		go func(nodes []graph.Node) {
-			// Use a detached context with timeout for async updates
-			boostCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			config := graph.DefaultActivationConfig()
-			for _, node := range nodes {
-				if err := h.graphClient.IncrementAccessCount(boostCtx, node.UID, config); err != nil {
-					// Reduce log noise - maybe Debug
-					h.logger.Debug("Failed to boost activation", zap.String("uid", node.UID), zap.Error(err))
-				}
-			}
-		}(factsToBoost)
-	}
+	// STEP 3: Async Activation Boost (Active Synthesis) - DISABLED
+	// This was causing a feedback loop where ALL retrieved nodes got boosted,
+	// even when just viewing the dashboard. Activation should only be boosted
+	// when entities are explicitly mentioned (handled in ingestion deduplication).
+	//
+	// if len(response.RelevantFacts) > 0 {
+	// 	factsToBoost := make([]graph.Node, len(response.RelevantFacts))
+	// 	copy(factsToBoost, response.RelevantFacts)
+	// 	go func(nodes []graph.Node) {
+	// 		boostCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// 		defer cancel()
+	// 		config := graph.DefaultActivationConfig()
+	// 		for _, node := range nodes {
+	// 			if err := h.graphClient.IncrementAccessCount(boostCtx, node.UID, config); err != nil {
+	// 				h.logger.Debug("Failed to boost activation", zap.String("uid", node.UID), zap.Error(err))
+	// 			}
+	// 		}
+	// 	}(factsToBoost)
+	// }
 
 	return response, nil
 }
