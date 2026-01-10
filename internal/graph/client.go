@@ -1405,6 +1405,55 @@ func (c *Client) IsGroupAdmin(ctx context.Context, groupNamespace, userID string
 	return len(res.G) > 0, nil
 }
 
+// FindEntityInNamespace finds an entity by name in a specific namespace
+// Used for deduplication - returns existing entity if found, nil if not
+func (c *Client) FindEntityInNamespace(ctx context.Context, name, namespace string) (*Node, error) {
+	query := `query FindEntity($name: string, $ns: string) {
+		node(func: eq(name, $name)) @filter(eq(namespace, $ns)) {
+			uid
+			dgraph.type
+			name
+			description
+			namespace
+			activation
+			created_at
+		}
+	}`
+
+	vars := map[string]string{"$name": name, "$ns": namespace}
+	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, vars)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find entity: %w", err)
+	}
+
+	var result struct {
+		Node []Node `json:"node"`
+	}
+	if err := json.Unmarshal(resp.Json, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal: %w", err)
+	}
+
+	if len(result.Node) == 0 {
+		return nil, nil
+	}
+
+	return &result.Node[0], nil
+}
+
+// BoostEntityActivation increases the activation score of an existing entity
+func (c *Client) BoostEntityActivation(ctx context.Context, uid string, boostAmount float64) error {
+	nquad := fmt.Sprintf(`<%s> <activation> "%f" .
+<%s> <last_accessed> "%s"^^<xs:dateTime> .`, uid, boostAmount, uid, time.Now().Format(time.RFC3339))
+
+	mu := &api.Mutation{
+		SetNquads: []byte(nquad),
+		CommitNow: true,
+	}
+
+	_, err := c.dg.NewTxn().Mutate(ctx, mu)
+	return err
+}
+
 // IngestWisdomBatch batch creates summary nodes and entities for the Wisdom Layer
 // Returns the UID of the created summary node for vector indexing
 func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summary string, entities []ExtractedEntity) (string, error) {

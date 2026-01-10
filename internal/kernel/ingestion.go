@@ -175,9 +175,9 @@ func (p *IngestionPipeline) Ingest(ctx context.Context, event *graph.TranscriptE
 				zap.Int("dims", len(vec)),
 				zap.Duration("latency", time.Since(embedStart)))
 
-			// UNIFIED ID APPROACH: Create DGraph node first to get UID
-			// This ensures policy matching works (policies target DGraph UIDs)
-			if p.graphClient != nil {
+			// DISABLED: Do NOT create DGraph nodes for raw chat. Only Wisdom Layer entities go to graph
+			// Chat messages stored in vector index only for semantic search
+			if false { // DISABLED: was p.graphClient != nil
 				chatNode := &graph.Node{
 					DType:                []string{string(graph.NodeTypeFact)},
 					Name:                 fmt.Sprintf("Chat: %s", truncateString(event.UserQuery, 50)),

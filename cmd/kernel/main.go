@@ -136,7 +136,7 @@ func setupRoutes(r *mux.Router, k *kernel.Kernel, logger *zap.Logger) {
 			return
 		}
 
-		if err := k.EnsureUserNode(r.Context(), req.Username); err != nil {
+		if err := k.EnsureUserNode(r.Context(), req.Username, "subuser"); err != nil {
 			logger.Error("EnsureUserNode failed", zap.Error(err))
 			http.Error(w, "Failed to ensure user node", http.StatusInternalServerError)
 			return
