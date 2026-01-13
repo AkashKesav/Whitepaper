@@ -405,20 +405,79 @@ class DocumentIngester:
     def _create_chunks(self, pages: list[tuple[int, str]]) -> list[DocumentChunk]:
         """
         Create semantically-aware chunks from document pages.
+
+        Uses memchunk for high-performance semantic chunking (up to 1TB/s).
+        Falls back to simple paragraph-based chunking if memchunk unavailable.
+        """
+        try:
+            from .memchunker import MemChunker, ChunkerConfig
+            return self._create_chunks_fast(pages)
+        except ImportError:
+            # Fallback to simple chunking
+            return self._create_chunks_simple(pages)
+
+    def _create_chunks_fast(self, pages: list[tuple[int, str]]) -> list[DocumentChunk]:
+        """
+        Fast chunking using memchunk (SIMD-accelerated).
+
+        Splits at semantic boundaries (periods, newlines) for better retrieval.
+        """
+        from .memchunker import MemChunker, ChunkerConfig
+
+        chunks = []
+        chunk_idx = 0
+
+        # Configure memchunker for semantic chunking
+        config = ChunkerConfig(
+            chunk_size=self.chunk_size,
+            delimiters=b'\n.?!',  # Split at sentence/paragraph boundaries
+            prefix_mode=False,  # Delimiter stays with current chunk
+            consecutive=True,  # Handle consecutive newlines together
+            forward_fallback=True,  # Search forward if no delimiter found
+        )
+        chunker = MemChunker(config)
+
+        for page_num, text in pages:
+            # Skip empty pages
+            if not text.strip():
+                continue
+
+            # Use memchunk for fast semantic chunking
+            chunk_results = chunker.chunk(text)
+
+            for cr in chunk_results:
+                chunk_text = cr.text.strip()
+                if not chunk_text:
+                    continue
+
+                chunks.append(DocumentChunk(
+                    text=chunk_text,
+                    page_number=page_num,
+                    chunk_index=chunk_idx,
+                ))
+                chunk_idx += 1
+
+        return chunks
+
+    def _create_chunks_simple(self, pages: list[tuple[int, str]]) -> list[DocumentChunk]:
+        """
+        Simple fallback chunking when memchunk unavailable.
+
+        Uses paragraph-based splitting with overlap.
         """
         chunks = []
         chunk_idx = 0
-        
+
         for page_num, text in pages:
             # Split by paragraphs first
             paragraphs = text.split('\n\n')
             current_chunk = ""
-            
+
             for para in paragraphs:
                 para = para.strip()
                 if not para:
                     continue
-                
+
                 # If adding paragraph exceeds chunk size, save current chunk
                 if len(current_chunk) + len(para) > self.chunk_size and current_chunk:
                     chunks.append(DocumentChunk(
@@ -433,7 +492,7 @@ class DocumentIngester:
                     current_chunk = " ".join(overlap_words) + " " + para
                 else:
                     current_chunk += " " + para
-            
+
             # Save remaining text
             if current_chunk.strip():
                 chunks.append(DocumentChunk(
@@ -442,7 +501,7 @@ class DocumentIngester:
                     chunk_index=chunk_idx,
                 ))
                 chunk_idx += 1
-        
+
         return chunks
     
     async def _extract_with_llm(self, text: str) -> list[ExtractedEntity]:

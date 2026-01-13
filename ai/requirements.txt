@@ -10,6 +10,8 @@ pymupdf>=1.23.0
 Pillow>=10.0.0
 scikit-learn
 numpy
+# High-performance semantic chunking (up to 1TB/s)
+memchunk>=0.1.0
 # Use CPU-only torch to reduce image size (from ~2GB to ~200MB)
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
