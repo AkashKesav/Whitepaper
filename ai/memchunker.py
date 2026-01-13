@@ -15,15 +15,19 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional, List, Callable
 from functools import lru_cache
+import logging
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 # Try to import the Rust-based memchunk library
 try:
     from memchunk import chunk as rust_chunk
     HAS_RUST_MEMCHUNK = True
+    logger.info("Using Rust memchunk library for SIMD-accelerated chunking")
 except ImportError:
     HAS_RUST_MEMCHUNK = False
-    print("WARNING: memchunk Rust library not found. Using pure Python fallback.")
-    print("Install with: pip install memchunk")
+    logger.debug("Rust memchunk library not found, using pure Python fallback")
 
 
 @dataclass
