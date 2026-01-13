@@ -54,7 +54,7 @@ func NewEngine(cfg Config, logger *zap.Logger) *Engine {
 	e.synthesis = NewSynthesisModule(cfg.GraphClient, cfg.QueryBuilder, cfg.AIServicesURL, logger)
 	e.anticipation = NewAnticipationModule(cfg.GraphClient, cfg.QueryBuilder, cfg.RedisClient, logger)
 	e.curation = NewCurationModule(cfg.GraphClient, cfg.QueryBuilder, cfg.AIServicesURL, logger)
-	e.prioritization = NewPrioritizationModule(cfg.GraphClient, cfg.QueryBuilder, cfg.ActivationConfig, logger)
+	e.prioritization = NewPrioritizationModule(cfg.GraphClient, cfg.QueryBuilder, cfg.RedisClient, cfg.ActivationConfig, logger)
 
 	return e
 }

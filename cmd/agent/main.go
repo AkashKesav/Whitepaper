@@ -43,7 +43,9 @@ func main() {
 	// Setup HTTP server
 	router := mux.NewRouter()
 	server := agent.NewServer(a, logger)
-	server.SetupRoutes(router)
+	if err := server.SetupRoutes(router); err != nil {
+		logger.Fatal("Failed to setup routes", zap.Error(err))
+	}
 
 	// Serve static files for web UI
 	router.PathPrefix("/").Handler(http.FileServer(http.Dir("./static")))

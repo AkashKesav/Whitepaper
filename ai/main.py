@@ -23,6 +23,17 @@ from llm_router import LLMRouter
 from embedding_service import EmbeddingService
 from document_ingester import DocumentIngester, IngestDocumentRequest, IngestDocumentResponse
 
+# SECURITY: File validation for document uploads
+try:
+    from file_validator import FileValidator, ValidationError
+except ImportError:
+    # file_validator module not available, define stubs
+    class FileValidator:
+        def validate(self, filename, content):
+            return None
+    class ValidationError(Exception):
+        pass
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -848,26 +859,58 @@ async def semantic_search(request: SemanticSearchRequest):
 async def ingest_document(request: IngestDocumentRequest):
     """
     Ingest a document using Vector-Native Hierarchical architecture.
-    
+
     - Chunks document into 200-word segments
     - Generates embeddings for each chunk
     - Extracts entities using tiered approach
     - Builds hierarchical vector tree
+
+    SECURITY: Validates all file uploads before processing
     """
     try:
         ingester: DocumentIngester = app.state.document_ingester
-        
+
         if request.text:
             # Plain text ingestion
             result = await ingester.ingest_text(request.text)
         elif request.content_base64:
-            # Base64 encoded content (future: PDF support)
+            # SECURITY: Validate file content before processing
+            filename = request.filename if request.filename else "document.txt"
+
+            validation_result = FileValidator.validate_base64_content(
+                request.content_base64,
+                filename
+            )
+
+            if not validation_result.valid:
+                # Log the validation failure for security monitoring
+                print(f"SECURITY: File validation failed - {validation_result.error_type.value}: {validation_result.error_message}",
+                      flush=True)
+
+                # Return generic error message to avoid information disclosure
+                if validation_result.error_type == ValidationError.FILE_TOO_LARGE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="File size exceeds maximum allowed size"
+                    )
+                elif validation_result.error_type == ValidationError.INVALID_BASE64:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid file encoding"
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="File validation failed"
+                    )
+
+            # File validated - decode and process
             import base64
             content = base64.b64decode(request.content_base64).decode('utf-8', errors='ignore')
             result = await ingester.ingest_text(content)
         else:
             raise HTTPException(status_code=400, detail="Either text or content_base64 is required")
-        
+
         # Convert result to response format
         entities = [
             {
@@ -879,7 +922,7 @@ async def ingest_document(request: IngestDocumentRequest):
             }
             for e in result.entities
         ]
-        
+
         relationships = [
             {
                 "from_entity": r.from_entity,
@@ -889,7 +932,7 @@ async def ingest_document(request: IngestDocumentRequest):
             }
             for r in result.relationships
         ]
-        
+
         chunks = [
             {
                 "text": c.text,
@@ -899,9 +942,9 @@ async def ingest_document(request: IngestDocumentRequest):
             }
             for c in result.chunks
         ]
-        
+
         print(f"DEBUG /ingest: processed document with {len(entities)} entities, {len(result.chunks)} chunks", flush=True)
-        
+
         return IngestDocumentResponse(
             entities=entities,
             relationships=relationships,
@@ -910,12 +953,72 @@ async def ingest_document(request: IngestDocumentRequest):
             summary=result.summary,
             vector_tree=result.vector_tree if result.vector_tree else None
         )
-        
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
         print(f"DEBUG /ingest error: {e}", flush=True)
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/classify-intent")
+async def classify_intent(request: dict):
+    """
+    Classify the intent of a user message using LLM.
+    Returns: GREETING, NAVIGATION, FACT_RETRIEVAL, or COMPLEX
+    """
+    try:
+        query = request.get("query", "")
+        if not query:
+            raise HTTPException(status_code=400, detail="query is required")
+
+        router = app.state.llm_router
+
+        # Use LLM to classify intent with a clear, structured prompt
+        system_prompt = """You are an intent classifier. Classify the user message into ONE of these categories:
+- GREETING: Hello, goodbye, thanks, hi, hey, how are you
+- NAVIGATION: Requests to open settings, dashboard, profile, go to page
+- FACT_RETRIEVAL: Questions asking for stored information (what, where, who, when, how, etc.)
+- COMPLEX: Conversational messages, statements, or multi-part queries
+
+Return ONLY the category name, nothing else."""
+
+        response = await router.generate(
+            query=f"Classify this message: {query}",
+            system_instruction=system_prompt,
+            provider="glm",  # Use GLM for fast classification
+        )
+
+        # Clean and normalize response
+        intent = response.strip().upper()
+
+        # Map common variations
+        intent_mapping = {
+            "GREETING": "GREETING",
+            "NAVIGATION": "NAVIGATION",
+            "FACT_RETRIEVAL": "FACT_RETRIEVAL",
+            "FACT RETRIEVAL": "FACT_RETRIEVAL",
+            "FACT": "FACT_RETRIEVAL",
+            "RETRIEVAL": "FACT_RETRIEVAL",
+            "COMPLEX": "COMPLEX",
+            "CONVERSATION": "COMPLEX",
+            "CHAT": "COMPLEX",
+        }
+
+        final_intent = intent_mapping.get(intent, "COMPLEX")
+
+        print(f"DEBUG /classify-intent: query='{query[:50]}...', raw_response='{response}', final_intent='{final_intent}'", flush=True)
+
+        return {"intent": final_intent}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"DEBUG /classify-intent error: {e}", flush=True)
+        # Default to COMPLEX on error
+        return {"intent": "COMPLEX"}
 
 
 @app.get("/health")

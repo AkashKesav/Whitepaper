@@ -3,12 +3,14 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -18,6 +20,53 @@ type contextKey string
 const UserIDContextKey contextKey = "user_id"
 const UserRoleContextKey contextKey = "user_role"
 
+// TokenType represents the type of JWT token
+type TokenType string
+
+const (
+	TokenTypeAccess  TokenType = "access"
+	TokenTypeRefresh TokenType = "refresh"
+)
+
+// TokenConfig holds token duration configuration
+type TokenConfig struct {
+	AccessTokenDuration  time.Duration
+	RefreshTokenDuration time.Duration
+	Issuer               string
+}
+
+// DefaultTokenConfig returns secure default token durations
+func DefaultTokenConfig() TokenConfig {
+	// Support environment variable overrides
+	accessDur := 15 * time.Minute // Default: 15 minutes for access tokens
+	if dur := os.Getenv("JWT_ACCESS_DURATION"); dur != "" {
+		if parsed, err := time.ParseDuration(dur); err == nil {
+			accessDur = parsed
+		}
+	}
+
+	refreshDur := 7 * 24 * time.Hour // Default: 7 days for refresh tokens
+	if dur := os.Getenv("JWT_REFRESH_DURATION"); dur != "" {
+		if parsed, err := time.ParseDuration(dur); err == nil {
+			refreshDur = parsed
+		}
+	}
+
+	return TokenConfig{
+		AccessTokenDuration:  accessDur,
+		RefreshTokenDuration: refreshDur,
+		Issuer:               "reflective-memory-kernel",
+	}
+}
+
+// TokenPair represents both access and refresh tokens
+type TokenPair struct {
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	TokenType    string    `json:"token_type"`
+}
+
 // JWTMiddleware validates JWT tokens and extracts user ID
 type JWTMiddleware struct {
 	secretKey []byte
@@ -25,26 +74,46 @@ type JWTMiddleware struct {
 }
 
 // NewJWTMiddleware creates a new JWT middleware
-func NewJWTMiddleware(logger *zap.Logger) *JWTMiddleware {
+// SECURITY: Returns error if JWT_SECRET is not set or too weak
+func NewJWTMiddleware(logger *zap.Logger) (*JWTMiddleware, error) {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
-		secret = "dev-secret-change-in-production" // Default for development
+		return nil, fmt.Errorf("JWT_SECRET environment variable is required")
+	}
+	if len(secret) < 32 {
+		return nil, fmt.Errorf("JWT_SECRET must be at least 32 characters for security")
 	}
 	return &JWTMiddleware{
 		secretKey: []byte(secret),
 		logger:    logger,
-	}
+	}, nil
 }
 
 // Middleware wraps an http.Handler with JWT validation
+// SECURITY: Public paths are explicitly defined; all other paths require authentication
 func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Define public paths that don't require authentication
+		publicPaths := map[string]bool{
+			"/api/login":      true,
+			"/api/register":   true,
+			"/health":         true,
+			"/api/health":     true,
+		}
+
+		path := r.URL.Path
+
 		// Extract token from Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-			// Allow unauthenticated access with anonymous user
-			ctx := context.WithValue(r.Context(), UserIDContextKey, "anonymous")
-			next.ServeHTTP(w, r.WithContext(ctx))
+			// Only allow anonymous access to public paths
+			if publicPaths[path] {
+				ctx := context.WithValue(r.Context(), UserIDContextKey, "anonymous")
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			// All other paths require authentication
+			http.Error(w, "Authentication required", http.StatusUnauthorized)
 			return
 		}
 
@@ -119,10 +188,14 @@ func GetUserIDFromRequest(r *http.Request) string {
 }
 
 // GenerateToken creates a new JWT token for a user
+// SECURITY: Requires JWT_SECRET to be set and at least 32 characters
 func GenerateToken(username, role string) (string, error) {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
-		secret = "dev-secret-change-in-production"
+		return "", fmt.Errorf("JWT_SECRET environment variable is required")
+	}
+	if len(secret) < 32 {
+		return "", fmt.Errorf("JWT_SECRET must be at least 32 characters for security")
 	}
 
 	// Create claims
@@ -150,4 +223,109 @@ func HashPassword(password string) (string, error) {
 func CheckPassword(hashedPassword, password string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
 	return err == nil
+}
+
+// GenerateTokenPair creates both access and refresh tokens for a user
+// SECURITY: Uses short-lived access tokens (15 min) and longer-lived refresh tokens (7 days)
+func GenerateTokenPair(username, role string) (*TokenPair, error) {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		return nil, fmt.Errorf("JWT_SECRET environment variable is required")
+	}
+	if len(secret) < 32 {
+		return nil, fmt.Errorf("JWT_SECRET must be at least 32 characters for security")
+	}
+
+	config := DefaultTokenConfig()
+	now := time.Now()
+
+	// Access Token - short-lived for security
+	accessClaims := jwt.MapClaims{
+		"type": TokenTypeAccess,
+		"sub":  username,
+		"role":  role,
+		"exp":  jwt.NewNumericDate(now.Add(config.AccessTokenDuration)),
+		"iat":  jwt.NewNumericDate(now),
+		"iss":  config.Issuer,
+		"jti":  uuid.New().String(),
+	}
+
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
+	accessSigned, err := accessToken.SignedString([]byte(secret))
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign access token: %w", err)
+	}
+
+	// Refresh Token - longer-lived for getting new access tokens
+	refreshClaims := jwt.MapClaims{
+		"type": TokenTypeRefresh,
+		"sub":  username,
+		"role":  role,
+		"exp":  jwt.NewNumericDate(now.Add(config.RefreshTokenDuration)),
+		"iat":  jwt.NewNumericDate(now),
+		"iss":  config.Issuer,
+		"jti":  uuid.New().String(),
+	}
+
+	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
+	refreshSigned, err := refreshToken.SignedString([]byte(secret))
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign refresh token: %w", err)
+	}
+
+	return &TokenPair{
+		AccessToken:  accessSigned,
+		RefreshToken: refreshSigned,
+		ExpiresAt:    now.Add(config.AccessTokenDuration),
+		TokenType:    "Bearer",
+	}, nil
+}
+
+// RefreshAccessToken validates a refresh token and issues a new token pair
+// SECURITY: Only accepts refresh tokens, not access tokens
+func RefreshAccessToken(refreshToken string) (*TokenPair, error) {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		return nil, fmt.Errorf("JWT_SECRET environment variable is required")
+	}
+	if len(secret) < 32 {
+		return nil, fmt.Errorf("JWT_SECRET must be at least 32 characters for security")
+	}
+
+	// Parse and validate refresh token
+	token, err := jwt.Parse(refreshToken, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, jwt.ErrSignatureInvalid
+		}
+		return []byte(secret), nil
+	})
+
+	if err != nil || !token.Valid {
+		return nil, fmt.Errorf("invalid or expired refresh token: %w", err)
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("invalid token claims")
+	}
+
+	// Verify this is a refresh token
+	tokenType, _ := claims["type"].(string)
+	if tokenType != string(TokenTypeRefresh) {
+		return nil, fmt.Errorf("expected refresh token, got %s", tokenType)
+	}
+
+	// Extract user info
+	username, _ := claims["sub"].(string)
+	if username == "" {
+		return nil, fmt.Errorf("refresh token missing subject")
+	}
+
+	role, _ := claims["role"].(string)
+	if role == "" {
+		role = "user"
+	}
+
+	// Issue new token pair
+	return GenerateTokenPair(username, role)
 }

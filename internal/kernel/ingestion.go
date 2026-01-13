@@ -37,6 +37,142 @@ type IngestionStats struct {
 	mu                   sync.RWMutex
 }
 
+// CircuitBreakerState represents the state of the circuit breaker
+type CircuitBreakerState int
+
+const (
+	CircuitClosed CircuitBreakerState = iota // Normal operation
+	CircuitOpen                                // Circuit tripped, fail fast
+	CircuitHalfOpen                            // Testing if service recovered
+)
+
+// CircuitBreaker prevents cascading failures by failing fast when the AI service is down
+type CircuitBreaker struct {
+	mu sync.RWMutex
+
+	// Configuration
+	maxFailures     int           // Number of failures before opening
+	resetTimeout    time.Duration // How long to stay in Open state
+	successThreshold int          // Successful calls needed to close in HalfOpen
+
+	// State
+	state          CircuitBreakerState
+	failures       int
+	lastFailureAt  time.Time
+	successCount   int
+	lastStateChange time.Time
+
+	logger *zap.Logger
+}
+
+// NewCircuitBreaker creates a new circuit breaker with default settings
+func NewCircuitBreaker(logger *zap.Logger) *CircuitBreaker {
+	return &CircuitBreaker{
+		maxFailures:     5,                  // Open after 5 consecutive failures
+		resetTimeout:    60 * time.Second,   // Try again after 60 seconds
+		successThreshold: 2,                  // Need 2 successes to close circuit
+		state:           CircuitClosed,
+		logger:          logger,
+		lastStateChange: time.Now(),
+	}
+}
+
+// Execute runs the given function if the circuit is closed or half-open.
+// Returns error immediately if circuit is open.
+func (cb *CircuitBreaker) Execute(fn func() error) error {
+	cb.mu.Lock()
+
+	// Check if we should transition from Open to HalfOpen
+	if cb.state == CircuitOpen && time.Since(cb.lastFailureAt) > cb.resetTimeout {
+		cb.state = CircuitHalfOpen
+		cb.successCount = 0
+		cb.lastStateChange = time.Now()
+		cb.logger.Info("Circuit breaker transitioning to HalfOpen",
+			zap.Duration("downtime", time.Since(cb.lastFailureAt)))
+	}
+
+	// Fail fast if circuit is open
+	if cb.state == CircuitOpen {
+		cb.mu.Unlock()
+		return fmt.Errorf("circuit breaker is OPEN: service unavailable")
+	}
+
+	cb.mu.Unlock()
+
+	// Execute the function
+	err := fn()
+
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	if err != nil {
+		cb.onFailure()
+		return err
+	}
+
+	cb.onSuccess()
+	return nil
+}
+
+// onSuccess handles a successful call
+func (cb *CircuitBreaker) onSuccess() {
+	cb.failures = 0
+
+	if cb.state == CircuitHalfOpen {
+		cb.successCount++
+		if cb.successCount >= cb.successThreshold {
+			cb.state = CircuitClosed
+			cb.lastStateChange = time.Now()
+			cb.logger.Info("Circuit breaker closing after successful recovery")
+		}
+	}
+}
+
+// onFailure handles a failed call
+func (cb *CircuitBreaker) onFailure() {
+	cb.failures++
+	cb.lastFailureAt = time.Now()
+
+	if cb.failures >= cb.maxFailures {
+		if cb.state != CircuitOpen {
+			cb.state = CircuitOpen
+			cb.lastStateChange = time.Now()
+			cb.logger.Warn("Circuit breaker OPEN after consecutive failures",
+				zap.Int("failures", cb.failures),
+				zap.Duration("reset_timeout", cb.resetTimeout))
+		}
+	}
+}
+
+// GetState returns the current circuit breaker state
+func (cb *CircuitBreaker) GetState() CircuitBreakerState {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+	return cb.state
+}
+
+// GetStats returns circuit breaker statistics
+func (cb *CircuitBreaker) GetStats() map[string]interface{} {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+
+	stateName := "CLOSED"
+	switch cb.state {
+	case CircuitOpen:
+		stateName = "OPEN"
+	case CircuitHalfOpen:
+		stateName = "HALF_OPEN"
+	}
+
+	return map[string]interface{}{
+		"state":          stateName,
+		"failures":       cb.failures,
+		"last_failure":   cb.lastFailureAt,
+		"last_change":    cb.lastStateChange,
+		"success_count":  cb.successCount,
+	}
+}
+
 // IngestionPipeline handles the ingestion of transcript events into the Knowledge Graph
 type IngestionPipeline struct {
 	graphClient *graph.Client
@@ -59,6 +195,9 @@ type IngestionPipeline struct {
 	// Metrics
 	stats         IngestionStats
 	totalDuration int64 // for calculating average
+
+	// Circuit breaker for AI service calls
+	aiCircuitBreaker *CircuitBreaker
 }
 
 // GetStats returns current ingestion statistics
@@ -91,17 +230,18 @@ func NewIngestionPipeline(
 	logger *zap.Logger,
 ) *IngestionPipeline {
 	return &IngestionPipeline{
-		graphClient:   graphClient,
-		jetStream:     jetStream,
-		redisClient:   redisClient,
-		aiServicesURL: aiServicesURL,
-		localEmbedder: localEmbedder,
-		wisdomManager: wisdomManager,
-		vectorIndex:   vectorIndex,
-		batchSize:     batchSize,
-		flushInterval: flushInterval,
-		logger:        logger,
-		eventBuffer:   make([]graph.TranscriptEvent, 0, batchSize),
+		graphClient:      graphClient,
+		jetStream:        jetStream,
+		redisClient:      redisClient,
+		aiServicesURL:    aiServicesURL,
+		localEmbedder:    localEmbedder,
+		wisdomManager:    wisdomManager,
+		vectorIndex:      vectorIndex,
+		batchSize:        batchSize,
+		flushInterval:    flushInterval,
+		logger:           logger,
+		eventBuffer:      make([]graph.TranscriptEvent, 0, batchSize),
+		aiCircuitBreaker: NewCircuitBreaker(logger.Named("circuit_breaker")),
 	}
 }
 
@@ -316,38 +456,62 @@ func (p *IngestionPipeline) extractEntities(ctx context.Context, event *graph.Tr
 		Context    string `json:"context,omitempty"`
 	}
 
-	reqBody := ExtractionRequest{
-		UserQuery:  event.UserQuery,
-		AIResponse: event.AIResponse,
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		p.aiServicesURL+"/extract",
-		bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	// Increased timeout to 120s to support large models running on hybrid CPU/GPU or pure CPU
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("extraction service returned status %d", resp.StatusCode)
-	}
-
 	var entities []graph.ExtractedEntity
-	if err := json.NewDecoder(resp.Body).Decode(&entities); err != nil {
+
+	// Wrap AI service call with circuit breaker
+	err := p.aiCircuitBreaker.Execute(func() error {
+		reqBody := ExtractionRequest{
+			UserQuery:  event.UserQuery,
+			AIResponse: event.AIResponse,
+		}
+
+		jsonData, err := json.Marshal(reqBody)
+		if err != nil {
+			return err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST",
+			p.aiServicesURL+"/extract",
+			bytes.NewBuffer(jsonData))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		// Increased timeout to 120s to support large models running on hybrid CPU/GPU or pure CPU
+		client := &http.Client{Timeout: 120 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("extraction service returned status %d", resp.StatusCode)
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&entities); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		// Circuit breaker might be open or service failed
+		p.logger.Warn("AI entity extraction failed or circuit breaker open",
+			zap.Error(err),
+			zap.String("circuit_state", func() string {
+				state := p.aiCircuitBreaker.GetState()
+				switch state {
+				case CircuitOpen:
+					return "OPEN"
+				case CircuitHalfOpen:
+					return "HALF_OPEN"
+				default:
+					return "CLOSED"
+				}
+			}()))
 		return nil, err
 	}
 
@@ -381,51 +545,103 @@ func (p *IngestionPipeline) resolveEntityWithAI(ctx context.Context, newEntity s
 		Candidates []string `json:"candidates"`
 	}
 
-	reqBody := ResolutionRequest{
-		Entity:     newEntity,
-		Candidates: candidates,
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		p.aiServicesURL+"/resolve-entity",
-		bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		// If service not implemented or error, fallback to no match
-		return "", fmt.Errorf("resolution service returned status %d", resp.StatusCode)
-	}
-
 	var result struct {
 		Match string `json:"match"` // The matching candidate or empty string
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+
+	// Wrap AI service call with circuit breaker
+	err := p.aiCircuitBreaker.Execute(func() error {
+		reqBody := ResolutionRequest{
+			Entity:     newEntity,
+			Candidates: candidates,
+		}
+
+		jsonData, err := json.Marshal(reqBody)
+		if err != nil {
+			return err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST",
+			p.aiServicesURL+"/resolve-entity",
+			bytes.NewBuffer(jsonData))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			// If service not implemented or error, fallback to no match
+			return fmt.Errorf("resolution service returned status %d", resp.StatusCode)
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		// Circuit breaker might be open or service failed
+		// Return empty match to fallback to creating new entity
+		p.logger.Debug("AI entity resolution failed or circuit breaker open, falling back to new entity",
+			zap.Error(err),
+			zap.String("circuit_state", func() string {
+				state := p.aiCircuitBreaker.GetState()
+				switch state {
+				case CircuitOpen:
+					return "OPEN"
+				case CircuitHalfOpen:
+					return "HALF_OPEN"
+				default:
+					return "CLOSED"
+				}
+			}()))
+		return "", nil // Fallback: create new entity
 	}
 
 	return result.Match, nil
 }
 
 // findSemanticMatch attempts to find an existing node UID that semantically matches the given name
+// Uses distributed locking to prevent race conditions during concurrent deduplication
 func (p *IngestionPipeline) findSemanticMatch(ctx context.Context, namespace, name string) (string, error) {
 	if p.localEmbedder == nil || p.vectorIndex == nil {
 		return "", nil // Feature disabled
 	}
+
+	// CRITICAL: Acquire distributed lock to prevent concurrent deduplication of the same entity
+	// SECURITY: Fail closed when lock system unavailable to prevent race conditions
+	// SECURITY: Adaptive lock with 30s timeout instead of 10s for resilience
+	lockKey := fmt.Sprintf("lock:dedup:%s:%s", namespace, name)
+	lockAcquired, err := p.redisClient.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
+	if err != nil {
+		p.logger.Error("Failed to acquire deduplication lock - aborting for safety",
+			zap.Error(err),
+			zap.String("name", name))
+		return "", fmt.Errorf("deduplication lock unavailable: %w", err)
+	}
+	if !lockAcquired {
+		p.logger.Debug("Deduplication lock busy, returning empty",
+			zap.String("name", name))
+		return "", fmt.Errorf("deduplication in progress for: %s", name)
+	}
+
+	// Ensure lock is released
+	defer func() {
+		if delCmd := p.redisClient.Del(ctx, lockKey); delCmd.Err() != nil {
+			p.logger.Warn("Failed to release deduplication lock",
+				zap.Error(delCmd.Err()),
+				zap.String("lock_key", lockKey))
+		}
+	}()
 
 	// 1. Embed the name
 	vec, err := p.localEmbedder.Embed(name)
@@ -435,7 +651,8 @@ func (p *IngestionPipeline) findSemanticMatch(ctx context.Context, namespace, na
 
 	// 2. Search Vector Index for Entity candidates (threshold 0.85)
 	// We only look for "Entity" type nodes to merge with
-	uids, scores, payloads, err := p.vectorIndex.Search(ctx, namespace, vec, 5)
+	// BACKGROUND OPERATION: Empty userID since this is not a user-initiated search
+	uids, scores, payloads, err := p.vectorIndex.Search(ctx, namespace, "", vec, 5)
 	if err != nil {
 		return "", err
 	}
@@ -504,7 +721,16 @@ func (p *IngestionPipeline) basicEntityExtraction(event *graph.TranscriptEvent) 
 }
 
 // processBatchedEntities handles the 3-step batched ingestion: Read -> Write Nodes -> Write Edges
-func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, namespace, userID, conversationID string, entities []graph.ExtractedEntity) error {
+func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, namespace, userID, conversationID string, entities []graph.ExtractedEntity) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger.Error("PANIC in processBatchedEntities",
+				zap.Any("error", r),
+				zap.Stack("stack"))
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+
 	// 1. COLLECT ALL UNIQUE NAMES
 	// We need to check existence for the User, all extracted Entities, and any Relation Targets
 	uniqueNames := make(map[string]bool)
@@ -662,6 +888,7 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, namespac
 			ToUID:   entityUID.UID,
 			Type:    graph.EdgeTypeKnows,
 			Status:  graph.EdgeStatusCurrent,
+			Weight:  0.3,
 		})
 
 		// Entity -> User (CREATED_BY) - Ownership
@@ -670,6 +897,7 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, namespac
 			ToUID:   userUID,
 			Type:    "created_by",
 			Status:  graph.EdgeStatusCurrent,
+			Weight:  0.2, // Metadata link, low weight
 		})
 
 		// Entity -> Conversation (DERIVED_FROM) - Origin
@@ -679,6 +907,7 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, namespac
 				ToUID:   convUID,
 				Type:    "derived_from",
 				Status:  graph.EdgeStatusCurrent,
+				Weight:  0.1, // Provenance link, very low weight
 			})
 		}
 
@@ -689,11 +918,27 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, namespac
 				continue
 			}
 
+			// Determine weight based on relationship type
+			weight := 0.5
+			switch r.Type {
+			case graph.EdgeTypePartnerIs, graph.EdgeTypeFamilyMember:
+				weight = 0.95
+			case graph.EdgeTypeFriendOf, graph.EdgeTypeHasManager, graph.EdgeTypeWorksOn:
+				weight = 0.8
+			case graph.EdgeTypeLikes, graph.EdgeTypeDislikes, graph.EdgeTypeIsAllergic:
+				weight = 0.7
+			case graph.EdgeTypeKnows:
+				weight = 0.3
+			default:
+				weight = 0.5
+			}
+
 			edgesToCreate = append(edgesToCreate, graph.EdgeInput{
 				FromUID: entityUID.UID,
 				ToUID:   targetUID.UID,
 				Type:    r.Type,
 				Status:  graph.EdgeStatusCurrent,
+				Weight:  weight,
 			})
 		}
 	}
@@ -709,6 +954,11 @@ func (p *IngestionPipeline) processBatchedEntities(ctx context.Context, namespac
 	// 5. ASYNC UPDATES (Fire and forget)
 	// Update activation/tags for existing nodes that we found in step 2
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				p.logger.Error("PANIC in async updates", zap.Any("error", r))
+			}
+		}()
 		// Create a separate context for async ops
 		asyncCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -833,12 +1083,4 @@ func min(a, b int) int {
 		return a
 	}
 	return b
-}
-
-// truncateString truncates a string to maxLen characters
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }

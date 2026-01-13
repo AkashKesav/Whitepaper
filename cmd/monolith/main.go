@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,6 +38,16 @@ func main() {
 	// Initialize Logger
 	logger, _ := zap.NewDevelopment()
 	defer logger.Sync()
+
+	// Global Panic Recovery
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Fatal("CRITICAL PANIC IN MONOLITH MAIN",
+				zap.Any("panic", r),
+				zap.Stack("stacktrace"),
+			)
+		}
+	}()
 
 	logger.Info("Starting Monolith (Unified Agent + Kernel)...")
 
@@ -169,10 +180,30 @@ func main() {
 		logger.Info("Pre-Cortex semantic cache enabled with Ollama embeddings")
 	}
 
+	// Configure allowed origins for WebSocket and CORS (from ALLOWED_ORIGINS env var)
+	allowedOriginsStr := os.Getenv("ALLOWED_ORIGINS")
+	var allowedOrigins []string
+	if allowedOriginsStr == "" {
+		// Default to localhost for development
+		allowedOrigins = []string{"http://localhost:5173", "http://localhost:3000"}
+		logger.Info("Using default CORS origins (development mode)",
+			zap.Strings("origins", allowedOrigins))
+	} else {
+		allowedOrigins = strings.Split(allowedOriginsStr, ",")
+		// Trim whitespace from each origin
+		for i, origin := range allowedOrigins {
+			allowedOrigins[i] = strings.TrimSpace(origin)
+		}
+		logger.Info("Using configured CORS origins",
+			zap.Strings("origins", allowedOrigins))
+	}
+
 	// Start API Server
 	router := mux.NewRouter()
-	server := agent.NewServer(a, logger.Named("server"))
-	server.SetupRoutes(router)
+	server := agent.NewServer(a, logger.Named("server"), allowedOrigins...)
+	if err := server.SetupRoutes(router); err != nil {
+		logger.Fatal("Failed to setup routes", zap.Error(err))
+	}
 
 	// Serve static files for web UI (must be after API routes to avoid conflicts)
 	staticDir := "./static"
@@ -181,11 +212,11 @@ func main() {
 		logger.Info("Serving static files from", zap.String("dir", staticDir))
 	}
 
-	// Add CORS
 	corsObj := handlers.CORS(
-		handlers.AllowedOrigins([]string{"*"}),
+		handlers.AllowedOrigins(allowedOrigins),
 		handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}),
 		handlers.AllowedHeaders([]string{"Content-Type", "Authorization"}),
+		handlers.AllowCredentials(),
 	)
 
 	apiPort := "0.0.0.0:9090"

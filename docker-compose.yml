@@ -24,11 +24,12 @@ services:
     image: dgraph/dgraph:v24.0.0
     container_name: rmk-dgraph-alpha
     ports:
-      - "8180:8080"
-      - "9180:9080"
+      - "18080:8080"
+      - "19080:9080"
     volumes:
       - dgraph-alpha-data:/dgraph
     command: dgraph alpha --my=dgraph-alpha:7080 --zero=dgraph-zero:5080 --security whitelist=0.0.0.0/0
+
     networks:
       - rmk-network
     depends_on:
@@ -84,6 +85,7 @@ services:
     env_file:
       - .env
     environment:
+      - GLM_API_KEY=${GLM_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     networks:
@@ -139,7 +141,7 @@ services:
       - AI_SERVICES_URL=http://ai-services:8000
       - OLLAMA_URL=http://ollama:11434
       - QDRANT_URL=http://qdrant:6333
-      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-production}
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-production-32chars-minimum-length}
       - PORT=9090
     networks:
       - rmk-network

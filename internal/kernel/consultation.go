@@ -19,6 +19,7 @@ import (
 
 	"github.com/reflective-memory-kernel/internal/ai/local"
 	"github.com/reflective-memory-kernel/internal/graph"
+	"github.com/reflective-memory-kernel/internal/memory"
 	"github.com/reflective-memory-kernel/internal/policy"
 )
 
@@ -34,9 +35,20 @@ type ConsultationHandler struct {
 	embedder    local.LocalEmbedder
 	vectorIndex *VectorIndex
 
+	// Hot Cache for recent messages (instant retrieval)
+	hotCache *memory.HotCache
+
 	// Policy Manager
 	policyManager *policy.PolicyManager
 }
+
+// Speculative cache validation constants
+const (
+	MaxSpeculativeQueries = 100  // Maximum speculative queries per user per hour
+	SpeculativeQueryMinLen = 3   // Minimum query length for speculation
+	SpeculativeQueryMaxLen = 200 // Maximum query length for speculation
+	SpeculativeWindow       = time.Hour
+)
 
 // isUUIDLike checks if a string looks like a UUID (8-4-4-4-12 pattern)
 func isUUIDLike(s string) bool {
@@ -48,6 +60,14 @@ func isUUIDLike(s string) bool {
 	return false
 }
 
+// truncateString truncates a string to maxLen characters
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 // NewConsultationHandler creates a new consultation handler
 func NewConsultationHandler(
 	graphClient *graph.Client,
@@ -55,6 +75,7 @@ func NewConsultationHandler(
 	redisClient *redis.Client,
 	vectorIndex *VectorIndex,
 	embedder local.LocalEmbedder,
+	hotCache *memory.HotCache,
 	policyManager *policy.PolicyManager,
 	aiServicesURL string,
 	logger *zap.Logger,
@@ -67,6 +88,7 @@ func NewConsultationHandler(
 		logger:        logger,
 		embedder:      embedder,
 		vectorIndex:   vectorIndex,
+		hotCache:      hotCache,
 		policyManager: policyManager,
 	}
 }
@@ -105,19 +127,46 @@ func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.Consultatio
 		h.logger.Debug("Workspace access verified", zap.String("namespace", namespace))
 	}
 
-	// STEP 0.5: Check Speculative Cache (Time Travel)
+	// STEP 0: Check Hot Cache (most recent messages - instant retrieval)
+	// Hot cache contains the last 50 messages per user, providing O(1) access
 	var facts []graph.Node
 	var err error
+	var hotCacheHit bool
 
-	cachedFacts, cacheErr := h.checkSpeculationCache(ctx, req.UserID, req.Query)
-	if cacheErr == nil && cachedFacts != nil {
-		h.logger.Info("Hit speculative cache (Time Travel successful)", zap.Int("facts", len(cachedFacts)))
-		facts = cachedFacts
-	} else {
-		// STEP 1: Get facts matching the query terms (Cache Miss)
-		facts, err = h.getUserKnowledge(ctx, namespace, req.Query)
-		if err != nil {
-			h.logger.Warn("Failed to get user knowledge", zap.Error(err))
+	if h.hotCache != nil {
+		hotCacheResults, hcErr := h.hotCache.Search(req.UserID, namespace, req.Query, 5, 0.6)
+		if hcErr == nil && len(hotCacheResults) > 0 {
+			h.logger.Info("Hot cache hit - recent messages found",
+				zap.Int("results", len(hotCacheResults)),
+				zap.Float32("similarity", hotCacheResults[0].Similarity))
+
+			// Convert hot cache results to Nodes
+			for _, result := range hotCacheResults {
+				facts = append(facts, graph.Node{
+					Name:        truncateString(result.Message.Query, 100),
+					Description: fmt.Sprintf("Q: %s\nA: %s", result.Message.Query, result.Message.Response),
+					DType:       []string{string(graph.NodeTypeFact)},
+					Namespace:   namespace,
+					Activation:  float64(result.Similarity),
+					Confidence:  0.9,
+				})
+			}
+			hotCacheHit = true
+		}
+	}
+
+	// STEP 0.5: Check Speculative Cache (Time Travel) if hot cache miss
+	if !hotCacheHit {
+		cachedFacts, cacheErr := h.checkSpeculationCache(ctx, req.UserID, req.Query)
+		if cacheErr == nil && cachedFacts != nil {
+			h.logger.Info("Hit speculative cache (Time Travel successful)", zap.Int("facts", len(cachedFacts)))
+			facts = cachedFacts
+		} else {
+			// STEP 1: Get facts matching the query terms (Cache Miss)
+				facts, err = h.getUserKnowledge(ctx, namespace, req.UserID, req.Query)
+			if err != nil {
+				h.logger.Warn("Failed to get user knowledge", zap.Error(err))
+			}
 		}
 	}
 	// STEP 1.5: Policy Enforcement (Filter Facts)
@@ -134,10 +183,15 @@ func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.Consultatio
 		// Build UserContext (fetch groups, clearance, etc.)
 		userCtx, err := h.buildUserContext(ctx, req.UserID)
 		if err != nil {
-			h.logger.Error("Failed to build user context for policy check", zap.Error(err))
-			// Fail safe: if we can't verify context, we assume minimal access (or deny all?)
-			// For now, we'll log and continue with minimal context (public only)
-			userCtx = policy.UserContext{UserID: req.UserID}
+			// Don't fail the entire consultation - use default context and proceed
+			// User is authenticated (token verified), just missing DGraph metadata
+			h.logger.Warn("Failed to build user context, using default (no groups)", zap.Error(err))
+			userCtx = policy.UserContext{
+				UserID:        req.UserID,
+				Groups:        []string{},
+				Clearance:     0,
+				Authenticated: true,
+			}
 		}
 
 		for _, fact := range facts {
@@ -198,25 +252,41 @@ func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.Consultatio
 		zap.Int("facts", len(facts)),
 		zap.Duration("latency", time.Since(startTime)))
 
-	// STEP 3: Async Activation Boost (Active Synthesis) - DISABLED
-	// This was causing a feedback loop where ALL retrieved nodes got boosted,
-	// even when just viewing the dashboard. Activation should only be boosted
-	// when entities are explicitly mentioned (handled in ingestion deduplication).
-	//
-	// if len(response.RelevantFacts) > 0 {
-	// 	factsToBoost := make([]graph.Node, len(response.RelevantFacts))
-	// 	copy(factsToBoost, response.RelevantFacts)
-	// 	go func(nodes []graph.Node) {
-	// 		boostCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	// 		defer cancel()
-	// 		config := graph.DefaultActivationConfig()
-	// 		for _, node := range nodes {
-	// 			if err := h.graphClient.IncrementAccessCount(boostCtx, node.UID, config); err != nil {
-	// 				h.logger.Debug("Failed to boost activation", zap.String("uid", node.UID), zap.Error(err))
-	// 			}
-	// 		}
-	// 	}(factsToBoost)
-	// }
+	// STEP 3: Async Activation Boost (Active Synthesis / Memory Reconsolidation)
+	// We boost the activation of nodes that were actually used (retrieved).
+	// This implements "Memory Reconsolidation" - recalling a memory strengthens it.
+	if len(response.RelevantFacts) > 0 {
+		// Limit to top 20 to avoid performance spikes
+		limit := 20
+		if len(response.RelevantFacts) < limit {
+			limit = len(response.RelevantFacts)
+		}
+
+		factsToBoost := make([]graph.Node, limit)
+		copy(factsToBoost, response.RelevantFacts[:limit])
+
+		go func(nodes []graph.Node) {
+			// Create a detached context with timeout
+			boostCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			// Use the kernel's activation config logic (or default for now)
+			config := graph.DefaultActivationConfig()
+
+			for _, node := range nodes {
+				// Don't boost if it's already maxed out (optimization)
+				if node.Activation >= config.MaxActivation {
+					continue
+				}
+
+				if err := h.graphClient.IncrementAccessCount(boostCtx, node.UID, config); err != nil {
+					h.logger.Debug("Failed to reconsolidate memory (boost)",
+						zap.String("uid", node.UID),
+						zap.Error(err))
+				}
+			}
+		}(factsToBoost)
+	}
 
 	return response, nil
 }
@@ -226,7 +296,7 @@ func (h *ConsultationHandler) Handle(ctx context.Context, req *graph.Consultatio
 // 2. High activation nodes (frequently accessed)
 // 3. Recent nodes (newly added)
 // This ensures semantic relevance, importance, AND freshness are all considered
-func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace string, queryText string) ([]graph.Node, error) {
+func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace, userID, queryText string) ([]graph.Node, error) {
 	h.logger.Info("Fetching knowledge with Hybrid RAG approach", zap.String("query", queryText))
 
 	seen := make(map[string]bool)
@@ -234,6 +304,11 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace st
 
 	// Helper to check if node should be included
 	isValidNode := func(node graph.Node) bool {
+		// SECURITY: Namespace check FIRST (defense-in-depth)
+		// This ensures nodes from other namespaces are filtered out before any other processing
+		if node.Namespace != namespace {
+			return false
+		}
 		if node.Name == "" {
 			return false
 		}
@@ -262,12 +337,17 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace st
 	}
 
 	// STEP 1: Vector search for semantically similar nodes (Hybrid RAG)
+	// SECURITY: Validate namespace before vector search
+	if namespace == "" {
+		return nil, fmt.Errorf("namespace cannot be empty for knowledge retrieval")
+	}
+
 	if h.embedder != nil && h.vectorIndex != nil {
 		queryVec, err := h.embedder.Embed(queryText)
 		if err != nil {
 			h.logger.Warn("Failed to embed query for vector search", zap.Error(err))
 		} else if len(queryVec) > 0 {
-			uids, scores, payloads, err := h.vectorIndex.Search(ctx, namespace, queryVec, 20)
+			uids, scores, payloads, err := h.vectorIndex.Search(ctx, namespace, userID, queryVec, 20)
 			if err != nil {
 				h.logger.Warn("Vector search failed", zap.Error(err))
 			} else if len(uids) > 0 {
@@ -288,6 +368,7 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace st
 							UID:         uid,
 							Name:        "Relevant Excerpt",
 							Description: text, // The chunk text is the content
+							Namespace:   namespace, // CRITICAL: Set namespace for policy checks
 							DType:       []string{string(graph.NodeTypeFact)},
 							Activation:  1.0, // High priority from vector match
 							Confidence:  float64(scores[i]),
@@ -318,6 +399,14 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace st
 						h.logger.Warn("Failed to fetch vector search results", zap.Error(err))
 					} else {
 						for _, node := range vectorNodes {
+							// CRITICAL: Filter out nodes from other namespaces to prevent cross-account contamination
+							if node.Namespace != namespace {
+								h.logger.Debug("Filtered out cross-namespace node from vector search",
+									zap.String("node_name", node.Name),
+									zap.String("node_namespace", node.Namespace),
+									zap.String("expected_namespace", namespace))
+								continue
+							}
 							if !seen[node.UID] && isValidNode(node) {
 								seen[node.UID] = true
 								merged = append(merged, node)
@@ -384,6 +473,7 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace st
 			dgraph.type
 			name
 			description
+			namespace
 			tags
 			activation
 			created_at
@@ -393,6 +483,7 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace st
 			dgraph.type
 			name
 			description
+			namespace
 			tags
 			activation
 			created_at
@@ -446,7 +537,79 @@ func (h *ConsultationHandler) getUserKnowledge(ctx context.Context, namespace st
 		zap.Int("merged_filtered", len(merged)),
 		zap.Bool("vector_search_used", h.embedder != nil && h.vectorIndex != nil))
 
-	return merged, nil
+	// HYBRID RAG RESULT FUSION
+	// Combine vector similarity scores and graph activation scores
+	// Use weighted formula: final_score = 0.6 * vector_similarity + 0.4 * graph_activation
+	// This balances semantic relevance with knowledge graph importance
+	type fusedNode struct {
+		node  graph.Node
+		score float64
+	}
+
+	var fused []fusedNode
+	const (
+		vectorWeight = 0.6 // Weight for semantic similarity
+		graphWeight  = 0.4 // Weight for graph activation
+	)
+
+	for _, node := range merged {
+		// Get vector similarity from Confidence field (set during vector search)
+		// Default to 0 if not from vector search
+		vectorScore := node.Confidence
+		if vectorScore < 0 || vectorScore > 1 {
+			vectorScore = 0 // Invalid score, default to 0
+		}
+
+		// Get graph activation (normalize to 0-1 range, cap at 1.0)
+		graphScore := node.Activation
+		if graphScore < 0 {
+			graphScore = 0
+		} else if graphScore > 1 {
+			graphScore = 1
+		}
+
+		// Calculate fused score
+		fusedScore := vectorWeight*vectorScore + graphWeight*graphScore
+
+		fused = append(fused, fusedNode{
+			node:  node,
+			score: fusedScore,
+		})
+	}
+
+	// Sort by fused score (descending)
+	sort.Slice(fused, func(i, j int) bool {
+		return fused[i].score > fused[j].score
+	})
+
+	// Extract sorted nodes and update their Activation to reflect fused score
+	resultLimit := 50 // Return top 50 results
+	if len(fused) < resultLimit {
+		resultLimit = len(fused)
+	}
+
+	sorted := make([]graph.Node, resultLimit)
+	for i := 0; i < resultLimit; i++ {
+		node := fused[i].node
+		node.Activation = fused[i].score // Update activation with fused score for downstream use
+		sorted[i] = node
+	}
+
+	h.logger.Info("Hybrid RAG result fusion complete",
+		zap.Int("input_nodes", len(merged)),
+		zap.Int("output_nodes", len(sorted)),
+		zap.Float64("avg_fused_score", func() float64 {
+			sum := 0.0
+			for _, f := range fused {
+				sum += f.score
+			}
+			if len(fused) > 0 {
+				return sum / float64(len(fused))
+			}
+			return 0
+		}()))
+
+	return sorted, nil
 }
 
 // textSearchFallback provides fallback text-based search if semantic search fails
@@ -786,8 +949,14 @@ func (h *ConsultationHandler) updateAccessedNodes(ctx context.Context, query str
 	config := graph.DefaultActivationConfig()
 
 	for _, node := range resp.RelevantFacts {
+		// Nil check to prevent panics
+		if node.UID == "" {
+			h.logger.Debug("Skipping node with empty UID")
+			continue
+		}
+
 		// ONLY boost if node is relevant to the query
-		if !isQueryRelevant(node.Name, query) {
+		if node.Name != "" && !isQueryRelevant(node.Name, query) {
 			continue
 		}
 
@@ -833,14 +1002,53 @@ func (h *ConsultationHandler) Speculate(ctx context.Context, req *graph.Consulta
 }
 
 // saveSpeculation saves the speculation result to Redis
+// SECURITY: Validates query and applies rate limiting to prevent abuse
 func (h *ConsultationHandler) saveSpeculation(ctx context.Context, userID, query string, facts []graph.Node) error {
+	// SECURITY: Validate query length before processing
+	if len(query) < SpeculativeQueryMinLen {
+		h.logger.Debug("Speculative query too short, skipping",
+			zap.String("user", userID),
+			zap.Int("length", len(query)))
+		return nil // Silently skip invalid queries
+	}
+
+	if len(query) > SpeculativeQueryMaxLen {
+		h.logger.Warn("Speculative query too long, rejecting",
+			zap.String("user", userID),
+			zap.Int("length", len(query)))
+		return fmt.Errorf("query exceeds maximum length of %d", SpeculativeQueryMaxLen)
+	}
+
+	// SECURITY: Rate limiting for speculative queries
+	rateLimitKey := fmt.Sprintf("ratelimit:speculation:%s", userID)
+	count, err := h.redisClient.Incr(ctx, rateLimitKey).Result()
+	if err != nil {
+		h.logger.Warn("Failed to check speculative query rate limit", zap.Error(err))
+		// Continue without rate limiting if Redis is unavailable (fail open)
+	} else {
+		if count == 1 {
+			// First request - set expiration
+			h.redisClient.Expire(ctx, rateLimitKey, SpeculativeWindow)
+		}
+
+		if count > MaxSpeculativeQueries {
+			h.logger.Warn("Speculative query rate limit exceeded",
+				zap.String("user", userID),
+				zap.Int64("count", count))
+			return fmt.Errorf("speculative query rate limit exceeded")
+		}
+	}
+
+	// SECURITY: Sanitize query before caching (remove null bytes, control characters)
+	sanitizedQuery := sanitizeQuery(query)
+
 	key := fmt.Sprintf("speculation:%s:latest", userID)
 
 	data := struct {
 		Query string       `json:"query"`
 		Facts []graph.Node `json:"facts"`
 	}{
-		Query: query,
+		Query: sanitizedQuery,
 		Facts: facts,
 	}
 
@@ -851,6 +1059,20 @@ func (h *ConsultationHandler) saveSpeculation(ctx context.Context, userID, query
 
 	// Cache for 10 seconds (typing context is fleeing)
 	return h.redisClient.Set(ctx, key, jsonData, 10*time.Second).Err()
+}
+
+// sanitizeQuery removes potentially malicious characters from query text
+func sanitizeQuery(query string) string {
+	// Remove null bytes and control characters (except common whitespace)
+	result := make([]rune, 0, len(query))
+	for _, r := range query {
+		if r == '\n' || r == '\t' || r == '\r' {
+			result = append(result, r)
+		} else if r >= 32 && r != 127 {
+			result = append(result, r)
+		}
+	}
+	return strings.TrimSpace(string(result))
 }
 
 // checkSpeculationCache checks if we have a valid speculation for the current query
@@ -899,7 +1121,10 @@ func (h *ConsultationHandler) buildUserContext(ctx context.Context, userID strin
 	}
 	var groups []string
 	for _, g := range graphGroups {
-		groups = append(groups, g.Name)
+		// Policy engine expects group UID without "group_" prefix
+		// Namespace format is "group_<UUID>", so extract the UUID part
+		groupUID := strings.TrimPrefix(g.Namespace, "group_")
+		groups = append(groups, groupUID)
 	}
 
 	// 2. Get Clearance (using specific query)
@@ -929,8 +1154,9 @@ func (h *ConsultationHandler) buildUserContext(ctx context.Context, userID strin
 	}
 
 	return policy.UserContext{
-		UserID:    userID,
-		Groups:    groups,
-		Clearance: clearance,
+		UserID:       userID,
+		Groups:       groups,
+		Clearance:    clearance,
+		Authenticated: true, // FIX: User is authenticated if they reached this point
 	}, nil
 }

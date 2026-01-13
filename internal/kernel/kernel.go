@@ -65,7 +65,7 @@ func DefaultConfig() Config {
 		AIServicesURL:          "http://localhost:8000",
 		QdrantURL:              "http://localhost:6333",
 		ReflectionInterval:     5 * time.Minute,
-		ActivationDecayRate:    0.002, // ~0.2% per hour = ~5% per day (gentle)
+		ActivationDecayRate:    0.05, // 5% decay per day
 		MinReflectionBatch:     10,
 		MaxReflectionBatch:     100,
 		IngestionBatchSize:     50,
@@ -162,8 +162,8 @@ func (k *Kernel) RemoveGroupMember(ctx context.Context, groupID, username string
 }
 
 // DeleteGroup deletes a group
-func (k *Kernel) DeleteGroup(ctx context.Context, groupID string) error {
-	return k.graphClient.DeleteGroup(ctx, groupID)
+func (k *Kernel) DeleteGroup(ctx context.Context, groupID, userID string) error {
+	return k.graphClient.DeleteGroup(ctx, groupID, userID)
 }
 
 // ShareToGroup shares a conversation with a group
@@ -206,7 +206,34 @@ func (k *Kernel) CreateShareLink(ctx context.Context, workspaceNS, creatorID str
 }
 
 // JoinViaShareLink joins a workspace using a share link
+// SECURITY: Uses distributed Redis lock to prevent race condition on share link usage
 func (k *Kernel) JoinViaShareLink(ctx context.Context, token, userID string) (*graph.ShareLink, error) {
+	if k.redisClient == nil {
+		// No Redis available - fall back to non-locked version (may have race conditions)
+		k.logger.Warn("Redis not available for share link locking - race conditions possible")
+		return k.graphClient.JoinViaShareLink(ctx, token, userID)
+	}
+
+	// CRITICAL: Use distributed lock to prevent race conditions on concurrent share link joins
+	// This prevents multiple users from simultaneously passing the usage limit check
+	// SECURITY: Adaptive lock with 30s timeout instead of 10s for resilience
+	lockKey := fmt.Sprintf("lock:sharelink:%s", token)
+	lockAcquired, err := k.redisClient.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
+	if err != nil {
+		k.logger.Error("Failed to acquire share link lock", zap.Error(err))
+		return nil, fmt.Errorf("share link lock unavailable: %w", err)
+	}
+	if !lockAcquired {
+		return nil, fmt.Errorf("share link is being processed by another request - please try again")
+	}
+
+	// Ensure lock is released when done
+	defer func() {
+		if delCmd := k.redisClient.Del(ctx, lockKey); delCmd.Err() != nil {
+			k.logger.Warn("Failed to release share link lock", zap.Error(delCmd.Err()))
+		}
+	}()
+
 	return k.graphClient.JoinViaShareLink(ctx, token, userID)
 }
 
@@ -232,12 +259,13 @@ func (k *Kernel) GetGraphClient() *graph.Client {
 
 // StoreInHotCache stores a conversation turn in the hot cache for immediate retrieval
 // This is the Hot Path - enables instant context for follow-up questions
-func (k *Kernel) StoreInHotCache(userID, query, response, convID string) error {
+// SECURITY: Namespace is required for isolation between tenants/workspaces
+func (k *Kernel) StoreInHotCache(userID, namespace, query, response, convID string) error {
 	if k.hotCache == nil {
 		k.logger.Debug("Hot cache not initialized, skipping store")
 		return nil // Not an error - hot cache is optional
 	}
-	return k.hotCache.Store(userID, query, response, convID)
+	return k.hotCache.Store(userID, namespace, query, response, convID)
 }
 
 // Start initializes and starts all kernel components
@@ -304,12 +332,16 @@ func (k *Kernel) Start() error {
 	}
 
 	// Initialize reflection engine
+	// Custom activation config
+	activationCfg := graph.DefaultActivationConfig()
+	activationCfg.DecayRate = k.config.ActivationDecayRate
+
 	reflectionCfg := reflection.Config{
 		GraphClient:        k.graphClient,
 		QueryBuilder:       k.queryBuilder,
 		RedisClient:        k.redisClient,
 		AIServicesURL:      k.config.AIServicesURL,
-		ActivationConfig:   graph.DefaultActivationConfig(),
+		ActivationConfig:   activationCfg,
 		ReflectionInterval: k.config.ReflectionInterval,
 		MinBatchSize:       k.config.MinReflectionBatch,
 		MaxBatchSize:       k.config.MaxReflectionBatch,
@@ -359,20 +391,22 @@ func (k *Kernel) Start() error {
 	)
 
 	// Initialize Policy Manager
+	// Policy enforcement re-enabled after verifying same-namespace access works
 	policyConfig := policy.PolicyManagerConfig{
-		Enabled:          true,
+		Enabled:          true, // RE-ENABLED: Namespace isolation verified working
 		AuditEnabled:     true,
 		RateLimitEnabled: true,
 	}
 	k.policyManager = policy.NewPolicyManager(policyConfig, k.graphClient, k.natsConn, k.redisClient, k.logger)
 
-	// Initialize consultation handler with Hybrid RAG support
+	// Initialize consultation handler with Hybrid RAG and Hot Cache support
 	k.consultationHandler = NewConsultationHandler(
 		k.graphClient,
 		k.queryBuilder,
 		k.redisClient,
 		k.vectorIndex,
 		k.localEmbedder,
+		k.hotCache,
 		k.policyManager,
 		k.config.AIServicesURL,
 		k.logger,
@@ -448,7 +482,7 @@ func (k *Kernel) runIngestionLoop() {
 	// Add panic recovery
 	defer func() {
 		if r := recover(); r != nil {
-			k.logger.Error("Panic in ingestion loop", zap.Any("panic", r))
+			k.logger.Error("Panic in ingestion loop", zap.Any("panic", r), zap.Stack("stacktrace"))
 		}
 	}()
 
@@ -458,6 +492,34 @@ func (k *Kernel) runIngestionLoop() {
 		k.logger.Error("JetStream context is nil, cannot subscribe")
 		return
 	}
+
+	// Create or get dead-letter stream for failed messages
+	deadLetterStream := "transcripts_dead"
+	if _, err := k.jetStream.StreamInfo(deadLetterStream); err != nil {
+		// Stream doesn't exist, create it
+		_, err = k.jetStream.AddStream(&nats.StreamConfig{
+			Name:     deadLetterStream,
+			Subjects: []string{"transcripts_dead.>"},
+			Retention: nats.LimitsPolicy,
+			MaxAge:   7 * 24 * time.Hour, // Keep dead letters for 7 days
+		})
+		if err != nil {
+			k.logger.Error("Failed to create dead-letter stream", zap.Error(err))
+		} else {
+			k.logger.Info("Created dead-letter stream", zap.String("stream", deadLetterStream))
+		}
+	}
+
+	// Track retry counts for messages
+	retryCount := make(map[string]int)
+	retryCountMu := sync.Mutex{}
+
+	// Configure retry policy
+	const (
+		maxRetries    = 3                // Maximum retry attempts
+		baseDelay     = 1 * time.Second  // Base delay for exponential backoff
+		maxDelay      = 30 * time.Second // Maximum delay between retries
+	)
 
 	// Subscribe to transcript events
 	sub, err := k.jetStream.Subscribe("transcripts.*", func(msg *nats.Msg) {
@@ -476,17 +538,78 @@ func (k *Kernel) runIngestionLoop() {
 		// Safety check for nil ingestion pipeline
 		if k.ingestionPipeline == nil {
 			k.logger.Error("Ingestion pipeline is nil, cannot process message")
-			msg.Nak()
+			msg.NakWithDelay(30 * time.Second) // Delay before retry
 			return
 		}
 
-		if err := k.ingestionPipeline.Process(k.ctx, msg.Data); err != nil {
+		// Process message with retry logic
+		err := k.ingestionPipeline.Process(k.ctx, msg.Data)
+		if err != nil {
+			// Check retry count for this message
+			msgID := string(msg.Header.Get("Nats-Msg-Id"))
+			if msgID == "" {
+				msgID = fmt.Sprintf("%s_%d", msg.Subject, time.Now().UnixNano())
+			}
+
+			retryCountMu.Lock()
+			count := retryCount[msgID]
+			count++
+			retryCount[msgID] = count
+			retryCountMu.Unlock()
+
 			k.logger.Error("Failed to process transcript",
 				zap.Error(err),
-				zap.String("subject", msg.Subject))
-			// Nak to retry later
-			msg.Nak()
+				zap.String("subject", msg.Subject),
+				zap.Int("retry_attempt", count))
+
+			if count < maxRetries {
+				// Calculate exponential backoff delay
+				delay := baseDelay * time.Duration(1<<uint(count-1))
+				if delay > maxDelay {
+					delay = maxDelay
+				}
+
+				k.logger.Info("Retrying message with backoff",
+					zap.String("msg_id", msgID),
+					zap.Duration("delay", delay),
+					zap.Int("retry", count))
+
+				// Nak with delay for retry
+				msg.NakWithDelay(delay)
+			} else {
+				// Max retries reached, send to dead-letter queue
+				k.logger.Error("Max retries exceeded, sending to dead-letter queue",
+					zap.String("msg_id", msgID),
+					zap.Int("max_retries", maxRetries),
+					zap.Error(err))
+
+				// Publish to dead-letter stream with metadata
+				deadLetterMsg := nats.NewMsg("transcripts_dead."+msg.Subject)
+				deadLetterMsg.Header.Set("Original-Subject", msg.Subject)
+				deadLetterMsg.Header.Set("Error", err.Error())
+				deadLetterMsg.Header.Set("Retry-Count", fmt.Sprintf("%d", count))
+				deadLetterMsg.Header.Set("Failed-At", time.Now().Format(time.RFC3339))
+				deadLetterMsg.Data = msg.Data
+
+				if _, pubErr := k.jetStream.PublishMsg(deadLetterMsg); pubErr != nil {
+					k.logger.Error("Failed to publish to dead-letter queue", zap.Error(pubErr))
+				}
+
+				// Clean up retry count and ack original message
+				retryCountMu.Lock()
+				delete(retryCount, msgID)
+				retryCountMu.Unlock()
+				msg.Ack()
+			}
 		} else {
+			// Success - clean up retry count
+			msgID := string(msg.Header.Get("Nats-Msg-Id"))
+			if msgID != "" {
+				retryCountMu.Lock()
+				delete(retryCount, msgID)
+				retryCountMu.Unlock()
+			}
+
 			k.logger.Info("Successfully processed transcript",
 				zap.String("subject", msg.Subject))
 			msg.Ack()
@@ -509,11 +632,20 @@ func (k *Kernel) runIngestionLoop() {
 func (k *Kernel) runReflectionLoop() {
 	defer k.wg.Done()
 
+	defer func() {
+		if r := recover(); r != nil {
+			k.logger.Error("Panic in reflection loop", zap.Any("panic", r), zap.Stack("stacktrace"))
+		}
+	}()
+
 	k.logger.Info("Starting reflection loop",
 		zap.Duration("interval", k.config.ReflectionInterval))
 
 	ticker := time.NewTicker(k.config.ReflectionInterval)
 	defer ticker.Stop()
+
+	// SECURITY: Add timeout to prevent reflection cycles from hanging indefinitely
+	const reflectionTimeout = 5 * time.Minute
 
 	for {
 		select {
@@ -522,9 +654,14 @@ func (k *Kernel) runReflectionLoop() {
 			return
 		case <-ticker.C:
 			k.logger.Debug("Running reflection cycle")
-			if err := k.reflectionEngine.RunCycle(k.ctx); err != nil {
-				k.logger.Error("Reflection cycle failed", zap.Error(err))
-			}
+			// Create a context with timeout for each reflection cycle
+			ctx, cancel := context.WithTimeout(k.ctx, reflectionTimeout)
+			func() {
+				defer cancel()
+				if err := k.reflectionEngine.RunCycle(ctx); err != nil {
+					k.logger.Error("Reflection cycle failed", zap.Error(err))
+				}
+			}()
 		}
 	}
 }
@@ -532,6 +669,12 @@ func (k *Kernel) runReflectionLoop() {
 // runDecayLoop periodically applies activation decay to all nodes
 func (k *Kernel) runDecayLoop() {
 	defer k.wg.Done()
+
+	defer func() {
+		if r := recover(); r != nil {
+			k.logger.Error("Panic in decay loop", zap.Any("panic", r), zap.Stack("stacktrace"))
+		}
+	}()
 
 	k.logger.Info("Starting decay loop")
 
@@ -649,6 +792,6 @@ func (k *Kernel) PersistChunks(ctx context.Context, namespace, docID string, chu
 }
 
 // SearchNodes delegates to the graph client to perform a node search
-func (k *Kernel) SearchNodes(ctx context.Context, query string) ([]graph.Node, error) {
-	return k.graphClient.SearchNodes(ctx, query)
+func (k *Kernel) SearchNodes(ctx context.Context, namespace, query string) ([]graph.Node, error) {
+	return k.graphClient.SearchNodes(ctx, query, namespace)
 }

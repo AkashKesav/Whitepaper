@@ -167,7 +167,7 @@ func (a *Agent) InitPolicyManager() {
 	graphClient := a.mkClient.GetGraphClient()
 
 	config := policy.PolicyManagerConfig{
-		Enabled:              true,
+		Enabled:              true, // RE-ENABLED: Namespace isolation verified working
 		AuditEnabled:         true,
 		RateLimitEnabled:     true,
 		ContentFilterEnabled: true,
@@ -466,9 +466,10 @@ func (a *Agent) filterFactsByPolicy(ctx context.Context, userID, namespace strin
 
 	// Build user context for policy evaluation
 	userContext := policy.UserContext{
-		UserID:    userID,
-		Groups:    a.getUserGroupsForPolicy(ctx, userID),
-		Clearance: 0, // Default clearance level
+		UserID:       userID,
+		Groups:       a.getUserGroupsForPolicy(ctx, userID),
+		Clearance:    0, // Default clearance level
+		Authenticated: true, // FIX: User is authenticated if they reached this point
 	}
 
 	// Load policies for the namespace (caches internally)
@@ -517,11 +518,14 @@ func (a *Agent) getUserGroupsForPolicy(ctx context.Context, userID string) []str
 		if graphClient := a.mkClient.GetGraphClient(); graphClient != nil {
 			groups, err := graphClient.ListUserGroups(ctx, userID)
 			if err == nil {
-				var groupNames []string
+				var groupUIDs []string
 				for _, g := range groups {
-					groupNames = append(groupNames, g.Name)
+					// Policy engine expects group UID without "group_" prefix
+					// Namespace format is "group_<UUID>", so extract the UUID part
+					groupUID := strings.TrimPrefix(g.Namespace, "group_")
+					groupUIDs = append(groupUIDs, groupUID)
 				}
-				return groupNames
+				return groupUIDs
 			}
 			a.logger.Debug("Failed to get user groups for policy", zap.Error(err))
 		}

@@ -3,6 +3,7 @@ module github.com/reflective-memory-kernel
 go 1.24.0
 
 require (
+	github.com/dgraph-io/dgo/v2 v2.2.0
 	github.com/dgraph-io/dgo/v240 v240.0.0
 	github.com/dgraph-io/ristretto v0.2.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
@@ -26,6 +27,8 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/felixge/httpsnoop v1.0.3 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
+	github.com/golang/protobuf v1.5.0 // indirect
+	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/klauspost/compress v1.17.0 // indirect
 	github.com/nats-io/nkeys v0.4.5 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect

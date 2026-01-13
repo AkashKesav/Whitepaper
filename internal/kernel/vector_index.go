@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -24,6 +26,25 @@ const (
 	EmbeddingDimension = 768
 )
 
+// Input validation limits for vector operations
+const (
+	MaxEmbeddingTextLength = 8000 // Maximum text length for embedding generation
+	MaxSearchQueryLength   = 500  // Maximum search query length
+)
+
+// isValidNamespace validates that a namespace follows the expected format
+// SECURITY: Prevents namespace injection and bypass attacks
+// Valid formats: user_<alphanumeric> or group_<UUID>
+func isValidNamespace(ns string) bool {
+	if ns == "" {
+		return false
+	}
+	// Allow: user_<alphanumeric with optional hyphens/underscores>
+	// Allow: group_<UUID format or alphanumeric with hyphens/underscores>
+	matched, _ := regexp.MatchString(`^(user|group)_[a-zA-Z0-9_-]+$`, ns)
+	return matched
+}
+
 // VectorIndex manages vector embeddings using Qdrant
 type VectorIndex struct {
 	baseURL        string
@@ -32,6 +53,21 @@ type VectorIndex struct {
 	collectionName string
 	logger         *zap.Logger
 	initialized    bool
+	rateLimiter    RateLimiter // Optional rate limiter for vector search
+}
+
+// RateLimiter defines the interface for rate limiting vector search operations
+type RateLimiter interface {
+	// Allow checks if a request is allowed under the rate limit
+	Allow(ctx context.Context, userID string) (bool, *RateLimitResult)
+}
+
+// RateLimitResult contains the result of a rate limit check
+type RateLimitResult struct {
+	Allowed    bool
+	Remaining  int
+	ResetAt    time.Time
+	RetryAfter  time.Duration
 }
 
 // NewVectorIndex creates a new Qdrant-backed vector index
@@ -167,9 +203,74 @@ func (vi *VectorIndex) Store(ctx context.Context, namespace, uid string, embeddi
 	return nil
 }
 
+// Update updates an existing vector in the index
+// Qdrant doesn't support direct updates, so we delete and re-insert
+func (vi *VectorIndex) Update(ctx context.Context, namespace, uid string, embedding []float32, metadata map[string]interface{}) error {
+	if err := vi.Initialize(ctx); err != nil {
+		return err
+	}
+
+	pointID := hashToInt(namespace + ":" + uid)
+
+	// First delete the old vector
+	deleteReq := map[string]interface{}{
+		"points": []int64{pointID},
+	}
+
+	deleteJSON, err := json.Marshal(deleteReq)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		vi.baseURL+"/collections/"+vi.collectionName+"/points/delete",
+		bytes.NewBuffer(deleteJSON))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := vi.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to delete vector for update: %w", err)
+	}
+	resp.Body.Close()
+
+	// Then store the new vector
+	return vi.Store(ctx, namespace, uid, embedding, metadata)
+}
+
 // Search finds top-K similar nodes by vector similarity
 // Returns UIDs, scores, and payloads of matching nodes
-func (vi *VectorIndex) Search(ctx context.Context, namespace string, queryVec []float32, topK int) ([]string, []float32, []map[string]interface{}, error) {
+// SECURITY: Supports rate limiting to prevent abuse
+func (vi *VectorIndex) Search(ctx context.Context, namespace, userID string, queryVec []float32, topK int) ([]string, []float32, []map[string]interface{}, error) {
+	// SECURITY: Reject empty namespace before any processing
+	// This prevents namespace bypass attacks that could return results from all namespaces
+	if namespace == "" {
+		vi.logger.Warn("Vector search rejected: empty namespace",
+			zap.String("user", userID))
+		return nil, nil, nil, fmt.Errorf("namespace cannot be empty")
+	}
+
+	// SECURITY: Validate namespace format to prevent injection attacks
+	if !isValidNamespace(namespace) {
+		vi.logger.Warn("Vector search rejected: invalid namespace format",
+			zap.String("namespace", namespace),
+			zap.String("user", userID))
+		return nil, nil, nil, fmt.Errorf("invalid namespace format")
+	}
+
+	// SECURITY: Check rate limit if limiter is configured
+	if vi.rateLimiter != nil && userID != "" {
+		allowed, result := vi.rateLimiter.Allow(ctx, userID)
+		if !allowed {
+			vi.logger.Warn("Vector search rate limit exceeded",
+				zap.String("user", userID),
+				zap.Duration("retry_after", result.RetryAfter))
+			return nil, nil, nil, fmt.Errorf("rate limit exceeded: retry after %v", result.RetryAfter)
+		}
+	}
+
 	if err := vi.Initialize(ctx); err != nil {
 		return nil, nil, nil, err
 	}
@@ -315,4 +416,71 @@ func hashToInt(s string) int64 {
 		h = -h
 	}
 	return h
+}
+
+// SanitizeText sanitizes text before embedding generation
+// SECURITY: Removes null bytes, collapses whitespace, truncates to max length
+func (vi *VectorIndex) SanitizeText(text string) string {
+	// Remove null bytes (injection prevention)
+	text = strings.ReplaceAll(text, "\x00", "")
+
+	// Collapse multiple whitespace into single space
+	text = strings.Join(strings.Fields(text), " ")
+
+	// Truncate to max length if needed
+	if len(text) > MaxEmbeddingTextLength {
+		vi.logger.Warn("Text truncated for embedding",
+			zap.Int("original_length", len(text)),
+			zap.Int("truncated_to", MaxEmbeddingTextLength))
+		text = text[:MaxEmbeddingTextLength]
+	}
+
+	return strings.TrimSpace(text)
+}
+
+// ValidateSearchQuery validates a search query before vector search
+// SECURITY: Prevents injection and DoS via malformed queries
+func (vi *VectorIndex) ValidateSearchQuery(query string) error {
+	// Check length
+	if len(query) > MaxSearchQueryLength {
+		return fmt.Errorf("search query exceeds maximum length of %d characters", MaxSearchQueryLength)
+	}
+
+	// Check empty
+	if len(strings.TrimSpace(query)) == 0 {
+		return fmt.Errorf("search query cannot be empty")
+	}
+
+	// Check for null bytes
+	if strings.Contains(query, "\x00") {
+		return fmt.Errorf("search query contains invalid characters")
+	}
+
+	// Check for common injection patterns
+	lowerQuery := strings.ToLower(query)
+	suspiciousPatterns := []string{
+		"<script",
+		"javascript:",
+		"vbscript:",
+		"onload=",
+		"onerror=",
+		"<iframe",
+	}
+
+	for _, pattern := range suspiciousPatterns {
+		if strings.Contains(lowerQuery, pattern) {
+			vi.logger.Warn("Suspicious search query pattern detected",
+				zap.String("pattern", pattern))
+			return fmt.Errorf("search query contains suspicious content pattern")
+		}
+	}
+
+	return nil
+}
+
+// SetRateLimiter sets the rate limiter for vector search operations
+// SECURITY: Helps prevent abuse of expensive vector search operations
+func (vi *VectorIndex) SetRateLimiter(limiter RateLimiter) {
+	vi.rateLimiter = limiter
+	vi.logger.Info("Vector index rate limiter configured")
 }

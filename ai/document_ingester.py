@@ -517,6 +517,7 @@ class IngestDocumentRequest(BaseModel):
     content_base64: Optional[str] = None  # Base64-encoded document
     text: Optional[str] = None  # Plain text
     document_type: str = "text"  # text, pdf
+    filename: Optional[str] = None  # Original filename (for validation)
 
 
 class IngestDocumentResponse(BaseModel):

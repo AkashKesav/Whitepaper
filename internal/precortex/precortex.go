@@ -43,7 +43,7 @@ type Config struct {
 // DefaultConfig returns sensible defaults
 func DefaultConfig() Config {
 	return Config{
-		EnableSemanticCache: true,
+		EnableSemanticCache: false, // Disabled: responses are context-dependent, caching causes stale replies
 		EnableIntentRouter:  true,
 		EnableDGraphReflex:  true,
 		CacheSimilarity:     0.95,

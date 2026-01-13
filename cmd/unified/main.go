@@ -174,17 +174,18 @@ func setupKernelRoutes(r *mux.Router, k *kernel.Kernel, logger *zap.Logger) {
 	// Hot Cache Store endpoint
 	r.HandleFunc("/api/hot-cache/store", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			UserID   string `json:"user_id"`
-			Query    string `json:"query"`
-			Response string `json:"response"`
-			ID       string `json:"conversation_id"`
+			UserID    string `json:"user_id"`
+			Namespace string `json:"namespace"`
+			Query     string `json:"query"`
+			Response  string `json:"response"`
+			ID        string `json:"conversation_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid request", http.StatusBadRequest)
 			return
 		}
 
-		if err := k.StoreInHotCache(req.UserID, req.Query, req.Response, req.ID); err != nil {
+		if err := k.StoreInHotCache(req.UserID, req.Namespace, req.Query, req.Response, req.ID); err != nil {
 			logger.Error("Failed to store in hot cache", zap.Error(err))
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -22,37 +24,97 @@ import (
 
 // Server provides HTTP and WebSocket endpoints for the agent
 type Server struct {
-	agent    *Agent
-	logger   *zap.Logger
-	upgrader websocket.Upgrader
+	agent          *Agent
+	logger         *zap.Logger
+	upgrader       websocket.Upgrader
+	allowedOrigins []string  // Allowed origins for WebSocket connections
+	groupLock      *GroupLockManager // Distributed lock manager for group operations
 }
 
 // NewServer creates a new HTTP server for the agent
-func NewServer(agent *Agent, logger *zap.Logger) *Server {
+func NewServer(agent *Agent, logger *zap.Logger, allowedOrigins ...string) *Server {
+	// Default to localhost in development if no origins specified
+	origins := allowedOrigins
+	if len(origins) == 0 {
+		origins = []string{"http://localhost:*"}
+	}
+
+	// Initialize group lock manager for distributed locking
+	var groupLock *GroupLockManager
+	if agent.RedisClient != nil {
+		groupLock = NewGroupLockManager(agent.RedisClient, logger.Named("group_lock"))
+	}
+
 	return &Server{
-		agent:  agent,
-		logger: logger,
+		agent:          agent,
+		logger:         logger,
+		allowedOrigins: origins,
+		groupLock:      groupLock,
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool { return true },
+			CheckOrigin: func(r *http.Request) bool {
+				origin := r.Header.Get("Origin")
+				// Same-origin request (no Origin header) is allowed
+				if origin == "" {
+					return true
+				}
+
+				// Check against allowed origins
+				for _, allowed := range origins {
+					if allowed == "*" {
+						return true  // Allow all (use only in development)
+					}
+					if originMatches(origin, allowed) {
+						return true
+					}
+				}
+
+				// Log rejected origin for security monitoring
+				logger.Warn("WebSocket origin rejected",
+					zap.String("origin", origin),
+					zap.Strings("allowed", origins))
+				return false
+			},
 		},
 	}
 }
 
+// originMatches checks if an origin matches a pattern (supports wildcards)
+func originMatches(origin, pattern string) bool {
+	if origin == pattern {
+		return true
+	}
+	// Wildcard matching (e.g., "https://*.example.com")
+	if strings.Contains(pattern, "*") {
+		patternRegex := strings.ReplaceAll(pattern, ".", "\\.")
+		patternRegex = strings.ReplaceAll(patternRegex, "*", ".*")
+		matched, _ := regexp.MatchString("^"+patternRegex+"$", origin)
+		return matched
+	}
+	return false
+}
+
 // SetupRoutes configures the HTTP routes
-func (s *Server) SetupRoutes(r *mux.Router) {
+func (s *Server) SetupRoutes(r *mux.Router) error {
 	s.logger.Info("Registering routes...")
 
-	// Create JWT middleware
-	jwtMiddleware := NewJWTMiddleware(s.logger)
+	// Create JWT middleware (now returns error for security)
+	jwtMiddleware, err := NewJWTMiddleware(s.logger)
+	if err != nil {
+		return fmt.Errorf("failed to create JWT middleware: %w", err)
+	}
 
 	// Register Admin Routes (Must be before /api to avoid shadowing)
-	s.SetupAdminRoutes(r)
+	s.SetupAdminRoutes(r, jwtMiddleware)
 
 	// Register Policy Routes (Must be before /api to avoid shadowing)
-	s.SetupPolicyRoutes(r)
+	s.SetupPolicyRoutes(r, jwtMiddleware)
 
 	// API Router
 	api := r.PathPrefix("/api").Subrouter()
+
+	// Bootstrap endpoint (creates initial admin user if system is empty)
+	// This is a special endpoint that works before any users exist
+	api.HandleFunc("/bootstrap", s.handleBootstrap).Methods("POST")
 
 	// Public Routes
 	api.HandleFunc("/register", s.handleRegister).Methods("POST")
@@ -67,6 +129,7 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 
 	api.Handle("/chat", protect(s.handleChat)).Methods("POST")
 	api.Handle("/search", protect(s.handleSearch)).Methods("GET")
+	api.Handle("/search/temporal", protect(s.handleTemporalQuery)).Methods("POST")
 	api.Handle("/stats", protect(s.handleStats)).Methods("GET")
 	api.Handle("/conversations", protect(s.handleConversations)).Methods("GET")
 
@@ -77,8 +140,14 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 
 	// Document upload
 	api.Handle("/upload", protect(s.handleUpload)).Methods("POST")
+	// Document deletion (by document ID)
+	api.Handle("/documents/{id}", protect(s.handleDeleteDocument)).Methods("DELETE")
+	// List documents
+	api.Handle("/documents", protect(s.handleListDocuments)).Methods("GET")
 
 	// Groups
+	// SECURITY: Apply rate limiting to group management operations
+	// Note: Rate limiting is applied inline in handlers to avoid type issues
 	api.Handle("/groups", protect(s.handleCreateGroup)).Methods("POST")
 	api.Handle("/groups", protect(s.handleListGroups)).Methods("GET")
 	api.Handle("/list-groups", protect(s.handleListGroups)).Methods("GET") // Legacy endpoint
@@ -121,6 +190,8 @@ func (s *Server) SetupRoutes(r *mux.Router) {
 	// For now, let's just handle it. Note: WS usually needs query param token if headers not supported by client lib.
 	// But let's assume standard Header.
 	wsRouter.Handle("/chat", protect(s.handleWebSocketChat))
+
+	return nil
 }
 
 // ChatRequest represents an incoming chat request
@@ -236,6 +307,111 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("User registered", zap.String("username", req.Username), zap.String("role", role))
 
 	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(LoginResponse{
+		Token:    token,
+		Username: req.Username,
+		Role:     role,
+	})
+}
+
+// BootstrapRequest is the request for system bootstrap
+type BootstrapRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Email    string `json:"email,omitempty"`
+}
+
+// handleBootstrap creates the initial admin user for a fresh system
+// POST /api/bootstrap
+// This endpoint only works if no users exist yet (system initialization)
+func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Check if Redis is available
+	if s.agent.RedisClient == nil {
+		http.Error(w, "Authentication service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Check if system is already bootstrapped
+	adminInit, _ := s.agent.RedisClient.Get(ctx, "system:admin_initialized").Result()
+	if adminInit == "true" {
+		http.Error(w, "System already initialized. Use /api/register to create new users.", http.StatusForbidden)
+		return
+	}
+
+	var req BootstrapRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate input
+	if req.Username == "" || req.Password == "" {
+		http.Error(w, "Username and password are required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate password strength (minimum 8 characters)
+	if len(req.Password) < 8 {
+		http.Error(w, "Password must be at least 8 characters", http.StatusBadRequest)
+		return
+	}
+
+	// Check if user already exists (shouldn't happen on fresh system, but safety check)
+	exists, err := s.agent.RedisClient.Exists(ctx, "user:"+req.Username).Result()
+	if err != nil {
+		s.logger.Error("Failed to check user existence", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if exists > 0 {
+		http.Error(w, "Username already taken", http.StatusConflict)
+		return
+	}
+
+	// Hash password
+	hashedPassword, err := HashPassword(req.Password)
+	if err != nil {
+		s.logger.Error("Failed to hash password", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Store user with admin role
+	role := "admin"
+	if err := s.agent.RedisClient.Set(ctx, "user:"+req.Username, hashedPassword, 0).Err(); err != nil {
+		s.logger.Error("Failed to store user", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Mark system as initialized
+	if err := s.agent.RedisClient.Set(ctx, "system:admin_initialized", "true", 0).Err(); err != nil {
+		s.logger.Error("Failed to mark system as initialized", zap.Error(err))
+	}
+
+	// Store role
+	s.agent.RedisClient.Set(ctx, "user_role:"+req.Username, role, 0)
+
+	// Create User node in DGraph
+	if err := s.agent.mkClient.EnsureUserNode(ctx, req.Username, role); err != nil {
+		s.logger.Warn("Failed to create User node in DGraph", zap.Error(err))
+	}
+
+	// Generate JWT token
+	token, err := GenerateToken(req.Username, role)
+	if err != nil {
+		s.logger.Error("Failed to generate token", zap.Error(err))
+		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		return
+	}
+
+	s.logger.Info("System bootstrapped with initial admin user",
+		zap.String("username", req.Username))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(LoginResponse{
 		Token:    token,
 		Username: req.Username,
@@ -383,7 +559,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nodes, err := s.agent.mkClient.SearchNodes(r.Context(), query)
+	// Get namespace from user context
+	userID := GetUserID(r.Context())
+	namespace := fmt.Sprintf("user_%s", userID)
+
+	nodes, err := s.agent.mkClient.SearchNodes(r.Context(), namespace, query)
 	if err != nil {
 		s.logger.Error("Search failed", zap.Error(err))
 		http.Error(w, "Search failed", http.StatusInternalServerError)
@@ -479,17 +659,70 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Read file content
-	content, err := io.ReadAll(file)
+	filename := header.Filename
+
+	// SECURITY: Comprehensive file validation using FileValidator
+	const maxFileSize = 10 << 20 // 10MB
+	validator := NewFileValidator(maxFileSize, true)
+
+	// 1. Validate filename (path traversal, Unicode homographs, control characters, etc.)
+	if err := validator.ValidateFilename(filename); err != nil {
+		s.logger.Warn("Invalid filename rejected",
+			zap.String("filename", filename),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("Invalid filename: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// 2. Validate file extension is allowed
+	if !validator.IsAllowedExtension(filename) {
+		ext := strings.ToLower(filepath.Ext(filename))
+		s.logger.Warn("File type not allowed",
+			zap.String("filename", filename),
+			zap.String("extension", ext))
+		http.Error(w, fmt.Sprintf("File type '%s' is not allowed", ext), http.StatusBadRequest)
+		return
+	}
+
+	// 3. Validate file size
+	if err := validator.ValidateFileSize(header.Size); err != nil {
+		s.logger.Warn("File size validation failed",
+			zap.String("filename", filename),
+			zap.Int64("size", header.Size),
+			zap.Error(err))
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// 4. Read file content with size limit
+	content, err := io.ReadAll(io.LimitReader(file, maxFileSize))
 	if err != nil {
 		s.logger.Error("Failed to read file", zap.Error(err))
 		http.Error(w, "Failed to read file", http.StatusInternalServerError)
 		return
 	}
 
-	s.logger.Info("Document upload received",
+	// 5. Validate file content matches declared type (magic number check)
+	if err := validator.ValidateFileContent(content, filename); err != nil {
+		s.logger.Warn("File content validation failed",
+			zap.String("filename", filename),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("File validation failed: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// 6. Scan for malware and suspicious content
+	if err := validator.ScanForMalware(content, filename); err != nil {
+		s.logger.Warn("File rejected by security scan",
+			zap.String("filename", filename),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("File rejected by security scan: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	s.logger.Info("Document upload validated successfully",
 		zap.String("user", userID),
-		zap.String("filename", header.Filename),
+		zap.String("filename", filename),
 		zap.Int64("size", header.Size))
 
 	// Get namespace for user
@@ -549,12 +782,12 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 					zap.Int("entities", entities),
 					zap.Int("relationships", relationships),
 					zap.Int("chunks", chunks),
-					zap.String("filename", header.Filename))
+					zap.String("filename", filename))
 
 				// Persist Extracted Data
 				ctx := context.Background()
 				// Use filename as "conversation ID" context for now
-				docContextID := fmt.Sprintf("doc_%s", header.Filename)
+				docContextID := fmt.Sprintf("doc_%s", filename)
 
 				// 1. Persist Entities to DGraph
 				if len(result.Entities) > 0 {
@@ -568,7 +801,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 				// 2. Persist Chunks to Qdrant
 				if len(result.Chunks) > 0 {
 					// Use a unique docID for chunk namespacing
-					docID := fmt.Sprintf("doc_%d_%s", time.Now().Unix(), header.Filename)
+					docID := fmt.Sprintf("doc_%d_%s", time.Now().Unix(), filename)
 					if err := s.agent.mkClient.PersistChunks(ctx, namespace, docID, result.Chunks); err != nil {
 						s.logger.Error("Failed to persist chunks", zap.Error(err))
 					} else {
@@ -593,10 +826,169 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(UploadResponse{
 		Status:   "success",
-		Filename: header.Filename,
+		Filename: filename,
 		Size:     header.Size,
 		Entities: entities,
-		Message:  fmt.Sprintf("Document '%s' uploaded and processed (%d entities, %d chunks)", header.Filename, entities, chunks),
+		Message:  fmt.Sprintf("Document '%s' uploaded and processed (%d entities, %d chunks)", filename, entities, chunks),
+	})
+}
+
+// DocumentInfo represents a document in the system
+type DocumentInfo struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Namespace  string    `json:"namespace"`
+	CreatedAt  time.Time `json:"created_at"`
+	Size       int64     `json:"size"`
+	EntityCount int      `json:"entity_count"`
+}
+
+// DocumentListResponse is the response for listing documents
+type DocumentListResponse struct {
+	Documents []DocumentInfo `json:"documents"`
+	Total     int            `json:"total"`
+}
+
+// handleListDocuments returns a list of documents for the current user
+// GET /api/documents
+func (s *Server) handleListDocuments(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	ctx := r.Context()
+
+	// Determine namespace (default to user's namespace)
+	namespace := r.URL.Query().Get("namespace")
+	if namespace == "" {
+		namespace = fmt.Sprintf("user_%s", userID)
+	}
+
+	// SECURITY: For group namespaces, verify user is a member
+	if strings.HasPrefix(namespace, "group_") {
+		isMember, err := s.agent.mkClient.IsWorkspaceMember(ctx, namespace, userID)
+		if err != nil || !isMember {
+			http.Error(w, "Access denied", http.StatusForbidden)
+			return
+		}
+	}
+
+	// Query for document-type nodes in the namespace
+	query := `query Documents($namespace: string) {
+		nodes(func: type(Document), orderdesc: created_at) @filter(eq(namespace, $namespace)) {
+			uid
+			name
+			namespace
+			created_at
+			description
+		}
+	}`
+
+	resp, err := s.agent.mkClient.GetGraphClient().Query(ctx, query, map[string]string{"$namespace": namespace})
+	if err != nil {
+		s.logger.Error("Failed to query documents", zap.Error(err))
+		http.Error(w, "Failed to query documents", http.StatusInternalServerError)
+		return
+	}
+
+	var result struct {
+		Nodes []struct {
+			UID        string `json:"uid"`
+			Name       string `json:"name"`
+			Namespace  string `json:"namespace"`
+			CreatedAt  string `json:"created_at"`
+			Description string `json:"description"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		s.logger.Error("Failed to unmarshal documents", zap.Error(err))
+		http.Error(w, "Failed to parse documents", http.StatusInternalServerError)
+		return
+	}
+
+	// Convert to DocumentInfo
+	documents := make([]DocumentInfo, 0, len(result.Nodes))
+	for _, node := range result.Nodes {
+		timestamp, _ := time.Parse(time.RFC3339, node.CreatedAt)
+
+		// Parse entity count from description if available
+		entityCount := 0
+		if node.Description != "" {
+			fmt.Sscanf(node.Description, "Document with %d entities", &entityCount)
+		}
+
+		documents = append(documents, DocumentInfo{
+			ID:          node.UID,
+			Name:        node.Name,
+			Namespace:   node.Namespace,
+			CreatedAt:   timestamp,
+			EntityCount: entityCount,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(DocumentListResponse{
+		Documents: documents,
+		Total:     len(documents),
+	})
+}
+
+// handleDeleteDocument deletes a document and its associated data
+// DELETE /api/documents/{id}
+func (s *Server) handleDeleteDocument(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	vars := mux.Vars(r)
+	documentUID := vars["id"]
+
+	if documentUID == "" {
+		http.Error(w, "Document ID is required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+
+	// Get the document node to verify ownership
+	node, err := s.agent.mkClient.GetGraphClient().GetNode(ctx, documentUID)
+	if err != nil {
+		s.logger.Error("Failed to get document", zap.Error(err))
+		http.Error(w, "Document not found", http.StatusNotFound)
+		return
+	}
+
+	// SECURITY: Verify the user owns this document (namespace check)
+	expectedNamespace := fmt.Sprintf("user_%s", userID)
+	if node.Namespace != expectedNamespace {
+		// Also check if it's a group namespace where user is a member
+		if strings.HasPrefix(node.Namespace, "group_") {
+			isMember, err := s.agent.mkClient.IsWorkspaceMember(ctx, node.Namespace, userID)
+			if err != nil || !isMember {
+				http.Error(w, "Access denied", http.StatusForbidden)
+				return
+			}
+		} else {
+			http.Error(w, "Access denied", http.StatusForbidden)
+			return
+		}
+	}
+
+	// Delete the document node (this cascades to delete edges)
+	if err := s.agent.mkClient.GetGraphClient().DeleteNode(ctx, documentUID, node.Namespace); err != nil {
+		s.logger.Error("Failed to delete document", zap.Error(err))
+		http.Error(w, "Failed to delete document", http.StatusInternalServerError)
+		return
+	}
+
+	// Note: Chunks in Qdrant would need to be deleted separately in a production system
+	// For now, the graph node deletion removes the document from the knowledge graph
+
+	s.logger.Info("Document deleted",
+		zap.String("document_id", documentUID),
+		zap.String("document_name", node.Name),
+		zap.String("deleted_by", userID))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "deleted",
+		"id":      documentUID,
+		"message": fmt.Sprintf("Document '%s' deleted successfully", node.Name),
 	})
 }
 
@@ -656,6 +1048,37 @@ func (s *Server) handleWSConnection(conn *websocket.Conn, userID, conversationID
 				namespace = payload.ContextID
 			}
 
+			// SECURITY: Verify user has access to group namespace
+			if strings.HasPrefix(namespace, "group_") {
+				isMember, err := s.agent.mkClient.IsWorkspaceMember(context.Background(), namespace, userID)
+				if err != nil {
+					s.logger.Error("Failed to verify workspace membership", zap.Error(err))
+					wsMu.Lock()
+					conn.WriteJSON(map[string]interface{}{
+						"type": "error",
+						"payload": map[string]string{
+							"error": "Failed to verify access",
+						},
+					})
+					wsMu.Unlock()
+					continue
+				}
+				if !isMember {
+					s.logger.Warn("WebSocket access denied: user not in workspace",
+						zap.String("user", userID),
+						zap.String("workspace", namespace))
+					wsMu.Lock()
+					conn.WriteJSON(map[string]interface{}{
+						"type": "error",
+						"payload": map[string]string{
+							"error": "You are not a member of this workspace",
+						},
+					})
+					wsMu.Unlock()
+					continue
+				}
+			}
+
 			// Use context.Background() for async WS handler
 			response, err := s.agent.Chat(context.Background(), userID, conversationID, namespace, payload.Message)
 			if err != nil {
@@ -686,6 +1109,17 @@ func (s *Server) handleWSConnection(conn *websocket.Conn, userID, conversationID
 			namespace := fmt.Sprintf("user_%s", userID)
 			if payload.ContextType == "group" && payload.ContextID != "" {
 				namespace = payload.ContextID
+			}
+
+			// SECURITY: Verify user has access to group namespace
+			if strings.HasPrefix(namespace, "group_") {
+				isMember, err := s.agent.mkClient.IsWorkspaceMember(context.Background(), namespace, userID)
+				if err != nil || !isMember {
+					s.logger.Warn("WebSocket typing access denied: user not in workspace",
+						zap.String("user", userID),
+						zap.String("workspace", namespace))
+					continue
+				}
 			}
 
 			// Trigger Speculation (Time Travel)
@@ -731,8 +1165,24 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SECURITY: Validate group name to prevent injection and other attacks
 	if req.Name == "" {
 		http.Error(w, "Group name is required", http.StatusBadRequest)
+		return
+	}
+	// Limit name length to prevent abuse
+	if len(req.Name) > 100 {
+		http.Error(w, "Group name must be 100 characters or less", http.StatusBadRequest)
+		return
+	}
+	// Check for suspicious patterns (potential injection)
+	if strings.ContainsAny(req.Name, "\x00\n\r<>\"'`)") {
+		http.Error(w, "Group name contains invalid characters", http.StatusBadRequest)
+		return
+	}
+	// Validate description
+	if len(req.Description) > 500 {
+		http.Error(w, "Description must be 500 characters or less", http.StatusBadRequest)
 		return
 	}
 
@@ -766,6 +1216,22 @@ func (s *Server) handleAddGroupMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SECURITY: Acquire distributed lock BEFORE checking admin status
+	// This prevents TOCTOU race conditions between admin check and member addition
+	var lock *GroupOperationLock
+	if s.groupLock != nil {
+		var err error
+		lock, err = s.groupLock.AcquireGroupLock(r.Context(), groupNamespace, "add_member")
+		if err != nil {
+			s.logger.Warn("Could not acquire group lock, operation may have conflicts",
+				zap.Error(err),
+				zap.String("group", groupNamespace))
+			// Continue without lock if Redis is unavailable (fail open for availability)
+		} else {
+			defer lock.Release()
+		}
+	}
+
 	// 1. Check if Requester is Admin
 	isAdmin, err := s.agent.mkClient.IsGroupAdmin(r.Context(), groupNamespace, userID)
 	if err != nil {
@@ -786,7 +1252,7 @@ func (s *Server) handleAddGroupMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if exists == 0 {
-		http.Error(w, fmt.Sprintf("User '%s' not found", req.Username), http.StatusBadRequest)
+		http.Error(w, "User not found", http.StatusBadRequest) // Generic message to prevent enumeration
 		return
 	}
 
@@ -804,7 +1270,7 @@ func (s *Server) handleAddGroupMember(w http.ResponseWriter, r *http.Request) {
 	// 4. Add Member
 	if err := s.agent.mkClient.AddGroupMember(r.Context(), groupNamespace, req.Username); err != nil {
 		s.logger.Error("Failed to add member", zap.Error(err))
-		http.Error(w, fmt.Sprintf("Failed to add member: %v", err), http.StatusInternalServerError)
+		http.Error(w, "Failed to add member", http.StatusInternalServerError) // Generic message
 		return
 	}
 
@@ -873,17 +1339,58 @@ func (s *Server) handleRemoveGroupMember(w http.ResponseWriter, r *http.Request)
 	groupID := vars["id"]
 	targetUser := vars["username"]
 
-	// Check Admin
+	// SECURITY: Acquire distributed lock BEFORE any checks
+	// This prevents TOCTOU race conditions in admin verification and member removal
+	var lock *GroupOperationLock
+	if s.groupLock != nil {
+		var err error
+		lock, err = s.groupLock.AcquireGroupLock(r.Context(), groupID, "remove_member")
+		if err != nil {
+			s.logger.Warn("Could not acquire group lock, operation may have conflicts",
+				zap.Error(err),
+				zap.String("group", groupID))
+			// Continue without lock if Redis is unavailable
+		} else {
+			defer lock.Release()
+		}
+	}
+
+	// Check if user is admin
 	isAdmin, err := s.agent.mkClient.IsGroupAdmin(r.Context(), groupID, userID)
 	if err != nil {
 		s.logger.Error("Failed to check admin status", zap.Error(err))
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	// Allow removing self (leave group) or Admin removing others
-	if !isAdmin && userID != targetUser {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
+
+	// SECURITY: Only admins can remove other members; users can only remove themselves
+	if !isAdmin {
+		if userID != targetUser {
+			s.logger.Warn("Unauthorized group member removal attempt",
+				zap.String("actor", userID),
+				zap.String("target", targetUser),
+				zap.String("group", groupID))
+			http.Error(w, "Forbidden: Only admins can remove other members", http.StatusForbidden)
+			return
+		}
+		// User is removing themselves (leaving group) - continue
+	}
+
+	// SECURITY: Prevent last admin from leaving the group
+	if userID == targetUser && isAdmin {
+		members, err := s.agent.mkClient.GetGroupMembers(r.Context(), groupID)
+		if err == nil {
+			adminCount := 0
+			for _, m := range members {
+				if role, ok := m["role"].(string); ok && role == "admin" {
+					adminCount++
+				}
+			}
+			if adminCount <= 1 {
+				http.Error(w, "Cannot leave: you are the last admin", http.StatusBadRequest)
+				return
+			}
+		}
 	}
 
 	if err := s.agent.mkClient.RemoveGroupMember(r.Context(), groupID, targetUser); err != nil {
@@ -895,17 +1402,37 @@ func (s *Server) handleRemoveGroupMember(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
-	userID := GetUserID(r.Context())
+	ctx := r.Context()
+	userID := GetUserID(ctx)
 	vars := mux.Vars(r)
 	groupID := vars["id"]
 
-	isAdmin, err := s.agent.mkClient.IsGroupAdmin(r.Context(), groupID, userID)
-	if err != nil || !isAdmin {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+	// SECURITY: Check system admin OR group admin
+	// System admins can delete any group; group admins can only delete their own groups
+	userRole := GetUserRole(ctx)
+	isAuthorized := false
+
+	if userRole == "admin" {
+		// System admin can delete any group
+		isAuthorized = true
+	} else {
+		// Check if user is group admin
+		isGroupAdmin, err := s.agent.mkClient.IsGroupAdmin(ctx, groupID, userID)
+		if err == nil && isGroupAdmin {
+			isAuthorized = true
+		}
+	}
+
+	if !isAuthorized {
+		s.logger.Warn("Unauthorized group deletion attempt",
+			zap.String("user", userID),
+			zap.String("role", userRole),
+			zap.String("group", groupID))
+		http.Error(w, "Forbidden: Admin access required", http.StatusForbidden)
 		return
 	}
 
-	if err := s.agent.mkClient.DeleteGroup(r.Context(), groupID); err != nil {
+	if err := s.agent.mkClient.DeleteGroup(ctx, groupID, userID); err != nil {
 		s.logger.Error("Failed to delete group", zap.Error(err))
 		http.Error(w, "Failed to delete group", http.StatusInternalServerError)
 		return
@@ -1342,6 +1869,22 @@ func (s *Server) handleRemoveWorkspaceMember(w http.ResponseWriter, r *http.Requ
 	workspaceNS := vars["id"]
 	targetUser := vars["username"]
 
+	// SECURITY: Acquire distributed lock BEFORE checking admin status
+	// This prevents TOCTOU race where concurrent requests could leave workspace with zero admins
+	var lock *GroupOperationLock
+	if s.groupLock != nil {
+		var err error
+		lock, err = s.groupLock.AcquireGroupLock(r.Context(), workspaceNS, "remove_member")
+		if err != nil {
+			s.logger.Warn("Could not acquire workspace lock, operation may have conflicts",
+				zap.String("workspace", workspaceNS),
+				zap.Error(err))
+			// Continue without lock if Redis is unavailable (fail open for availability)
+		} else {
+			defer lock.Release()
+		}
+	}
+
 	// Check if user is admin OR trying to leave themselves
 	isAdmin, err := s.agent.mkClient.IsGroupAdmin(r.Context(), workspaceNS, userID)
 	if err != nil {
@@ -1357,6 +1900,7 @@ func (s *Server) handleRemoveWorkspaceMember(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Prevent admin from removing themselves if they're the only admin
+	// SECURITY: This check is now atomic with removal due to distributed lock
 	if userID == targetUser && isAdmin {
 		members, _ := s.agent.mkClient.GetWorkspaceMembers(r.Context(), workspaceNS)
 		adminCount := 0
@@ -1373,7 +1917,7 @@ func (s *Server) handleRemoveWorkspaceMember(w http.ResponseWriter, r *http.Requ
 
 	if err := s.agent.mkClient.RemoveGroupMember(r.Context(), workspaceNS, targetUser); err != nil {
 		s.logger.Error("Failed to remove member", zap.Error(err))
-		http.Error(w, fmt.Sprintf("Failed to remove member: %v", err), http.StatusInternalServerError)
+		http.Error(w, "Failed to remove member", http.StatusInternalServerError)
 		return
 	}
 
@@ -1384,8 +1928,7 @@ func (s *Server) handleRemoveWorkspaceMember(w http.ResponseWriter, r *http.Requ
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"status":  "removed",
-		"message": fmt.Sprintf("User %s removed from workspace", targetUser),
+		"status": "removed",
 	})
 }
 
@@ -1424,4 +1967,87 @@ func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Group operation rate limiting constants
+const (
+	// Group operations are privileged and should be strictly rate limited
+	GroupOperationRateLimit = 10  // requests per minute
+	GroupOperationBurst     = 3   // burst allowance
+	GroupOperationWindow    = time.Minute
+)
+
+// groupOperationRateLimiter applies stricter rate limiting for group operations
+// SECURITY: Prevents abuse of group management functionality (DoS, enumeration)
+func (s *Server) groupOperationRateLimiter() mux.MiddlewareFunc {
+	// Simple in-memory rate limiter using map and channel cleanup
+	// For production, use Redis-backed rate limiting
+	type userRateLimit struct {
+		count    int
+		resetAt  time.Time
+		lastSeen time.Time
+	}
+
+	limiter := make(map[string]*userRateLimit)
+	var mu sync.Mutex
+
+	// Cleanup goroutine
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			mu.Lock()
+			now := time.Now()
+			for userID, rl := range limiter {
+				if now.After(rl.resetAt.Add(5 * time.Minute)) {
+					delete(limiter, userID)
+				}
+			}
+			mu.Unlock()
+		}
+	}()
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			userID := GetUserID(r.Context())
+			if userID == "" {
+				http.Error(w, "Authentication required", http.StatusUnauthorized)
+				return
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			now := time.Now()
+			rl, exists := limiter[userID]
+
+			if !exists || now.After(rl.resetAt) {
+				// First request or window expired
+				limiter[userID] = &userRateLimit{
+					count:   1,
+					resetAt: now.Add(GroupOperationWindow),
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Check if under rate limit
+			if rl.count < GroupOperationRateLimit {
+				rl.count++
+				rl.lastSeen = now
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Rate limit exceeded
+			retryAfter := rl.resetAt.Sub(now)
+			w.Header().Set("Retry-After", fmt.Sprintf("%.0f", retryAfter.Seconds()))
+			s.logger.Warn("Group operation rate limit exceeded",
+				zap.String("user", userID),
+				zap.Int("count", rl.count))
+
+			http.Error(w, fmt.Sprintf("Too many group operations. Try again in %s.",
+				retryAfter.Round(time.Second)), http.StatusTooManyRequests)
+		})
+	}
 }

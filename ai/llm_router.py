@@ -1,6 +1,6 @@
 """
 LLM Router - Routes requests to appropriate LLM providers.
-Supports NVIDIA NIM, OpenAI, and Anthropic.
+Supports GLM, NVIDIA NIM, OpenAI, and Anthropic.
 """
 import os
 from pathlib import Path
@@ -22,18 +22,23 @@ class LLMRouter:
         raw_key = os.getenv("NVIDIA_API_KEY")
         self.nvidia_key = raw_key.strip() if raw_key else None
         print(f"DEBUG: Loaded NVIDIA_KEY: Present={bool(self.nvidia_key)}, Len={len(self.nvidia_key) if self.nvidia_key else 0}, RawLen={len(raw_key) if raw_key else 0}", flush=True)
-        
+
         # Determine available providers
         self.openai_key = os.getenv("OPENAI_API_KEY")
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         self.minimax_key = os.getenv("MINIMAX_API_KEY")
-        
+
+        # GLM (Zhipu AI) - OpenAI compatible API
+        self.glm_key = os.getenv("GLM_API_KEY")
+
         # Ollama URL for local development fallback
         self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
         print(f"DEBUG: ENV KEYS: {list(os.environ.keys())}", flush=True)
-        
+
         # Determine available providers
         self.providers = []
+        if self.glm_key:
+            self.providers.append("glm")
         if self.nvidia_key:
             self.providers.append("nvidia")
         if self.openai_key:
@@ -44,9 +49,9 @@ class LLMRouter:
             self.providers.append("minimax")
         # Ollama is always available as local fallback
         self.providers.append("ollama")
-        
-        # Force NVIDIA as default per user request
-        self.default_provider = "nvidia"
+
+        # Use GLM as default if available (user wants GLM 4.5)
+        self.default_provider = "glm" if self.glm_key else ("nvidia" if self.nvidia_key else "ollama")
 
     async def generate(
         self,
@@ -66,7 +71,9 @@ class LLMRouter:
         system = system_instruction or self._build_system_prompt(context, alerts)
         
         print(f"DEBUG: Using provider={provider}, model={model}", flush=True)
-        
+
+        if provider == "glm":
+            return await self._call_glm(system, query, model or "glm-4.5")
         if provider == "nvidia":
             return await self._call_nvidia(system, query, model or "meta/llama-3.1-70b-instruct")
         elif provider == "openai":
@@ -76,7 +83,9 @@ class LLMRouter:
         elif provider == "ollama":
             return await self._call_ollama(system, query, model or "llama3.2")
         else:
-            # Fallback to Ollama for local dev
+            # Fallback to GLM or Ollama for local dev
+            if self.glm_key:
+                return await self._call_glm(system, query, model or "glm-4-plus")
             return await self._call_ollama(system, query, model or "llama3.2")
 
     def _build_system_prompt(self, context: Optional[str], alerts: list) -> str:
@@ -299,6 +308,33 @@ class LLMRouter:
             except Exception as e:
                 print(f"DEBUG: Ollama call failed: {e}", flush=True)
                 return f"Error: Ollama not available. Please ensure Ollama is running with 'ollama serve' and has the model '{model}' downloaded."
+
+    async def _call_glm(self, system: str, query: str, model: str) -> str:
+        """Call GLM (Zhipu AI) API - OpenAI compatible."""
+        timeout = httpx.Timeout(60.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            try:
+                response = await client.post(
+                    "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.glm_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": query},
+                        ],
+                        "max_tokens": 1000,
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+            except Exception as e:
+                print(f"DEBUG: GLM call failed: {e}", flush=True)
+                return f"Error: GLM API call failed - {str(e)}"
 
     async def _call_openai(self, system: str, query: str, model: str) -> str:
         """Call OpenAI API."""

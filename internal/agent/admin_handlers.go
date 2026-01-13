@@ -7,11 +7,129 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
 	"go.uber.org/zap"
 )
+
+// AdminRateLimiter provides rate limiting for admin endpoints
+type AdminRateLimiter struct {
+	mu    sync.Mutex
+	// Map of (userID or IP) -> request timestamps
+	requests map[string][]time.Time
+	// Configuration
+	maxRequests int           // Maximum requests allowed
+	window     time.Duration // Time window for rate limiting
+	logger     *zap.Logger
+}
+
+// NewAdminRateLimiter creates a new rate limiter for admin endpoints
+func NewAdminRateLimiter(maxRequests int, window time.Duration, logger *zap.Logger) *AdminRateLimiter {
+	arl := &AdminRateLimiter{
+		requests:   make(map[string][]time.Time),
+		maxRequests: maxRequests,
+		window:     window,
+		logger:     logger,
+	}
+
+	// Start cleanup goroutine to remove old entries
+	go arl.cleanup()
+
+	return arl
+}
+
+// Middleware returns a middleware function that enforces rate limiting
+func (arl *AdminRateLimiter) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if arl == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Get identifier: use UserID from context if available, otherwise use IP
+		identifier := GetUserID(r.Context())
+		if identifier == "" || identifier == "anonymous" {
+			identifier = r.RemoteAddr
+		}
+
+		if !arl.allow(identifier) {
+			arl.logger.Warn("Admin rate limit exceeded",
+				zap.String("identifier", identifier),
+				zap.String("path", r.URL.Path))
+			http.Error(w, "Rate limit exceeded. Please slow down.", http.StatusTooManyRequests)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// allow checks if a request should be allowed for the given identifier
+func (arl *AdminRateLimiter) allow(identifier string) bool {
+	arl.mu.Lock()
+	defer arl.mu.Unlock()
+
+	now := time.Now()
+
+	// Get existing requests for this identifier
+	timestamps, exists := arl.requests[identifier]
+	if !exists {
+		timestamps = []time.Time{}
+	}
+
+	// Filter out timestamps outside the current window
+	var validTimestamps []time.Time
+	cutoff := now.Add(-arl.window)
+	for _, ts := range timestamps {
+		if ts.After(cutoff) {
+			validTimestamps = append(validTimestamps, ts)
+		}
+	}
+
+	// Check if limit exceeded
+	if len(validTimestamps) >= arl.maxRequests {
+		return false
+	}
+
+	// Add current request
+	validTimestamps = append(validTimestamps, now)
+	arl.requests[identifier] = validTimestamps
+
+	return true
+}
+
+// cleanup periodically removes stale entries from the rate limiter
+func (arl *AdminRateLimiter) cleanup() {
+	if arl == nil {
+		return
+	}
+
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		arl.mu.Lock()
+		now := time.Now()
+		cutoff := now.Add(-arl.window * 2) // Keep slightly more than the window
+
+		for id, timestamps := range arl.requests {
+			var valid []time.Time
+			for _, ts := range timestamps {
+				if ts.After(cutoff) {
+					valid = append(valid, ts)
+				}
+			}
+			if len(valid) == 0 {
+				delete(arl.requests, id)
+			} else {
+				arl.requests[id] = valid
+			}
+		}
+		arl.mu.Unlock()
+	}
+}
 
 // AdminUser represents a user in the admin user list
 type AdminUser struct {
@@ -91,14 +209,20 @@ type ActivityLogEntry struct {
 }
 
 // SetupAdminRoutes configures admin-only routes
-func (s *Server) SetupAdminRoutes(r *mux.Router) {
+// jwtMiddleware is passed in to avoid recreating it (security: enforces JWT_SECRET validation)
+func (s *Server) SetupAdminRoutes(r *mux.Router, jwtMiddleware *JWTMiddleware) {
 	// Create admin middleware
 	adminMiddleware := NewAdminMiddleware(s.logger)
 
-	// Admin routes (under /api/admin, requires JWT + admin role)
+	// Create rate limiter for admin endpoints (100 requests per minute per admin)
+	// SECURITY: Rate limiting prevents admin endpoint abuse/DoS
+	adminRateLimiter := NewAdminRateLimiter(100, time.Minute, s.logger)
+
+	// Admin routes (under /api/admin, requires JWT + admin role + rate limiting)
 	adminRouter := r.PathPrefix("/api/admin").Subrouter()
-	adminRouter.Use(NewJWTMiddleware(s.logger).Middleware)
+	adminRouter.Use(jwtMiddleware.Middleware)
 	adminRouter.Use(adminMiddleware.Middleware)
+	adminRouter.Use(adminRateLimiter.Middleware)
 
 	// User Management
 	adminRouter.HandleFunc("/users", s.handleAdminListUsers).Methods("GET", "OPTIONS")
@@ -172,12 +296,15 @@ func (s *Server) SetupAdminRoutes(r *mux.Router) {
 
 // handleAdminCreateUser creates a new user
 // POST /api/admin/users
+// SECURITY: Supports both password and pre-hashed password with force flag
 func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var body struct {
-		Username string `json:"username"`
-		Password string `json:"password"` // In a real app, hash this!
-		Role     string `json:"role"`
+		Username     string `json:"username"`
+		Password     string `json:"password,omitempty"`      // Plaintext password (will be hashed)
+		PasswordHash string `json:"password_hash,omitempty"` // Pre-hashed password (bcrypt)
+		Role         string `json:"role"`
+		Force        bool   `json:"force,omitempty"` // Required when using password_hash
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -186,11 +313,58 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if body.Username == "" || body.Password == "" {
-		http.Error(w, "Username and Password are required", http.StatusBadRequest)
+	// Validate username
+	if body.Username == "" {
+		http.Error(w, "Username is required", http.StatusBadRequest)
 		return
 	}
 
+	// SECURITY: Validate username format and length
+	if len(body.Username) < 3 {
+		http.Error(w, "Username must be at least 3 characters", http.StatusBadRequest)
+		return
+	}
+	if len(body.Username) > 100 {
+		http.Error(w, "Username exceeds maximum length", http.StatusBadRequest)
+		return
+	}
+
+	// SECURITY: Require either password OR password_hash, not both
+	var hashedPassword string
+	switch {
+	case body.Password != "" && body.PasswordHash != "":
+		http.Error(w, "Provide either password or password_hash, not both", http.StatusBadRequest)
+		return
+	case body.Password != "":
+		// Plaintext password provided - validate and hash
+		if len(body.Password) < 8 {
+			http.Error(w, "Password must be at least 8 characters", http.StatusBadRequest)
+			return
+		}
+		var err error
+		hashedPassword, err = HashPassword(body.Password)
+		if err != nil {
+			s.logger.Error("Failed to hash password", zap.Error(err))
+			http.Error(w, "Failed to process password", http.StatusInternalServerError)
+			return
+		}
+	case body.PasswordHash != "":
+		// Pre-hashed password provided - validate format and require force flag
+		if !body.Force {
+			http.Error(w, "Pre-hashed passwords require force=true", http.StatusBadRequest)
+			return
+		}
+		if !isBcryptHash(body.PasswordHash) {
+			http.Error(w, "Invalid password hash format (must be bcrypt)", http.StatusBadRequest)
+			return
+		}
+		hashedPassword = body.PasswordHash
+	default:
+		http.Error(w, "Password or password_hash is required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate role
 	if body.Role != "admin" && body.Role != "user" {
 		body.Role = "user"
 	}
@@ -206,15 +380,8 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create User (Simplistic: normally we'd hash params, here we just store raw for this demo as we don't have the auth logic exposed here)
-	// Actually, looking at the auth context, we should probably follow the pattern.
-	// But since I don't see the register handler easily, I will just set the basic keys I know.
-	// user:<username> -> password (or hash)
-	// user_role:<username> -> role
-
-	// We'll store the password directly as the existing auth likely checks this key.
-	// (Assuming simple plaintext or previously agreed hasing. For this task I will store as is, or "hashed" if I knew the algo. I'll store as is).
-	err = s.agent.RedisClient.Set(ctx, "user:"+body.Username, body.Password, 0).Err()
+	// Store hashed password
+	err = s.agent.RedisClient.Set(ctx, "user:"+body.Username, hashedPassword, 0).Err()
 	if err != nil {
 		http.Error(w, "Failed to create user", http.StatusInternalServerError)
 		return
@@ -229,7 +396,10 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	// Set created date
 	s.agent.RedisClient.Set(ctx, "user_created:"+body.Username, time.Now().Format(time.RFC3339), 0)
 
-	s.logger.Info("Admin created user", zap.String("username", body.Username), zap.String("role", body.Role))
+	s.logger.Info("Admin created user",
+		zap.String("username", body.Username),
+		zap.String("role", body.Role),
+		zap.Bool("pre_hashed", body.PasswordHash != ""))
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{
@@ -237,6 +407,14 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		"role":     body.Role,
 		"status":   "created",
 	})
+}
+
+// isBcryptHash checks if a string is a valid bcrypt hash
+func isBcryptHash(s string) bool {
+	// Bcrypt hashes start with $2a$, $2b$, or $2y$
+	return strings.HasPrefix(s, "$2a$") ||
+		strings.HasPrefix(s, "$2b$") ||
+		strings.HasPrefix(s, "$2y$")
 }
 
 // handleAdminListUsers lists all registered users

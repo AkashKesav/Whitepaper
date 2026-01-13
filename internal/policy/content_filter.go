@@ -2,8 +2,10 @@ package policy
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"go.uber.org/zap"
 )
@@ -16,6 +18,17 @@ const (
 	FilterTypeProfanity ContentFilterType = "PROFANITY"
 	FilterTypeSensitive ContentFilterType = "SENSITIVE"
 	FilterTypeCustom    ContentFilterType = "CUSTOM"
+)
+
+// Input length limits for security (prevent DoS via oversized inputs)
+const (
+	MaxContentLength     = 10 * 1024 * 1024 // 10MB for documents
+	MaxCommentLength     = 10 * 1024        // 10KB for comments/messages
+	MaxUsernameLength    = 100              // Username limit
+	MaxGroupNameLength   = 100              // Group name limit
+	MaxQueryLength       = 2000             // Search/query limit
+	MaxFilenameLength    = 255              // Filename limit
+	MaxEmbeddingLength   = 8000             // Text for embedding limit
 )
 
 // ContentFilterAction represents what to do when content is flagged
@@ -255,4 +268,82 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ValidateInput performs comprehensive input validation including length, encoding, and content checks
+// SECURITY: Prevents DoS via oversized inputs and injection via malformed content
+func (cf *ContentFilter) ValidateInput(inputType, content string) error {
+	if !cf.enabled {
+		return nil
+	}
+
+	// Validate content is not empty
+	if content == "" {
+		return fmt.Errorf("%s cannot be empty", inputType)
+	}
+
+	// Determine maximum length based on input type
+	var maxLength int
+	switch inputType {
+	case "content", "document":
+		maxLength = MaxContentLength
+	case "comment", "message":
+		maxLength = MaxCommentLength
+	case "username":
+		maxLength = MaxUsernameLength
+	case "group_name":
+		maxLength = MaxGroupNameLength
+	case "query", "search":
+		maxLength = MaxQueryLength
+	case "filename":
+		maxLength = MaxFilenameLength
+	case "embedding":
+		maxLength = MaxEmbeddingLength
+	default:
+		// Default to comment length for unknown types
+		maxLength = MaxCommentLength
+	}
+
+	// Check byte length
+	if len(content) > maxLength {
+		return fmt.Errorf("%s exceeds maximum length of %d bytes (got %d bytes)", inputType, maxLength, len(content))
+	}
+
+	// Check for null bytes (injection attempt)
+	if strings.Contains(content, "\x00") {
+		return fmt.Errorf("%s contains null byte (possible injection attempt)", inputType)
+	}
+
+	// Validate UTF-8 encoding
+	if !utf8.ValidString(content) {
+		return fmt.Errorf("%s contains invalid UTF-8 sequences", inputType)
+	}
+
+	// For usernames and group names, validate character set
+	if inputType == "username" || inputType == "group_name" {
+		// Only allow alphanumeric, underscore, hyphen, and period
+		matched, _ := regexp.MatchString(`^[a-zA-Z0-9._-]+$`, content)
+		if !matched {
+			return fmt.Errorf("%s can only contain letters, numbers, dots, hyphens, and underscores", inputType)
+		}
+	}
+
+	// For queries and searches, check for common injection patterns
+	if inputType == "query" || inputType == "search" {
+		lowerContent := strings.ToLower(content)
+		suspiciousPatterns := []string{
+			"<script", "javascript:", "vbscript:", "onload=", "onerror=", "onclick=",
+			"<iframe", "eval(", "exec(", "system(",
+		}
+		for _, pattern := range suspiciousPatterns {
+			if strings.Contains(lowerContent, pattern) {
+				cf.logger.Warn("Suspicious query pattern detected",
+					zap.String("input_type", inputType),
+					zap.String("pattern", pattern))
+				return fmt.Errorf("%s contains suspicious content pattern", inputType)
+			}
+		}
+	}
+
+	return nil
 }

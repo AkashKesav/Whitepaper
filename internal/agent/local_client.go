@@ -23,8 +23,8 @@ func (c *LocalKernelClient) Consult(ctx context.Context, req *graph.Consultation
 	return c.k.Consult(ctx, req)
 }
 
-func (c *LocalKernelClient) StoreInHotCache(ctx context.Context, userID, query, response, convID string) error {
-	return c.k.StoreInHotCache(userID, query, response, convID)
+func (c *LocalKernelClient) StoreInHotCache(ctx context.Context, userID, namespace, query, response, convID string) error {
+	return c.k.StoreInHotCache(userID, namespace, query, response, convID)
 }
 
 func (c *LocalKernelClient) GetStats(ctx context.Context) (map[string]interface{}, error) {
@@ -79,8 +79,8 @@ func (c *LocalKernelClient) IsGroupAdmin(ctx context.Context, groupNamespace, us
 // Graph Traversal Methods - delegate to GraphClient
 // ============================================================================
 
-func (c *LocalKernelClient) FindNodeByName(ctx context.Context, name string, nodeType graph.NodeType) (*graph.Node, error) {
-	return c.k.GetGraphClient().FindNodeByName(ctx, name, nodeType)
+func (c *LocalKernelClient) FindNodeByName(ctx context.Context, namespace, name string, nodeType graph.NodeType) (*graph.Node, error) {
+	return c.k.GetGraphClient().FindNodeByName(ctx, namespace, name, nodeType)
 }
 
 func (c *LocalKernelClient) SpreadActivation(ctx context.Context, opts graph.SpreadActivationOpts) ([]graph.ActivatedNode, error) {
@@ -122,8 +122,8 @@ func (c *LocalKernelClient) Speculate(ctx context.Context, req *graph.Consultati
 }
 
 // DeleteGroup deletes a group
-func (c *LocalKernelClient) DeleteGroup(ctx context.Context, groupID string) error {
-	return c.k.DeleteGroup(ctx, groupID)
+func (c *LocalKernelClient) DeleteGroup(ctx context.Context, groupID, userID string) error {
+	return c.k.DeleteGroup(ctx, groupID, userID)
 }
 
 // ============================================================================
@@ -199,8 +199,8 @@ func (c *LocalKernelClient) PersistChunks(ctx context.Context, namespace, docID 
 // ============================================================================
 
 // SearchNodes searches for nodes matching a query string
-func (c *LocalKernelClient) SearchNodes(ctx context.Context, query string) ([]graph.Node, error) {
-	return c.k.GetGraphClient().SearchNodes(ctx, query)
+func (c *LocalKernelClient) SearchNodes(ctx context.Context, namespace, query string) ([]graph.Node, error) {
+	return c.k.GetGraphClient().SearchNodes(ctx, query, namespace)
 }
 
 // ListUserGroups lists groups the user is a member of

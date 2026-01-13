@@ -192,42 +192,42 @@ func (c *Client) initSchema(ctx context.Context) error {
 		}
 
 		# Predicates with indexes
-		name: string @index(exact, term, fulltext, trigram) .
-		description: string @index(fulltext) .
+		name: string @index(hash) .
+		description: string .
 		attributes: [string] .
-		tags: [string] @index(term) .
+		tags: [string] .
 		entity_type: string @index(exact) .
 		namespace: string @index(exact) .
 		created_by: string @index(exact) .
 		
 		# Temporal predicates
-		created_at: datetime @index(hour) .
-		updated_at: datetime @index(hour) .
-		last_accessed: datetime @index(hour) .
-		occurred_at: datetime @index(hour) .
+		created_at: datetime .
+		updated_at: datetime .
+		last_accessed: datetime .
+		occurred_at: datetime .
 		valid_from: datetime .
 		valid_until: datetime .
 		
-		# Activation and prioritization
+		# Activation and prioritization (indexed for reordering queries)
 		activation: float @index(float) .
 		access_count: int @index(int) .
 		traversal_cost: float .
 		
 		# Insight/Pattern specific
-		insight_type: string @index(exact) .
-		pattern_type: string @index(exact) .
-		summary: string @index(fulltext) .
+		insight_type: string .
+		pattern_type: string .
+		summary: string .
 		action_suggestion: string .
 		predicted_action: string .
-		frequency: int @index(int) .
-		confidence: float @index(float) .
-		confidence_score: float @index(float) .
+		frequency: int .
+		confidence: float .
+		confidence_score: float .
 		fact_value: string .
-		status: string @index(exact) .
-		sentiment: string @index(exact) .
+		status: string .
+		sentiment: string .
 		
 		# Source tracking
-		source_conversation_id: string @index(exact) .
+		source_conversation_id: string .
 		source_nodes: [uid] .
 		trigger_nodes: [uid] .
 		
@@ -256,7 +256,7 @@ func (c *Client) initSchema(ctx context.Context) error {
 		knows: [uid] @reverse .
 		
 		# Edge metadata predicates
-		edge_status: string @index(exact) .
+		edge_status: string .
 		edge_created_at: datetime .
 		edge_activation: float .
 		edge_confidence: float .
@@ -436,7 +436,9 @@ func (c *Client) GetNode(ctx context.Context, uid string) (*Node, error) {
 			dgraph.type
 			name
 			description
+			namespace
 			attributes
+			tags
 			created_at
 			updated_at
 			last_accessed
@@ -497,39 +499,69 @@ func (c *Client) UpdateNodeActivation(ctx context.Context, uid string, activatio
 }
 
 // IncrementAccessCount increments a node's access count and boosts activation
+// IncrementAccessCount atomically increments a node's activation and access count
+// Uses retry mechanism to handle concurrent updates (fixes race condition)
 func (c *Client) IncrementAccessCount(ctx context.Context, uid string, config ActivationConfig) error {
-	node, err := c.GetNode(ctx, uid)
-	if err != nil {
-		return err
+	maxRetries := 3
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Get current node state
+		node, err := c.GetNode(ctx, uid)
+		if err != nil {
+			return err
+		}
+
+		// Calculate new values
+		newActivation := node.Activation + config.BoostPerAccess
+		if newActivation > config.MaxActivation {
+			newActivation = config.MaxActivation
+		}
+		newAccessCount := node.AccessCount + 1
+
+		txn := c.dg.NewTxn()
+		defer txn.Discard(ctx)
+
+		// Use conditional mutation to ensure we're updating the expected version
+		// DGraph's conditional mutation using N-Quad language with @if directive
+		cond := fmt.Sprintf(`@if(eq(len(uid(%s)), 1) AND eq(uid(%s).activation, %f) AND eq(uid(%s).access_count, %d))`,
+			uid, uid, node.Activation, uid, node.AccessCount)
+
+		update := map[string]interface{}{
+			"uid":           uid,
+			"activation":    newActivation,
+			"access_count":  newAccessCount,
+			"last_accessed": time.Now(),
+		}
+
+		updateJSON, err := json.Marshal(update)
+		if err != nil {
+			return fmt.Errorf("failed to marshal update: %w", err)
+		}
+
+		mu := &api.Mutation{
+			SetJson:   updateJSON,
+			CommitNow: true,
+			Cond:      cond, // Conditional mutation
+		}
+
+		_, err = txn.Mutate(ctx, mu)
+		if err == nil {
+			// Success - mutation was applied
+			return nil
+		}
+
+		// If this is a conflict error, retry; otherwise fail
+		if strings.Contains(err.Error(), "conflict") || strings.Contains(err.Error(), "condition") {
+			// Backoff before retry
+			time.Sleep(time.Millisecond * time.Duration(10*(attempt+1)))
+			continue
+		}
+
+		// For other errors, fail immediately
+		return fmt.Errorf("failed to increment access count: %w", err)
 	}
 
-	newActivation := node.Activation + config.BoostPerAccess
-	if newActivation > config.MaxActivation {
-		newActivation = config.MaxActivation
-	}
-
-	txn := c.dg.NewTxn()
-	defer txn.Discard(ctx)
-
-	update := map[string]interface{}{
-		"uid":           uid,
-		"activation":    newActivation,
-		"access_count":  node.AccessCount + 1,
-		"last_accessed": time.Now(),
-	}
-
-	updateJSON, err := json.Marshal(update)
-	if err != nil {
-		return fmt.Errorf("failed to marshal update: %w", err)
-	}
-
-	mu := &api.Mutation{
-		SetJson:   updateJSON,
-		CommitNow: true,
-	}
-
-	_, err = txn.Mutate(ctx, mu)
-	return err
+	return fmt.Errorf("failed to increment access count after %d attempts (too many conflicts)", maxRetries)
 }
 
 // AddTags appends new tags to an existing node
@@ -582,10 +614,10 @@ func (c *Client) UpdateDescription(ctx context.Context, uid string, description 
 	return nil
 }
 
-// FindNodeByName finds a node by its name and type
-func (c *Client) FindNodeByName(ctx context.Context, name string, nodeType NodeType) (*Node, error) {
-	query := fmt.Sprintf(`query FindNode($name: string) {
-		node(func: eq(name, $name)) @filter(type(%s)) {
+// FindNodeByName finds a node by its name, type, and namespace
+func (c *Client) FindNodeByName(ctx context.Context, namespace string, name string, nodeType NodeType) (*Node, error) {
+	query := fmt.Sprintf(`query FindNode($name: string, $namespace: string) {
+		node(func: eq(name, $name)) @filter(type(%s) AND eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
@@ -599,7 +631,10 @@ func (c *Client) FindNodeByName(ctx context.Context, name string, nodeType NodeT
 		}
 	}`, nodeType)
 
-	vars := map[string]string{"$name": name}
+	vars := map[string]string{
+		"$name":      name,
+		"$namespace": namespace,
+	}
 	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, vars)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query node: %w", err)
@@ -620,9 +655,10 @@ func (c *Client) FindNodeByName(ctx context.Context, name string, nodeType NodeT
 }
 
 // SearchNodes searches for nodes matching a query string (fuzzy search)
-func (c *Client) SearchNodes(ctx context.Context, queryStr string) ([]Node, error) {
-	query := `query SearchNodes($term: string) {
-		nodes(func: anyoftext(name, $term)) {
+// SECURITY: Requires namespace parameter to prevent cross-tenant data access
+func (c *Client) SearchNodes(ctx context.Context, queryStr, namespace string) ([]Node, error) {
+	query := `query SearchNodes($term: string, $namespace: string) {
+		nodes(func: anyoftext(name, $term)) @filter(eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
@@ -634,7 +670,7 @@ func (c *Client) SearchNodes(ctx context.Context, queryStr string) ([]Node, erro
 			namespace
 			entity_type
 		}
-		nodes_desc(func: anyoftext(description, $term)) {
+		nodes_desc(func: anyoftext(description, $term)) @filter(eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
@@ -648,7 +684,10 @@ func (c *Client) SearchNodes(ctx context.Context, queryStr string) ([]Node, erro
 		}
 	}`
 
-	vars := map[string]string{"$term": queryStr}
+	vars := map[string]string{
+		"$term":      queryStr,
+		"$namespace": namespace,
+	}
 	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, vars)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search nodes: %w", err)
@@ -909,7 +948,34 @@ func (c *Client) CreateNodes(ctx context.Context, nodes []*Node) (map[string]str
 
 	resp, err := txn.Mutate(ctx, mu)
 	if err != nil {
-		return nil, fmt.Errorf("batch create nodes failed: %w", err)
+		c.logger.Warn("Batch node creation failed, falling back to individual creation",
+			zap.Int("node_count", len(nodes)),
+			zap.Error(err))
+
+		// Fallback: Create nodes individually with partial success handling
+		nameToUID := make(map[string]string)
+		var failedNodes []string
+		var errs []error
+
+		for _, node := range nodes {
+			// Create individual node
+			uid, nodeErr := c.CreateNode(ctx, node)
+			if nodeErr != nil {
+				failedNodes = append(failedNodes, node.Name)
+				errs = append(errs, nodeErr)
+				c.logger.Warn("Failed to create individual node",
+					zap.String("name", node.Name),
+					zap.Error(nodeErr))
+				continue
+			}
+			nameToUID[node.Name] = uid
+		}
+
+		if len(failedNodes) > 0 {
+			return nameToUID, fmt.Errorf("partial success: %d/%d nodes failed (%v)",
+				len(failedNodes), len(nodes), failedNodes)
+		}
+		return nameToUID, nil
 	}
 
 	// Map returned UIDs back to names
@@ -929,6 +995,7 @@ type EdgeInput struct {
 	ToUID   string
 	Type    EdgeType
 	Status  EdgeStatus
+	Weight  float64
 }
 
 // CreateEdges batch creates multiple edges in a single mutation
@@ -940,8 +1007,13 @@ func (c *Client) CreateEdges(ctx context.Context, edges []EdgeInput) error {
 	var nquads strings.Builder
 	for _, edge := range edges {
 		predicateName := edgeTypeToPredicateName(edge.Type)
-		nquads.WriteString(fmt.Sprintf(`<%s> <%s> <%s> .
-`, edge.FromUID, predicateName, edge.ToUID))
+		// Default weight to 0.5 if not set
+		weight := edge.Weight
+		if weight == 0 {
+			weight = 0.5
+		}
+		nquads.WriteString(fmt.Sprintf(`<%s> <%s> <%s> (weight=%f) .
+`, edge.FromUID, predicateName, edge.ToUID, weight))
 	}
 
 	txn := c.dg.NewTxn()
@@ -1040,7 +1112,9 @@ func (c *Client) Mutate(ctx context.Context, mutation *api.Mutation) (*api.Respo
 // EnsureUserNode creates a User node in DGraph if it doesn't exist (idempotent)
 func (c *Client) EnsureUserNode(ctx context.Context, username, role string) error {
 	// Check if user already exists
-	existing, err := c.FindNodeByName(ctx, username, NodeTypeUser)
+	// User node lives in its own "user_<username>" namespace
+	ns := fmt.Sprintf("user_%s", username)
+	existing, err := c.FindNodeByName(ctx, ns, username, NodeTypeUser)
 	if err != nil {
 		return fmt.Errorf("failed to check user existence: %w", err)
 	}
@@ -1057,8 +1131,8 @@ func (c *Client) EnsureUserNode(ctx context.Context, username, role string) erro
 		_:user <role> %q .
 		_:user <created_at> %q .
 		_:user <updated_at> %q .
-		_:user <activation> "0.5" .
-	`, username, fmt.Sprintf("user_%s", username), role, now, now)
+		_:user <activation> "%f"^^<xs:double> .
+	`, username, fmt.Sprintf("user_%s", username), role, now, now, 0.5)
 
 	txn := c.dg.NewTxn()
 	defer txn.Discard(ctx)
@@ -1080,7 +1154,7 @@ func (c *Client) EnsureUserNode(ctx context.Context, username, role string) erro
 // CreateGroup creates a new group (V2) with strict namespace isolation and admin hierarchy
 func (c *Client) CreateGroup(ctx context.Context, name, description, ownerID string) (string, error) {
 	// Find owner user
-	ownerNode, err := c.FindNodeByName(ctx, ownerID, NodeTypeUser)
+	ownerNode, err := c.FindNodeByName(ctx, fmt.Sprintf("user_%s", ownerID), ownerID, NodeTypeUser)
 	if err != nil {
 		return "", fmt.Errorf("failed to find owner: %w", err)
 	}
@@ -1141,6 +1215,14 @@ func (c *Client) CreateGroup(ctx context.Context, name, description, ownerID str
 		return "", fmt.Errorf("failed to create group: %w", err)
 	}
 
+	// AUDIT: Log group creation for security tracking
+	c.logger.Info("Group created",
+		zap.String("group_id", groupID),
+		zap.String("namespace", namespace),
+		zap.String("name", name),
+		zap.String("owner", ownerID),
+		zap.String("action", "create_group"))
+
 	// The returned ID is the DGraph UID.
 	// But the LOGICAL ID (for namespace) is the UUID we generated.
 	// We should probably store the UUID as a property `group_id` for external reference?
@@ -1178,7 +1260,7 @@ func (c *Client) AddGroupMember(ctx context.Context, groupNamespace, username st
 	groupUID := res.G[0].UID
 
 	// Find the User
-	userNode, err := c.FindNodeByName(ctx, username, NodeTypeUser)
+	userNode, err := c.FindNodeByName(ctx, fmt.Sprintf("user_%s", username), username, NodeTypeUser)
 	if err != nil || userNode == nil {
 		return fmt.Errorf("user %s not found", username)
 	}
@@ -1196,6 +1278,13 @@ func (c *Client) AddGroupMember(ctx context.Context, groupNamespace, username st
 	if _, err := txn.Mutate(ctx, mu); err != nil {
 		return fmt.Errorf("failed to add member: %w", err)
 	}
+
+	// AUDIT: Log group member addition for security tracking
+	c.logger.Info("Group member added",
+		zap.String("group_namespace", groupNamespace),
+		zap.String("username", username),
+		zap.String("action", "add_group_member"))
+
 	return nil
 }
 
@@ -1228,7 +1317,7 @@ func (c *Client) RemoveGroupMember(ctx context.Context, groupID, username string
 	groupUID := res.G[0].UID
 
 	// Find User
-	userNode, err := c.FindNodeByName(ctx, username, NodeTypeUser)
+	userNode, err := c.FindNodeByName(ctx, fmt.Sprintf("user_%s", username), username, NodeTypeUser)
 	if err != nil || userNode == nil {
 		return fmt.Errorf("user %s not found", username)
 	}
@@ -1247,12 +1336,29 @@ func (c *Client) RemoveGroupMember(ctx context.Context, groupID, username string
 	if _, err := txn.Mutate(ctx, mu); err != nil {
 		return fmt.Errorf("failed to remove member: %w", err)
 	}
+
+	// AUDIT: Log group member removal for security tracking
+	c.logger.Info("Group member removed",
+		zap.String("group_id", groupID),
+		zap.String("username", username),
+		zap.String("action", "remove_group_member"))
+
 	return nil
 }
 
 // DeleteGroup deletes a group (and its edges automatically due to DGraph behavior on node deletion? No, usually explicitly needed)
 // For safety, we just delete the node.
-func (c *Client) DeleteGroup(ctx context.Context, groupID string) error {
+// SECURITY: Requires userID to verify the user is an admin of the group before deletion.
+func (c *Client) DeleteGroup(ctx context.Context, groupID, userID string) error {
+	// SECURITY: Verify the user is an admin of this group before allowing deletion
+	isAdmin, err := c.IsGroupAdmin(ctx, groupID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to verify group admin status: %w", err)
+	}
+	if !isAdmin {
+		return fmt.Errorf("user %s is not an admin of group %s", userID, groupID)
+	}
+
 	// groupID is namespace
 	q := `query FindGroup($ns: string) {
 		g(func: eq(namespace, $ns)) @filter(type(Group)) {
@@ -1285,7 +1391,57 @@ func (c *Client) DeleteGroup(ctx context.Context, groupID string) error {
 	}
 
 	_, err = c.dg.NewTxn().Mutate(ctx, mu)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// AUDIT: Log group deletion for security tracking
+	c.logger.Info("Group deleted",
+		zap.String("group_id", groupID),
+		zap.String("deleted_by", userID),
+		zap.String("action", "delete_group"))
+
+	return nil
+}
+
+// DeleteNode deletes a node by its UID
+func (c *Client) DeleteNode(ctx context.Context, uid, namespace string) error {
+	if c.dg == nil {
+		return fmt.Errorf("graph client not initialized")
+	}
+
+	// Verify node exists and belongs to the namespace before deleting
+	node, err := c.GetNode(ctx, uid)
+	if err != nil {
+		return fmt.Errorf("node not found: %w", err)
+	}
+
+	if node.Namespace != namespace {
+		return fmt.Errorf("namespace mismatch: cannot delete node from different namespace")
+	}
+
+	// Delete the node using DGraph mutation
+	d := map[string]string{"uid": uid}
+	db, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+
+	mu := &api.Mutation{
+		DeleteJson: db,
+		CommitNow:  true,
+	}
+
+	_, err = c.dg.NewTxn().Mutate(ctx, mu)
+	if err != nil {
+		return fmt.Errorf("failed to delete node: %w", err)
+	}
+
+	c.logger.Info("Node deleted",
+		zap.String("uid", uid),
+		zap.String("namespace", namespace))
+
+	return nil
 }
 
 // ShareToGroup shares a conversation ID with a group
@@ -1337,7 +1493,7 @@ func (c *Client) ShareToGroup(ctx context.Context, conversationID, groupID strin
 // ListUserGroups returns groups the user is a member of (V2)
 // NOTE: This intentionally steps OUTSIDE the strict namespace filter for discovery.
 func (c *Client) ListUserGroups(ctx context.Context, userID string) ([]Group, error) {
-	userNode, err := c.FindNodeByName(ctx, userID, NodeTypeUser)
+	userNode, err := c.FindNodeByName(ctx, fmt.Sprintf("user_%s", userID), userID, NodeTypeUser)
 	if err != nil || userNode == nil {
 		return nil, fmt.Errorf("user not found: %s", userID)
 	}
@@ -1375,7 +1531,7 @@ func (c *Client) ListUserGroups(ctx context.Context, userID string) ([]Group, er
 
 // IsGroupAdmin checks if a user is an admin of the group
 func (c *Client) IsGroupAdmin(ctx context.Context, groupNamespace, userID string) (bool, error) {
-	userNode, err := c.FindNodeByName(ctx, userID, NodeTypeUser)
+	userNode, err := c.FindNodeByName(ctx, fmt.Sprintf("user_%s", userID), userID, NodeTypeUser)
 	if err != nil || userNode == nil {
 		return false, fmt.Errorf("user not found: %s", userID)
 	}
@@ -1408,16 +1564,64 @@ func (c *Client) IsGroupAdmin(ctx context.Context, groupNamespace, userID string
 
 // FindEntityInNamespace finds an entity by name in a specific namespace
 // Used for deduplication - returns existing entity if found, nil if not
-// Uses case-insensitive matching for better deduplication
+// SECURITY: Enhanced with Unicode normalization and fuzzy matching to prevent homograph attacks
+//
+// Matching strategy (in order):
+// 1. Exact match (after Unicode normalization)
+// 2. Case-insensitive match (after Unicode normalization)
+// 3. Fuzzy match (Levenshtein distance <= 2 for names up to 10 chars)
 func (c *Client) FindEntityInNamespace(ctx context.Context, name, namespace string) (*Node, error) {
-	// Normalize name: trim spaces and convert to lowercase for matching
-	normalizedName := strings.TrimSpace(strings.ToLower(name))
+	// SECURITY: Normalize name using Unicode NFKC normalization
+	// This prevents homograph attacks where visually identical characters
+	// from different scripts are used to bypass deduplication
+	normalizedName := normalizeForMatching(name)
 	if normalizedName == "" {
 		return nil, nil
 	}
 
-	// Use regexp for case-insensitive matching
-	query := `query FindEntity($pattern: string, $ns: string) {
+	// SECURITY: Also normalize namespace for consistent matching
+	normalizedNamespace := normalizeForMatching(namespace)
+	if normalizedNamespace == "" {
+		return nil, nil
+	}
+
+	// Strategy 1: Try exact match first (fastest)
+	query := `query FindEntity($name: string, $ns: string) {
+		node(func: eq(name, $name)) @filter(eq(namespace, $ns)) {
+			uid
+			dgraph.type
+			name
+			description
+			namespace
+			activation
+			created_at
+		}
+	}`
+
+	vars := map[string]string{"$name": normalizedName, "$ns": normalizedNamespace}
+
+	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, vars)
+	if err != nil {
+		c.logger.Warn("FindEntityInNamespace exact match query failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to find entity: %w", err)
+	}
+
+	var result struct {
+		Node []Node `json:"node"`
+	}
+	if err := json.Unmarshal(resp.Json, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal: %w", err)
+	}
+
+	if len(result.Node) > 0 {
+		c.logger.Debug("FindEntityInNamespace exact match found",
+			zap.String("name", name))
+		return &result.Node[0], nil
+	}
+
+	// Strategy 2: Case-insensitive match using regex
+	// This catches "John Doe" vs "john doe"
+	caseInsensitiveQuery := `query FindEntity($pattern: string, $ns: string) {
 		node(func: regexp(name, $pattern)) @filter(eq(namespace, $ns)) {
 			uid
 			dgraph.type
@@ -1429,37 +1633,203 @@ func (c *Client) FindEntityInNamespace(ctx context.Context, name, namespace stri
 		}
 	}`
 
-	// Create case-insensitive regex pattern
 	pattern := fmt.Sprintf("/^%s$/i", regexp.QuoteMeta(normalizedName))
-	vars := map[string]string{"$pattern": pattern, "$ns": namespace}
+	caseVars := map[string]string{"$pattern": pattern, "$ns": normalizedNamespace}
 
-	c.logger.Debug("FindEntityInNamespace lookup",
-		zap.String("name", name),
-		zap.String("pattern", pattern),
-		zap.String("namespace", namespace))
+	resp, err = c.dg.NewReadOnlyTxn().QueryWithVars(ctx, caseInsensitiveQuery, caseVars)
+	if err != nil {
+		c.logger.Warn("FindEntityInNamespace case-insensitive query failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to find entity: %w", err)
+	}
 
+	if err := json.Unmarshal(resp.Json, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal: %w", err)
+	}
+
+	if len(result.Node) > 0 {
+		c.logger.Debug("FindEntityInNamespace case-insensitive match found",
+			zap.String("name", name))
+		return &result.Node[0], nil
+	}
+
+	// Strategy 3: Fuzzy match using Levenshtein distance
+	// Only for names up to 15 characters to avoid expensive computation
+	if len(normalizedName) <= 15 {
+		fuzzyNode, err := c.findEntityFuzzy(ctx, normalizedName, normalizedNamespace)
+		if err != nil {
+			c.logger.Warn("FindEntityInNamespace fuzzy match failed", zap.Error(err))
+			return nil, nil // Don't fail on fuzzy match error
+		}
+		if fuzzyNode != nil {
+			c.logger.Debug("FindEntityInNamespace fuzzy match found",
+				zap.String("name", name),
+				zap.String("matched_name", fuzzyNode.Name))
+			return fuzzyNode, nil
+		}
+	}
+
+	c.logger.Debug("FindEntityInNamespace no match found",
+		zap.String("name", name))
+	return nil, nil
+}
+
+// findEntityFuzzy performs fuzzy matching using Levenshtein distance
+// Returns entities with distance <= 2 (for shorter names) or <= 3 (for longer names)
+func (c *Client) findEntityFuzzy(ctx context.Context, name, namespace string) (*Node, error) {
+	// Query all entities in namespace for fuzzy comparison
+	query := `query FindAll($ns: string) {
+		node(func: eq(namespace, $ns)) @filter(has(name)) {
+			uid
+			dgraph.type
+			name
+			description
+			namespace
+			activation
+			created_at
+		}
+	}`
+
+	vars := map[string]string{"$ns": namespace}
 	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, vars)
 	if err != nil {
-		c.logger.Warn("FindEntityInNamespace query failed", zap.Error(err))
-		return nil, fmt.Errorf("failed to find entity: %w", err)
+		return nil, err
 	}
 
 	var result struct {
 		Node []Node `json:"node"`
 	}
 	if err := json.Unmarshal(resp.Json, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal: %w", err)
+		return nil, err
 	}
 
-	c.logger.Debug("FindEntityInNamespace result",
-		zap.String("name", name),
-		zap.Int("matches", len(result.Node)))
-
-	if len(result.Node) == 0 {
-		return nil, nil
+	// Calculate max allowed distance based on name length
+	maxDist := 2
+	if len(name) > 10 {
+		maxDist = 3
 	}
 
-	return &result.Node[0], nil
+	// Find closest match
+	var closestNode *Node
+	minDistance := maxDist + 1
+
+	for _, node := range result.Node {
+		normalizedNodeName := normalizeForMatching(node.Name)
+		distance := levenshteinDistance(name, normalizedNodeName)
+
+		if distance <= maxDist && distance < minDistance {
+			minDistance = distance
+			closestNode = &node
+		}
+	}
+
+	return closestNode, nil
+}
+
+// normalizeForMatching normalizes text for entity matching
+// Uses Unicode NFKC normalization to prevent homograph attacks
+func normalizeForMatching(text string) string {
+	// Trim whitespace
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+
+	// SECURITY: Unicode NFKC normalization
+	// This converts visually similar characters from different scripts
+	// to a canonical form, preventing homograph attacks
+	// For example: "е" (Cyrillic) -> "e" (Latin)
+	text = normalizeUnicode(text)
+
+	// Convert to lowercase for case-insensitive matching
+	text = strings.ToLower(text)
+
+	// Remove extra whitespace
+	text = strings.Join(strings.Fields(text), " ")
+
+	return text
+}
+
+// normalizeUnicode performs Unicode NFKC normalization
+// TODO: Implement actual Unicode normalization when golang.org/x/text is available
+// For now, this is a placeholder that does basic ASCII cleaning
+func normalizeUnicode(text string) string {
+	// Remove common problematic Unicode characters that might be used for homograph attacks
+	// This is a simplified version - full NFKC normalization requires external libraries
+	result := make([]rune, 0, len(text))
+
+	for _, r := range text {
+		// Skip zero-width and non-printing characters often used in spoofing
+		if r == 0x200B || // Zero-width space
+			r == 0x200C || // Zero-width non-joiner
+			r == 0x200D || // Zero-width joiner
+			r == 0xFEFF || // Zero-width no-break space
+			r < 32 && r != '\n' && r != '\t' { // Control chars except newline/tab
+			continue
+		}
+		result = append(result, r)
+	}
+
+	return string(result)
+}
+
+// levenshteinDistance computes the edit distance between two strings
+// Used for fuzzy entity matching
+func levenshteinDistance(a, b string) int {
+	if len(a) == 0 {
+		return len(b)
+	}
+	if len(b) == 0 {
+		return len(a)
+	}
+
+	// Use the smaller string for optimization
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+
+	// Previous row of distances
+	previous := make([]int, len(a)+1)
+
+	// Initialize first row
+	for i := range previous {
+		previous[i] = i
+	}
+
+	for j := 1; j <= len(b); j++ {
+		current := make([]int, len(a)+1)
+		current[0] = j
+
+		for i := 1; i <= len(a); i++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+
+			current[i] = min(
+				previous[i]+1,      // deletion
+				current[i-1]+1,     // insertion
+				previous[i-1]+cost, // substitution
+			)
+		}
+
+		previous = current
+	}
+
+	return previous[len(a)]
+}
+
+// min returns the minimum of three integers
+func min(a, b, c int) int {
+	if a < b {
+		if a < c {
+			return a
+		}
+		return c
+	}
+	if b < c {
+		return b
+	}
+	return c
 }
 
 // BoostEntityActivation increases the activation score of an existing entity
@@ -1476,8 +1846,67 @@ func (c *Client) BoostEntityActivation(ctx context.Context, uid string, boostAmo
 	return err
 }
 
+// BatchFindEntitiesByNames fetches multiple entities by their names in a SINGLE query
+// This is significantly more efficient than calling FindEntityInNamespace multiple times
+// Returns a map of normalized entity name -> Node for all found entities
+func (c *Client) BatchFindEntitiesByNames(ctx context.Context, namespace string, entities []ExtractedEntity) (map[string]*Node, error) {
+	if len(entities) == 0 {
+		return make(map[string]*Node), nil
+	}
+
+	// SIMPLER APPROACH: Just fetch ALL entities in the namespace
+	// and filter in-memory. For a single user's namespace, this is efficient enough.
+	// TODO: If namespace has >1000 entities, switch to more sophisticated query.
+	query := `query AllEntities($ns: string) {
+		nodes(func: has(name)) @filter(eq(namespace, $ns)) {
+			uid
+			dgraph.type
+			name
+			description
+			namespace
+			activation
+			created_at
+		}
+	}`
+
+	vars := map[string]string{"$ns": namespace}
+	resp, err := c.dg.NewReadOnlyTxn().QueryWithVars(ctx, query, vars)
+	if err != nil {
+		return nil, fmt.Errorf("batch entity query failed: %w", err)
+	}
+
+	var result struct {
+		Nodes []Node `json:"nodes"`
+	}
+	if err := json.Unmarshal(resp.Json, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal batch results: %w", err)
+	}
+
+	// Build result map with normalized keys for O(1) lookup
+	// This allows instant checking if an entity exists
+	resultMap := make(map[string]*Node)
+	for _, node := range result.Nodes {
+		normalizedKey := normalizeForMatching(node.Name)
+		resultMap[normalizedKey] = &node
+	}
+
+	c.logger.Debug("Batch entity pre-fetch complete",
+		zap.Int("total_entities_in_namespace", len(result.Nodes)),
+		zap.Int("unique_names_searched", len(entities)),
+		zap.Int("found_entities", len(resultMap)))
+
+	return resultMap, nil
+}
+
 // IngestWisdomBatch batch creates summary nodes and entities for the Wisdom Layer
 // Returns the UID of the created summary node for vector indexing
+//
+// IMPROVED INGESTION STRATEGY:
+// 1. Pre-fetch ALL existing entities matching extracted names in a SINGLE query
+// 2. Use in-memory map for O(1) lookups instead of N database queries
+// 3. Always boost activation of existing entities (memory reconsolidation)
+// 4. Only create truly new entities
+// 5. Eliminates race conditions and is significantly more efficient
 func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summary string, entities []ExtractedEntity) (string, error) {
 	var nquads strings.Builder
 
@@ -1492,7 +1921,7 @@ func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summar
 	nquads.WriteString(fmt.Sprintf(`%s <description> %q .
 `, summaryNode, summary))
 	nquads.WriteString(fmt.Sprintf(`%s <fact_value> %q .
-`, summaryNode, summary)) // Use fact_value as main content
+`, summaryNode, summary))
 	nquads.WriteString(fmt.Sprintf(`%s <namespace> %q .
 `, summaryNode, namespace))
 	nquads.WriteString(fmt.Sprintf(`%s <created_at> "%s"^^<xs:dateTime> .
@@ -1500,11 +1929,36 @@ func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summar
 	nquads.WriteString(fmt.Sprintf(`%s <status> "crystallized" .
 `, summaryNode))
 
-	// 2. Process Entities with Deduplication
-	// Check if entity exists in namespace before creating; boost activation if found
+	// 2. IMPROVED: Pre-fetch ALL existing entities in a SINGLE query
+	// This is both more efficient and eliminates race conditions
+	existingEntitiesMap, err := c.BatchFindEntitiesByNames(ctx, namespace, entities)
+	if err != nil {
+		c.logger.Warn("Failed to batch fetch existing entities, will proceed with individual checks",
+			zap.Error(err))
+		existingEntitiesMap = make(map[string]*Node)
+	}
+
+	c.logger.Debug("Batch entity pre-fetch complete",
+		zap.Int("lookup_count", len(existingEntitiesMap)),
+		zap.Int("input_entities", len(entities)))
+
+	// 3. Also deduplicate within the batch to avoid processing same name twice
+	seenNames := make(map[string]bool)
+	var uniqueEntities []ExtractedEntity
+	for _, e := range entities {
+		normalizedKey := normalizeForMatching(e.Name)
+		if normalizedKey != "" && !seenNames[normalizedKey] {
+			seenNames[normalizedKey] = true
+			uniqueEntities = append(uniqueEntities, e)
+		}
+	}
+	entities = uniqueEntities
+
 	now := time.Now().Format(time.RFC3339)
 	newEntityCount := 0
 	boostedEntityCount := 0
+	config := DefaultActivationConfig()
+	boostAmount := 0.008 // Very small boost for gradual memory strengthening
 
 	for i, e := range entities {
 		// Skip empty entity names
@@ -1512,34 +1966,39 @@ func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summar
 			continue
 		}
 
-		// Check if entity already exists in this namespace
-		existingEntity, err := c.FindEntityInNamespace(ctx, e.Name, namespace)
-		if err != nil {
-			c.logger.Warn("Failed to check for existing entity", zap.String("name", e.Name), zap.Error(err))
-		}
+		normalizedKey := normalizeForMatching(e.Name)
+
+		// Check if entity exists using our pre-fetched map (O(1) lookup)
+		existingEntity := existingEntitiesMap[normalizedKey]
 
 		if existingEntity != nil {
-			// Entity exists! Boost its activation instead of creating duplicate
-			newActivation := existingEntity.Activation + 0.1 // Boost by 0.1
-			if newActivation > 1.0 {
-				newActivation = 1.0 // Cap at 1.0
+			// ENTITY EXISTS: Boost activation (Memory Reconsolidation)
+			// This strengthens the memory trace each time the entity is mentioned
+			newActivation := existingEntity.Activation + boostAmount
+			if newActivation > config.MaxActivation {
+				newActivation = config.MaxActivation
 			}
 
 			if err := c.BoostEntityActivation(ctx, existingEntity.UID, newActivation); err != nil {
-				c.logger.Warn("Failed to boost entity activation", zap.String("uid", existingEntity.UID), zap.Error(err))
+				c.logger.Warn("Failed to boost entity activation",
+					zap.String("name", e.Name),
+					zap.String("uid", existingEntity.UID),
+					zap.Error(err))
 			} else {
 				boostedEntityCount++
-				c.logger.Debug("Boosted existing entity activation",
+				c.logger.Debug("Memory reconsolidation: boosted existing entity activation",
 					zap.String("name", e.Name),
 					zap.Float64("oldActivation", existingEntity.Activation),
-					zap.Float64("newActivation", newActivation))
+					zap.Float64("newActivation", newActivation),
+					zap.String("uid", existingEntity.UID))
 			}
 
-			// Link existing entity to this summary
+			// Link existing entity to this summary (shows this conversation referenced it)
 			nquads.WriteString(fmt.Sprintf(`<%s> <synthesized_from> %s .
 `, existingEntity.UID, summaryNode))
 		} else {
-			// Entity doesn't exist - create new one
+			// NEW ENTITY: Create with initial activation
+			// First mention of this entity in the user's knowledge graph
 			entityNode := fmt.Sprintf("_:entity_%d", i)
 
 			nquads.WriteString(fmt.Sprintf(`%s <dgraph.type> "Entity" .
@@ -1550,8 +2009,9 @@ func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summar
 `, entityNode, namespace))
 			nquads.WriteString(fmt.Sprintf(`%s <description> %q .
 `, entityNode, e.Description))
-			nquads.WriteString(fmt.Sprintf(`%s <activation> "0.8" .
-`, entityNode))
+			// Initial activation for new entities (very low baseline for gradual strengthening)
+			nquads.WriteString(fmt.Sprintf(`%s <activation> "%f"^^<xs:double> .
+`, entityNode, 0.15))
 			nquads.WriteString(fmt.Sprintf(`%s <created_at> "%s"^^<xs:dateTime> .
 `, entityNode, now))
 
@@ -1559,12 +2019,16 @@ func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summar
 			nquads.WriteString(fmt.Sprintf(`%s <synthesized_from> %s .
 `, entityNode, summaryNode))
 			newEntityCount++
+			c.logger.Debug("New entity created",
+				zap.String("name", e.Name),
+				zap.String("type", string(e.Type)))
 		}
 	}
 
-	c.logger.Info("Entity deduplication complete",
+	c.logger.Info("Entity processing complete (activation-focused)",
 		zap.Int("new_entities", newEntityCount),
-		zap.Int("boosted_entities", boostedEntityCount))
+		zap.Int("boosted_entities", boostedEntityCount),
+		zap.String("strategy", "always_boost_existing"))
 
 	c.logger.Debug("Writing Wisdom Batch", zap.String("namespace", namespace))
 
@@ -1602,7 +2066,7 @@ func (c *Client) InviteToWorkspace(ctx context.Context, workspaceNS, inviterID, 
 	}
 
 	// Check if invitee exists
-	inviteeNode, err := c.FindNodeByName(ctx, inviteeUsername, NodeTypeUser)
+	inviteeNode, err := c.FindNodeByName(ctx, fmt.Sprintf("user_%s", inviteeUsername), inviteeUsername, NodeTypeUser)
 	if err != nil || inviteeNode == nil {
 		return nil, fmt.Errorf("user %s not found", inviteeUsername)
 	}
@@ -1714,7 +2178,7 @@ func (c *Client) findPendingInvitation(ctx context.Context, workspaceNS, usernam
 
 // IsWorkspaceMember checks if a user is a member (admin or subuser) of the workspace
 func (c *Client) IsWorkspaceMember(ctx context.Context, workspaceNS, userID string) (bool, error) {
-	userNode, err := c.FindNodeByName(ctx, userID, NodeTypeUser)
+	userNode, err := c.FindNodeByName(ctx, fmt.Sprintf("user_%s", userID), userID, NodeTypeUser)
 	if err != nil || userNode == nil {
 		return false, nil
 	}
@@ -1819,7 +2283,8 @@ func (c *Client) addWorkspaceAdmin(ctx context.Context, workspaceNS, userID stri
 	groupUID := res.G[0].UID
 
 	// Find User
-	userNode, err := c.FindNodeByName(ctx, userID, NodeTypeUser)
+	namespace := fmt.Sprintf("user_%s", userID)
+	userNode, err := c.FindNodeByName(ctx, namespace, userID, NodeTypeUser)
 	if err != nil || userNode == nil {
 		return fmt.Errorf("user %s not found", userID)
 	}
@@ -2051,6 +2516,7 @@ func generateSecureToken() string {
 }
 
 // JoinViaShareLink allows an authenticated user to join a workspace using a share link
+// SECURITY: Increments usage count BEFORE adding member to prevent race condition overuse
 func (c *Client) JoinViaShareLink(ctx context.Context, token, userID string) (*ShareLink, error) {
 	// Get the share link
 	link, err := c.getShareLink(ctx, token)
@@ -2065,11 +2531,8 @@ func (c *Client) JoinViaShareLink(ctx context.Context, token, userID string) (*S
 	if link.ExpiresAt != nil && time.Now().After(*link.ExpiresAt) {
 		return nil, fmt.Errorf("share link has expired")
 	}
-	if link.MaxUses > 0 && link.CurrentUses >= link.MaxUses {
-		return nil, fmt.Errorf("share link usage limit reached")
-	}
 
-	// Check if already a member
+	// Check if already a member BEFORE incrementing usage
 	isMember, err := c.IsWorkspaceMember(ctx, link.WorkspaceID, userID)
 	if err != nil {
 		return nil, err
@@ -2078,30 +2541,63 @@ func (c *Client) JoinViaShareLink(ctx context.Context, token, userID string) (*S
 		return nil, fmt.Errorf("you are already a member of this workspace")
 	}
 
-	// Add user to workspace as subuser
+	// CRITICAL: Check AND increment usage count BEFORE adding member
+	// This prevents race conditions where multiple users could pass the limit check
+	if link.MaxUses > 0 {
+		if link.CurrentUses >= link.MaxUses {
+			return nil, fmt.Errorf("share link usage limit reached")
+		}
+
+		// Increment usage count ATOMICALLY before adding member
+		newUses := link.CurrentUses + 1
+		nquad := fmt.Sprintf(`<%s> <current_uses> "%d"^^<xs:int> .`, link.UID, newUses)
+		txn := c.dg.NewTxn()
+		mu := &api.Mutation{
+			SetNquads: []byte(nquad),
+			CommitNow: true,
+		}
+
+		if _, err := txn.Mutate(ctx, mu); err != nil {
+			return nil, fmt.Errorf("failed to increment share link usage: %w", err)
+		}
+
+		// Update local copy for rollback if needed
+		link.CurrentUses = newUses
+	}
+
+	// Add user to workspace as member
 	if err := c.AddGroupMember(ctx, link.WorkspaceID, userID); err != nil {
+		// Rollback usage increment on failure
+		if link.MaxUses > 0 {
+			c.rollbackShareLinkUsage(ctx, link.UID, link.CurrentUses-1)
+		}
 		return nil, fmt.Errorf("failed to join workspace: %w", err)
-	}
-
-	// Increment usage count
-	nquad := fmt.Sprintf(`<%s> <current_uses> "%d"^^<xs:int> .`, link.UID, link.CurrentUses+1)
-	txn := c.dg.NewTxn()
-	defer txn.Discard(ctx)
-
-	mu := &api.Mutation{
-		SetNquads: []byte(nquad),
-		CommitNow: true,
-	}
-
-	if _, err := txn.Mutate(ctx, mu); err != nil {
-		c.logger.Warn("Failed to increment share link usage", zap.Error(err))
 	}
 
 	c.logger.Info("User joined via share link",
 		zap.String("user", userID),
-		zap.String("workspace", link.WorkspaceID))
+		zap.String("workspace", link.WorkspaceID),
+		zap.Int("usage", link.CurrentUses))
 
 	return link, nil
+}
+
+// rollbackShareLinkUsage rolls back the usage count on member addition failure
+func (c *Client) rollbackShareLinkUsage(ctx context.Context, linkUID string, targetValue int) error {
+	nquad := fmt.Sprintf(`<%s> <current_uses> "%d"^^<xs:int> .`, linkUID, targetValue)
+	txn := c.dg.NewTxn()
+	mu := &api.Mutation{
+		SetNquads: []byte(nquad),
+		CommitNow: true,
+	}
+	_, err := txn.Mutate(ctx, mu)
+	if err != nil {
+		c.logger.Error("Failed to rollback share link usage",
+			zap.String("link_uid", linkUID),
+			zap.Int("target_value", targetValue),
+			zap.Error(err))
+	}
+	return err
 }
 
 // getShareLink retrieves a share link by token

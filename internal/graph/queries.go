@@ -19,9 +19,10 @@ func NewQueryBuilder(client *Client) *QueryBuilder {
 }
 
 // GetUserGraph retrieves the full knowledge graph for a user
-func (q *QueryBuilder) GetUserGraph(ctx context.Context, userUID string, maxDepth int) ([]byte, error) {
-	query := fmt.Sprintf(`query UserGraph($uid: string) {
-		user(func: uid($uid)) @recurse(depth: %d) {
+// SECURITY: Requires namespace parameter to prevent cross-tenant data access
+func (q *QueryBuilder) GetUserGraph(ctx context.Context, userUID, namespace string, maxDepth int) ([]byte, error) {
+	query := fmt.Sprintf(`query UserGraph($uid: string, $namespace: string) {
+		user(func: uid($uid)) @filter(eq(namespace, $namespace)) @recurse(depth: %d) {
 			uid
 			dgraph.type
 			name
@@ -29,7 +30,7 @@ func (q *QueryBuilder) GetUserGraph(ctx context.Context, userUID string, maxDept
 			activation
 			access_count
 			last_accessed
-			
+
 			partner_is
 			family_member
 			friend_of
@@ -48,7 +49,10 @@ func (q *QueryBuilder) GetUserGraph(ctx context.Context, userUID string, maxDept
 		}
 	}`, maxDepth)
 
-	return q.client.Query(ctx, query, map[string]string{"$uid": userUID})
+	return q.client.Query(ctx, query, map[string]string{
+		"$uid":       userUID,
+		"$namespace": namespace,
+	})
 }
 
 // GetHighActivationNodes retrieves nodes above a certain activation threshold
@@ -122,28 +126,51 @@ func (q *QueryBuilder) GetDecayedNodes(ctx context.Context, namespace string, st
 }
 
 // FindPotentialContradictions finds nodes that might have functional edge conflicts
-func (q *QueryBuilder) FindPotentialContradictions(ctx context.Context, edgeType EdgeType) ([]Contradiction, error) {
+// SECURITY: Requires namespace parameter to prevent cross-tenant data access
+// For system-wide operations (e.g., background curation), namespace can be empty
+func (q *QueryBuilder) FindPotentialContradictions(ctx context.Context, namespace string, edgeType EdgeType) ([]Contradiction, error) {
 	predicateName := edgeTypeToPredicateName(edgeType)
 
-	// Find nodes with multiple edges of a functional type
-	query := fmt.Sprintf(`{
-		contradictions(func: has(%s)) @normalize {
-			uid: uid
-			name: name
-			edges: count(%s)
-		}
-	}`, predicateName, predicateName)
+	var query string
+	var vars map[string]string
 
-	resp, err := q.client.Query(ctx, query, nil)
+	// SECURITY: Only skip namespace filter for system operations
+	if namespace == "" {
+		// System-wide operation (no namespace filter)
+		// This should ONLY be used by background reflection processes
+		query = fmt.Sprintf(`{
+			contradictions(func: has(%s)) @normalize {
+				uid: uid
+				name: name
+				namespace: namespace
+				edges: count(%s)
+			}
+		}`, predicateName, predicateName)
+		vars = nil
+	} else {
+		// User-facing operation with namespace filtering
+		query = fmt.Sprintf(`query Contradictions($namespace: string) {
+			contradictions(func: has(%s)) @filter(eq(namespace, $namespace)) @normalize {
+				uid: uid
+				name: name
+				namespace: namespace
+				edges: count(%s)
+			}
+		}`, predicateName, predicateName)
+		vars = map[string]string{"$namespace": namespace}
+	}
+
+	resp, err := q.client.Query(ctx, query, vars)
 	if err != nil {
 		return nil, err
 	}
 
 	var result struct {
 		Contradictions []struct {
-			UID   string `json:"uid"`
-			Name  string `json:"name"`
-			Edges int    `json:"edges"`
+			UID       string `json:"uid"`
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+			Edges     int    `json:"edges"`
 		} `json:"contradictions"`
 	}
 	if err := json.Unmarshal(resp, &result); err != nil {
@@ -165,14 +192,15 @@ func (q *QueryBuilder) FindPotentialContradictions(ctx context.Context, edgeType
 }
 
 // FindRelatedNodes finds nodes connected to a given node up to a certain depth
-func (q *QueryBuilder) FindRelatedNodes(ctx context.Context, nodeUID string, depth int) ([]byte, error) {
-	query := fmt.Sprintf(`query RelatedNodes($uid: string) {
-		related(func: uid($uid)) @recurse(depth: %d, loop: false) {
+// SECURITY: Requires namespace parameter to prevent cross-tenant data access
+func (q *QueryBuilder) FindRelatedNodes(ctx context.Context, nodeUID, namespace string, depth int) ([]byte, error) {
+	query := fmt.Sprintf(`query RelatedNodes($uid: string, $namespace: string) {
+		related(func: uid($uid)) @filter(eq(namespace, $namespace)) @recurse(depth: %d, loop: false) {
 			uid
 			dgraph.type
 			name
 			activation
-			
+
 			~partner_is
 			~family_member
 			~friend_of
@@ -187,12 +215,16 @@ func (q *QueryBuilder) FindRelatedNodes(ctx context.Context, nodeUID string, dep
 		}
 	}`, depth)
 
-	return q.client.Query(ctx, query, map[string]string{"$uid": nodeUID})
+	return q.client.Query(ctx, query, map[string]string{
+		"$uid":       nodeUID,
+		"$namespace": namespace,
+	})
 }
 
 // FindPathBetweenNodes finds the shortest path between two nodes
-func (q *QueryBuilder) FindPathBetweenNodes(ctx context.Context, fromUID, toUID string) ([]byte, error) {
-	query := `query ShortestPath($from: string, $to: string) {
+// SECURITY: Requires namespace parameter to prevent cross-tenant data access
+func (q *QueryBuilder) FindPathBetweenNodes(ctx context.Context, fromUID, toUID, namespace string) ([]byte, error) {
+	query := `query ShortestPath($from: string, $to: string, $namespace: string) {
 		path as shortest(from: uid($from), to: uid($to)) {
 			partner_is
 			family_member
@@ -205,8 +237,8 @@ func (q *QueryBuilder) FindPathBetweenNodes(ctx context.Context, fromUID, toUID 
 			caused_by
 			blocked_by
 		}
-		
-		path_nodes(func: uid(path)) {
+
+		path_nodes(func: uid(path)) @filter(eq(namespace, $namespace)) {
 			uid
 			name
 			dgraph.type
@@ -215,8 +247,9 @@ func (q *QueryBuilder) FindPathBetweenNodes(ctx context.Context, fromUID, toUID 
 	}`
 
 	return q.client.Query(ctx, query, map[string]string{
-		"$from": fromUID,
-		"$to":   toUID,
+		"$from":      fromUID,
+		"$to":        toUID,
+		"$namespace": namespace,
 	})
 }
 
@@ -465,7 +498,7 @@ func (q *QueryBuilder) CountNodes(ctx context.Context, nodeType NodeType) (int, 
 // GetUserRelatedNodes retrieves nodes connected to the user via specific relationship predicates
 func (q *QueryBuilder) GetUserRelatedNodes(ctx context.Context, userID string, limit int) ([]Node, error) {
 	// First, find the User node by name with correct NodeType
-	userNode, err := q.client.FindNodeByName(ctx, userID, NodeTypeUser)
+	userNode, err := q.client.FindNodeByName(ctx, fmt.Sprintf("user_%s", userID), userID, NodeTypeUser)
 	if err != nil || userNode == nil {
 		// User node not found - this is expected for new users
 		// Return empty rather than error to allow fallback search

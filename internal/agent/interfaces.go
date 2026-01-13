@@ -11,7 +11,7 @@ import (
 type MemoryKernelClient interface {
 	// core operations
 	Consult(ctx context.Context, req *graph.ConsultationRequest) (*graph.ConsultationResponse, error)
-	StoreInHotCache(ctx context.Context, userID, query, response, convID string) error
+	StoreInHotCache(ctx context.Context, userID, namespace, query, response, convID string) error
 	GetStats(ctx context.Context) (map[string]interface{}, error)
 	EnsureUserNode(ctx context.Context, username string) error
 

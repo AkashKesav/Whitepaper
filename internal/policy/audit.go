@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/dgraph-io/dgo/v240/protos/api"
@@ -282,10 +283,74 @@ func (al *AuditLogger) publishToNATS(event AuditEvent) error {
 	return al.natsConn.Publish(subject, data)
 }
 
-// QueryAuditLogs retrieves audit logs with filters
-func (al *AuditLogger) QueryAuditLogs(ctx context.Context, userID, namespace string, eventType AuditEventType, limit int) ([]AuditEvent, error) {
-	query := `query AuditLogs($limit: int) {
-		logs(func: type(AuditEvent), first: $limit, orderdesc: created_at) {
+// QueryAuditLogs retrieves audit logs with filters and access control enforcement
+// SECURITY: Non-admins can only view their own audit logs; admins can view all logs
+func (al *AuditLogger) QueryAuditLogs(ctx context.Context, requestingUserID, requestingRole, targetUserID, targetNamespace string, eventType AuditEventType, limit int) ([]AuditEvent, error) {
+	// Access Control: Only admins can view all logs
+	isAdmin := requestingRole == "admin"
+
+	// Build query with appropriate filters
+	baseQuery := `query AuditLogs($limit: int)`
+	var filters []string
+	var vars map[string]string
+
+	// SECURITY: Non-admins are restricted to their own logs only
+	if !isAdmin {
+		// Force filter to requesting user's logs only
+		baseQuery = `query AuditLogs($limit: int, $userID: string)`
+		filters = append(filters, `@filter(eq(user_id, $userID))`)
+		vars = map[string]string{
+			"$limit":  fmt.Sprintf("%d", limit),
+			"$userID": requestingUserID,
+		}
+		// Override target parameters for non-admins
+		targetUserID = requestingUserID
+	} else {
+		// Admin can query with filters
+		vars = map[string]string{
+			"$limit": fmt.Sprintf("%d", limit),
+		}
+
+		if targetUserID != "" {
+			if baseQuery == `query AuditLogs($limit: int)` {
+				baseQuery = `query AuditLogs($limit: int, $userID: string)`
+			} else {
+				baseQuery = baseQuery + `, $userID: string`
+			}
+			filters = append(filters, `@filter(eq(user_id, $userID))`)
+			vars["$userID"] = targetUserID
+		}
+
+		if targetNamespace != "" {
+			if baseQuery == `query AuditLogs($limit: int)` {
+				baseQuery = `query AuditLogs($limit: int, $namespace: string)`
+			} else if !strings.Contains(baseQuery, "$userID: string") {
+				baseQuery = baseQuery + `, $namespace: string`
+			} else if !strings.Contains(baseQuery, "$namespace: string") {
+				baseQuery = baseQuery + `, $namespace: string`
+			}
+			filters = append(filters, `@filter(eq(namespace, $namespace))`)
+			vars["$namespace"] = targetNamespace
+		}
+	}
+
+	// Add event type filter
+	if eventType != "" {
+		if !strings.Contains(baseQuery, "$eventType: string") {
+			baseQuery = baseQuery + `, $eventType: string`
+		}
+		filters = append(filters, `@filter(eq(event_type, $eventType))`)
+		vars["$eventType"] = string(eventType)
+	}
+
+	// Construct full query
+	filterClause := ""
+	if len(filters) > 0 {
+		filterClause = " " + strings.Join(filters, " ")
+	}
+
+	fullQuery := baseQuery + fmt.Sprintf(` {
+		logs(func: type(AuditEvent), first: $limit, orderdesc: created_at)%s {
 			audit_id
 			event_type
 			user_id
@@ -298,9 +363,9 @@ func (al *AuditLogger) QueryAuditLogs(ctx context.Context, userID, namespace str
 			ip_address
 			created_at
 		}
-	}`
+	}`, filterClause)
 
-	resp, err := al.graphClient.Query(ctx, query, map[string]string{"$limit": fmt.Sprintf("%d", limit)})
+	resp, err := al.graphClient.Query(ctx, fullQuery, vars)
 	if err != nil {
 		return nil, err
 	}
@@ -327,11 +392,20 @@ func (al *AuditLogger) QueryAuditLogs(ctx context.Context, userID, namespace str
 
 	events := make([]AuditEvent, 0, len(result.Logs))
 	for _, l := range result.Logs {
-		// Apply filters
-		if userID != "" && l.UserID != userID {
+		// Defense-in-depth: Apply additional filtering in Go code
+		// This prevents any potential DGraph query bypass
+		if !isAdmin && l.UserID != requestingUserID {
+			al.logger.Warn("Audit log query attempted to return unauthorized logs",
+				zap.String("requesting_user", requestingUserID),
+				zap.String("log_user", l.UserID))
 			continue
 		}
-		if namespace != "" && l.Namespace != namespace {
+
+		// Apply additional filters if specified
+		if targetUserID != "" && l.UserID != targetUserID {
+			continue
+		}
+		if targetNamespace != "" && l.Namespace != targetNamespace {
 			continue
 		}
 		if eventType != "" && l.EventType != string(eventType) {

@@ -217,6 +217,7 @@ type Edge struct {
 	// Dynamic prioritization
 	Activation    float64 `json:"activation,omitempty"`
 	TraversalCost float64 `json:"traversal_cost,omitempty"`
+	Weight        float64 `json:"weight,omitempty"`
 
 	// Metadata
 	Properties map[string]interface{} `json:"properties,omitempty"`
@@ -386,9 +387,9 @@ type ActivationConfig struct {
 func DefaultActivationConfig() ActivationConfig {
 	return ActivationConfig{
 		DecayRate:             0.005, // 0.5% decay per day (~12% per week, gentle)
-		BoostPerAccess:        0.15,  // 15% boost per access
+		BoostPerAccess:        0.01,  // 1% boost per access (reduced for gradual strengthening)
 		MinActivation:         0.01,  // 1% minimum
-		MaxActivation:         1.0,   // 100% maximum
+		MaxActivation:         0.85,  // 85% maximum (reduced)
 		CoreIdentityThreshold: 0.8,   // 80% for core identity
 	}
 }

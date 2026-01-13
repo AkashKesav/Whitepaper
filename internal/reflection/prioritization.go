@@ -5,9 +5,11 @@ package reflection
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"github.com/reflective-memory-kernel/internal/graph"
@@ -17,6 +19,7 @@ import (
 type PrioritizationModule struct {
 	graphClient  *graph.Client
 	queryBuilder *graph.QueryBuilder
+	redisClient  *redis.Client
 	config       graph.ActivationConfig
 	logger       *zap.Logger
 }
@@ -25,12 +28,14 @@ type PrioritizationModule struct {
 func NewPrioritizationModule(
 	graphClient *graph.Client,
 	queryBuilder *graph.QueryBuilder,
+	redisClient *redis.Client,
 	config graph.ActivationConfig,
 	logger *zap.Logger,
 ) *PrioritizationModule {
 	return &PrioritizationModule{
 		graphClient:  graphClient,
 		queryBuilder: queryBuilder,
+		redisClient:  redisClient,
 		config:       config,
 		logger:       logger,
 	}
@@ -69,6 +74,7 @@ func (m *PrioritizationModule) Run(ctx context.Context) error {
 }
 
 // ApplyDecay applies activation decay to all nodes based on time since last access
+// Uses distributed locking to prevent race conditions during concurrent updates
 func (m *PrioritizationModule) ApplyDecay(ctx context.Context) error {
 	m.logger.Debug("Applying activation decay")
 
@@ -101,8 +107,8 @@ func (m *PrioritizationModule) ApplyDecay(ctx context.Context) error {
 	now := time.Now()
 	for _, node := range result.Nodes {
 		daysSinceAccess := now.Sub(node.LastAccessed).Hours() / 24
-		// For testing: apply decay to nodes not accessed in last 1 minute (originally 1 day)
-		if daysSinceAccess < (1.0 / (24.0 * 60.0)) { // 1 minute in days
+		// Apply decay to nodes not accessed in last 1 day
+		if daysSinceAccess < 1.0 {
 			continue
 		}
 
@@ -114,10 +120,44 @@ func (m *PrioritizationModule) ApplyDecay(ctx context.Context) error {
 			newActivation = m.config.MinActivation
 		}
 
-		if err := m.graphClient.UpdateNodeActivation(ctx, node.UID, newActivation); err != nil {
-			m.logger.Warn("Failed to decay node", zap.String("uid", node.UID))
+		// Use distributed lock to prevent race conditions
+		// SECURITY: Adaptive lock with 30s timeout instead of fixed 5s
+		// This prevents lock expiration during high load scenarios
+		if m.redisClient != nil {
+			lockKey := fmt.Sprintf("lock:activation:%s", node.UID)
+			adaptiveTimeout := 30 * time.Second // Increased from 5s for resilience
+			lockAcquired, lockErr := m.redisClient.SetNX(ctx, lockKey, "1", adaptiveTimeout).Result()
+			if lockErr != nil {
+				m.logger.Warn("Failed to acquire decay lock", zap.Error(lockErr))
+				continue // Skip this node
+			}
+			if !lockAcquired {
+				// Skip if another process is updating this node
+				continue
+			}
+
+			// CRITICAL: Scope lock release to this iteration only using anonymous function
+			// Without this, defer would execute at function end, causing lock accumulation
+			func() {
+				defer func() {
+					if delCmd := m.redisClient.Del(ctx, lockKey); delCmd.Err() != nil {
+						m.logger.Warn("Failed to release decay lock", zap.Error(delCmd.Err()))
+					}
+				}()
+
+				if err := m.graphClient.UpdateNodeActivation(ctx, node.UID, newActivation); err != nil {
+					m.logger.Warn("Failed to decay node", zap.String("uid", node.UID))
+				} else {
+					decayed++
+				}
+			}()
 		} else {
-			decayed++
+			// No Redis - direct update
+			if err := m.graphClient.UpdateNodeActivation(ctx, node.UID, newActivation); err != nil {
+				m.logger.Warn("Failed to decay node", zap.String("uid", node.UID))
+			} else {
+				decayed++
+			}
 		}
 	}
 
@@ -152,7 +192,33 @@ func (m *PrioritizationModule) getHighFrequencyNodes(ctx context.Context) ([]gra
 }
 
 // boostActivation increases a node's activation
+// Uses distributed locking to prevent race conditions during concurrent updates
 func (m *PrioritizationModule) boostActivation(ctx context.Context, uid string) error {
+	if m.redisClient == nil {
+		// Fallback to non-locked version if Redis not available
+		return m.boostActivationUnsafe(ctx, uid)
+	}
+
+	// Acquire distributed lock for this specific node
+	lockKey := fmt.Sprintf("lock:activation:%s", uid)
+	lockAcquired, err := m.redisClient.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
+	if err != nil {
+		m.logger.Warn("Failed to acquire lock, proceeding unsafely", zap.Error(err))
+		return m.boostActivationUnsafe(ctx, uid)
+	}
+	if !lockAcquired {
+		// Lock already held by another process, skip this update
+		m.logger.Debug("Activation update skipped due to concurrent operation", zap.String("uid", uid))
+		return nil
+	}
+	defer m.redisClient.Del(ctx, lockKey)
+
+	return m.boostActivationUnsafe(ctx, uid)
+}
+
+// boostActivationUnsafe performs the activation update without locking
+// This is only called internally after lock acquisition
+func (m *PrioritizationModule) boostActivationUnsafe(ctx context.Context, uid string) error {
 	node, err := m.graphClient.GetNode(ctx, uid)
 	if err != nil {
 		return err
@@ -167,6 +233,7 @@ func (m *PrioritizationModule) boostActivation(ctx context.Context, uid string) 
 }
 
 // promoteCoreIdentityNodes promotes high-activation nodes to core identity
+// Uses distributed locking to prevent race conditions during concurrent updates
 func (m *PrioritizationModule) promoteCoreIdentityNodes(ctx context.Context) (int, error) {
 	threshold := m.config.CoreIdentityThreshold
 
@@ -179,10 +246,37 @@ func (m *PrioritizationModule) promoteCoreIdentityNodes(ctx context.Context) (in
 	for _, node := range nodes {
 		// Mark as core identity by keeping activation at max
 		if node.Activation >= threshold {
-			if err := m.graphClient.UpdateNodeActivation(ctx, node.UID, m.config.MaxActivation); err != nil {
-				continue
+			// Use distributed lock to prevent race conditions
+			if m.redisClient != nil {
+				lockKey := fmt.Sprintf("lock:activation:%s", node.UID)
+				lockAcquired, lockErr := m.redisClient.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
+				if lockErr != nil {
+					m.logger.Warn("Failed to acquire promotion lock", zap.Error(lockErr))
+					continue // Skip this node
+				}
+				if !lockAcquired {
+					// Skip if another process is updating this node
+					continue
+				}
+
+				// CRITICAL: Scope lock release to this iteration only using anonymous function
+				func() {
+					defer func() {
+						if delCmd := m.redisClient.Del(ctx, lockKey); delCmd.Err() != nil {
+							m.logger.Warn("Failed to release promotion lock", zap.Error(delCmd.Err()))
+						}
+					}()
+
+					if err := m.graphClient.UpdateNodeActivation(ctx, node.UID, m.config.MaxActivation); err == nil {
+						promoted++
+					}
+				}()
+			} else {
+				// No Redis - direct update
+				if err := m.graphClient.UpdateNodeActivation(ctx, node.UID, m.config.MaxActivation); err == nil {
+					promoted++
+				}
 			}
-			promoted++
 		}
 	}
 

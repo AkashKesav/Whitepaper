@@ -42,10 +42,11 @@ type Policy struct {
 
 // UserContext represents the context of the user making the request
 type UserContext struct {
-	UserID     string
-	Groups     []string
-	Clearance  int // 0=Public, 1=Internal, 2=Confidential, 3=Secret
-	Attributes map[string]string
+	UserID       string
+	Groups       []string
+	Clearance    int // 0=Public, 1=Internal, 2=Confidential, 3=Secret
+	Attributes   map[string]string
+	Authenticated bool // SECURITY: Tracks whether user is authenticated
 }
 
 // Engine defines the interface for policy evaluation
@@ -137,6 +138,14 @@ func (pm *PolicyManager) LoadPolicies(ctx context.Context, namespace string) err
 // Evaluate wraps the engine's evaluate with audit logging
 func (pm *PolicyManager) Evaluate(ctx context.Context, user UserContext, resource *graph.Node, action Action) (Effect, error) {
 	if !pm.enabled {
+		// SECURE: When policy system is disabled, only allow same-namespace access
+		if resource != nil && resource.Namespace != "" {
+			expectedNamespace := fmt.Sprintf("user_%s", user.UserID)
+			if resource.Namespace == expectedNamespace {
+				return EffectAllow, nil
+			}
+			return EffectDeny, fmt.Errorf("policy system disabled - cross-namespace access denied")
+		}
 		return EffectAllow, nil
 	}
 
@@ -161,29 +170,49 @@ func (e *DefaultEngine) AddPolicy(policy Policy) error {
 
 // Evaluate implements the core access control logic
 func (e *DefaultEngine) Evaluate(ctx context.Context, user UserContext, resource *graph.Node, action Action) (Effect, error) {
+	// SECURITY: Require authentication for non-public resources
+	// Anonymous users can only access resources explicitly tagged as public
+	if !user.Authenticated && resource != nil && resource.Namespace != "" {
+		isPublic := false
+		for _, tag := range resource.Tags {
+			if tag == "class:public" {
+				isPublic = true
+				break
+			}
+		}
+		if !isPublic {
+			return EffectDeny, fmt.Errorf("authentication required for resource access")
+		}
+	}
+
+	// SECURITY: Validate user context consistency
+	if user.Authenticated && user.UserID == "" {
+		return EffectDeny, fmt.Errorf("invalid user context: authenticated but missing UserID")
+	}
+
 	// 1. Tenant Isolation (Namespace Check)
 	// If resource has a namespace, user must match it or be in a group that owns it.
+	// SECURITY FIX: Direct ownership grants immediate access for user's own namespace
 	if resource.Namespace != "" {
-		hasAccess := false
-
-		// Check direct ownership
+		// Check direct ownership - user can always access their own namespace
 		if resource.Namespace == fmt.Sprintf("user_%s", user.UserID) {
-			hasAccess = true
+			return EffectAllow, nil // FIX: Return ALLOW immediately for user's own namespace
 		}
 
 		// Check group membership
-		if !hasAccess {
-			for _, group := range user.Groups {
-				if resource.Namespace == fmt.Sprintf("group_%s", group) {
-					hasAccess = true
-					break
-				}
+		hasGroupAccess := false
+		for _, group := range user.Groups {
+			if resource.Namespace == fmt.Sprintf("group_%s", group) {
+				hasGroupAccess = true
+				break
 			}
 		}
 
-		if !hasAccess {
+		if !hasGroupAccess {
 			return EffectDeny, fmt.Errorf("namespace mismatch: resource belongs to %s", resource.Namespace)
 		}
+		// FIX: Group members have implicit ALLOW access to group namespace resources
+		return EffectAllow, nil
 	}
 
 	// 2. Classification/Clearance Level (ABAC)
@@ -210,12 +239,10 @@ func (e *DefaultEngine) Evaluate(ctx context.Context, user UserContext, resource
 	}
 
 	// 3. Explicit Policy Evaluation (RBAC/Policy)
-	// Default to Allow if no specific policies override (Open by default within namespace)
-	// Or Default to Deny? For secure systems, default to Deny.
-	// However, we already checked Namespace and Clearance.
-	// Let's iterate policies for explicit ALLOW/DENY overrides.
+	// SECURITY: Default to Deny for secure systems - only allow if explicitly permitted
+	// Require explicit ALLOW policies or namespace ownership
 
-	// Check for Deny first
+	// Check for Deny first (Deny overrides everything)
 	for _, pol := range e.policies {
 		if pol.Effect == EffectDeny {
 			if e.matches(pol, user, resource, action) {
@@ -224,11 +251,22 @@ func (e *DefaultEngine) Evaluate(ctx context.Context, user UserContext, resource
 		}
 	}
 
-	// If strict mode, we might require an explicit Allow.
-	// For this system (Personal Memory Kernel), Namespace+Clearance is usually sufficient.
-	// But let's allow explicit policies to grant extra access.
+	// Check for explicit Allow
+	for _, pol := range e.policies {
+		if pol.Effect == EffectAllow {
+			if e.matches(pol, user, resource, action) {
+				return EffectAllow, nil
+			}
+		}
+	}
 
-	return EffectAllow, nil
+	// Default: Deny if no explicit Allow policy matches
+	// Exception: Users can always access resources in their own namespace
+	if resource.Namespace == fmt.Sprintf("user_%s", user.UserID) {
+		return EffectAllow, nil
+	}
+
+	return EffectDeny, fmt.Errorf("no explicit allow policy found for user=%s on resource=%s", user.UserID, resource.UID)
 }
 
 func (e *DefaultEngine) matches(policy Policy, user UserContext, resource *graph.Node, action Action) bool {

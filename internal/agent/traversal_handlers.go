@@ -35,7 +35,7 @@ func (s *Server) handleSpreadActivation(w http.ResponseWriter, r *http.Request) 
 	// Get start UID from name if needed
 	startUID := req.StartUID
 	if startUID == "" && req.StartName != "" {
-		node, err := s.agent.mkClient.FindNodeByName(r.Context(), req.StartName, graph.NodeTypeEntity)
+		node, err := s.agent.mkClient.FindNodeByName(r.Context(), req.Namespace, req.StartName, graph.NodeTypeEntity)
 		if err != nil || node == nil {
 			http.Error(w, "Start node not found", http.StatusNotFound)
 			return
@@ -166,6 +166,7 @@ func (s *Server) handleTemporalQuery(w http.ResponseWriter, r *http.Request) {
 type ExpandNodeRequest struct {
 	StartUID   string   `json:"start_uid"`
 	StartName  string   `json:"start_name"`  // Alternative: find by name
+	Namespace  string   `json:"namespace"`   // Required for namespace isolation
 	EdgeTypes  []string `json:"edge_types"`  // Optional filter
 	MaxHops    int      `json:"max_hops"`    // default 2
 	MaxResults int      `json:"max_results"` // default 100
@@ -181,7 +182,7 @@ func (s *Server) handleExpandNode(w http.ResponseWriter, r *http.Request) {
 	// Get start UID from name if needed
 	startUID := req.StartUID
 	if startUID == "" && req.StartName != "" {
-		node, err := s.agent.mkClient.FindNodeByName(r.Context(), req.StartName, graph.NodeTypeEntity)
+		node, err := s.agent.mkClient.FindNodeByName(r.Context(), req.Namespace, req.StartName, graph.NodeTypeEntity)
 		if err != nil || node == nil {
 			http.Error(w, "Start node not found", http.StatusNotFound)
 			return

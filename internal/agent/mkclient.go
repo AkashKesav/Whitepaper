@@ -23,7 +23,7 @@ type MemoryKernel interface {
 	IsGroupAdmin(ctx context.Context, groupNamespace, userID string) (bool, error)
 	AddGroupMember(ctx context.Context, groupID, username string) error
 	RemoveGroupMember(ctx context.Context, groupID, username string) error
-	DeleteGroup(ctx context.Context, groupID string) error
+	DeleteGroup(ctx context.Context, groupID, userID string) error
 	ShareToGroup(ctx context.Context, conversationID, groupID string) error
 	EnsureUserNode(ctx context.Context, username, role string) error
 	GetStats(ctx context.Context) (map[string]interface{}, error)
@@ -53,7 +53,7 @@ type MemoryKernel interface {
 	PersistChunks(ctx context.Context, namespace, docID string, chunks []graph.DocumentChunk) error
 
 	// Search
-	SearchNodes(ctx context.Context, query string) ([]graph.Node, error)
+	SearchNodes(ctx context.Context, namespace, query string) ([]graph.Node, error)
 }
 
 // MKClient is a client for consulting the Memory Kernel
@@ -332,9 +332,9 @@ func (c *MKClient) ShareToGroup(ctx context.Context, conversationID, groupID str
 }
 
 // DeleteGroup deletes a group
-func (c *MKClient) DeleteGroup(ctx context.Context, groupID string) error {
+func (c *MKClient) DeleteGroup(ctx context.Context, groupID, userID string) error {
 	if c.directKernel != nil {
-		return c.directKernel.DeleteGroup(ctx, groupID)
+		return c.directKernel.DeleteGroup(ctx, groupID, userID)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "DELETE", c.baseURL+"/api/groups/"+groupID, nil)
@@ -638,9 +638,9 @@ func (c *MKClient) IsWorkspaceMember(ctx context.Context, workspaceNS, userID st
 // ============================================================================
 
 // FindNodeByName finds a node by its name and type
-func (c *MKClient) FindNodeByName(ctx context.Context, name string, nodeType graph.NodeType) (*graph.Node, error) {
+func (c *MKClient) FindNodeByName(ctx context.Context, namespace, name string, nodeType graph.NodeType) (*graph.Node, error) {
 	if c.directKernel != nil {
-		return c.directKernel.GetGraphClient().FindNodeByName(ctx, name, nodeType)
+		return c.directKernel.GetGraphClient().FindNodeByName(ctx, namespace, name, nodeType)
 	}
 	return nil, fmt.Errorf("HTTP mode not supported for FindNodeByName")
 }
@@ -686,9 +686,9 @@ func (c *MKClient) GetSampleNodes(ctx context.Context, namespace string, limit i
 }
 
 // SearchNodes searches for nodes matching a query string
-func (c *MKClient) SearchNodes(ctx context.Context, query string) ([]graph.Node, error) {
+func (c *MKClient) SearchNodes(ctx context.Context, namespace, query string) ([]graph.Node, error) {
 	if c.directKernel != nil {
-		return c.directKernel.GetGraphClient().SearchNodes(ctx, query)
+		return c.directKernel.GetGraphClient().SearchNodes(ctx, query, namespace)
 	}
 	// HTTP implementation
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/api/search?q="+url.QueryEscape(query), nil)

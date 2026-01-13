@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/gorilla/mux"
 	"github.com/reflective-memory-kernel/internal/policy"
@@ -10,13 +11,14 @@ import (
 )
 
 // SetupPolicyRoutes configures policy management routes
-func (s *Server) SetupPolicyRoutes(r *mux.Router) {
+// jwtMiddleware is passed in to avoid recreating it (security: enforces JWT_SECRET validation)
+func (s *Server) SetupPolicyRoutes(r *mux.Router, jwtMiddleware *JWTMiddleware) {
 	// Policy routes are admin-only for now
 	adminMiddleware := NewAdminMiddleware(s.logger)
 
 	// Mount under /api/admin/policies
 	policyRouter := r.PathPrefix("/api/admin/policies").Subrouter()
-	policyRouter.Use(NewJWTMiddleware(s.logger).Middleware)
+	policyRouter.Use(jwtMiddleware.Middleware)
 	policyRouter.Use(adminMiddleware.Middleware)
 
 	policyRouter.HandleFunc("", s.handleListPolicies).Methods("GET", "OPTIONS")
@@ -25,7 +27,7 @@ func (s *Server) SetupPolicyRoutes(r *mux.Router) {
 
 	// Audit logs
 	auditRouter := r.PathPrefix("/api/admin/audit").Subrouter()
-	auditRouter.Use(NewJWTMiddleware(s.logger).Middleware)
+	auditRouter.Use(jwtMiddleware.Middleware)
 	auditRouter.Use(adminMiddleware.Middleware)
 	auditRouter.HandleFunc("", s.handleGetAuditLogs).Methods("GET", "OPTIONS")
 
@@ -34,7 +36,7 @@ func (s *Server) SetupPolicyRoutes(r *mux.Router) {
 	// or /api/admin/rate-limits (check others)
 	// The handler `handleGetRateLimits` takes a user_id param, so likely Admin checking on a user.
 	rlRouter := r.PathPrefix("/api/admin/rate-limits").Subrouter()
-	rlRouter.Use(NewJWTMiddleware(s.logger).Middleware)
+	rlRouter.Use(jwtMiddleware.Middleware)
 	rlRouter.Use(adminMiddleware.Middleware)
 	rlRouter.HandleFunc("", s.handleGetRateLimits).Methods("GET", "OPTIONS")
 
@@ -128,7 +130,28 @@ func (s *Server) handleGetAuditLogs(w http.ResponseWriter, r *http.Request) {
 	namespace := r.URL.Query().Get("namespace")
 	eventType := r.URL.Query().Get("event_type")
 
-	logs, err := s.agent.PolicyManager.AuditLogger.QueryAuditLogs(r.Context(), userID, namespace, policy.AuditEventType(eventType), 100)
+	// Get limit from query param, default to 500, max 5000
+	limitStr := r.URL.Query().Get("limit")
+	limit := 500 // Increased from 100 to 500 for better audit trail
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			if l > 5000 {
+				limit = 5000 // Max limit to prevent excessive queries
+			} else {
+				limit = l
+			}
+		}
+	}
+
+	// Get requesting user's ID and role for access control
+	requestingUserID := GetUserID(r.Context())
+	requestingRole := GetUserRole(r.Context())
+
+	// Query params for filtering (admins can filter by target user/namespace)
+	targetUserID := userID
+	targetNamespace := namespace
+
+	logs, err := s.agent.PolicyManager.AuditLogger.QueryAuditLogs(r.Context(), requestingUserID, requestingRole, targetUserID, targetNamespace, policy.AuditEventType(eventType), limit)
 	if err != nil {
 		s.logger.Error("Failed to query audit logs", zap.Error(err))
 		http.Error(w, "Failed to query logs", http.StatusInternalServerError)
@@ -137,7 +160,9 @@ func (s *Server) handleGetAuditLogs(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"logs": logs,
+		"logs":  logs,
+		"limit": limit,
+		"count": len(logs),
 	})
 }
 

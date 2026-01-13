@@ -20,6 +20,7 @@ const (
 // CachedMessage represents a message with its embedding vector.
 type CachedMessage struct {
 	UserID      string    `json:"user_id"`
+	Namespace   string    `json:"namespace"`   // SECURITY: Namespace for multi-tenant isolation
 	Query       string    `json:"query"`
 	Response    string    `json:"response"`
 	Embedding   []float32 `json:"embedding"`
@@ -34,10 +35,12 @@ type SearchResult struct {
 }
 
 // HotCache provides in-memory storage for recent messages with embeddings.
-// It uses a ring buffer per user for O(1) insertion and O(n) search.
+// It uses a ring buffer per user per namespace for O(1) insertion and O(n) search.
+// SECURITY: Namespace isolation prevents cross-tenant data leakage
 type HotCache struct {
-	// userMessages maps userID -> ring buffer of messages
-	userMessages map[string]*ringBuffer
+	// userMessages maps userID -> namespace -> ring buffer of messages
+	// This ensures messages from different namespaces are strictly separated
+	userMessages map[string]map[string]*ringBuffer
 	embedService *embedding.Service
 	logger       *zap.Logger
 	mu           sync.RWMutex
@@ -82,7 +85,7 @@ func (rb *ringBuffer) all() []CachedMessage {
 // NewHotCache creates a new hot cache with the given embedding service.
 func NewHotCache(embedService *embedding.Service, logger *zap.Logger) *HotCache {
 	return &HotCache{
-		userMessages: make(map[string]*ringBuffer),
+		userMessages: make(map[string]map[string]*ringBuffer),
 		embedService: embedService,
 		logger:       logger,
 	}
@@ -90,8 +93,16 @@ func NewHotCache(embedService *embedding.Service, logger *zap.Logger) *HotCache 
 
 // Store adds a message to the cache with its embedding.
 // This is called after each conversation turn.
-func (hc *HotCache) Store(userID, query, response, convID string) error {
+// SECURITY: Namespace isolation ensures messages are stored per-namespace
+func (hc *HotCache) Store(userID, namespace, query, response, convID string) error {
 	startTime := time.Now()
+
+	// SECURITY: Reject empty namespace to prevent cross-tenant leakage
+	if namespace == "" {
+		hc.logger.Warn("Hot cache store rejected: empty namespace",
+			zap.String("user_id", userID))
+		return nil // Fail silently - don't store messages without namespace
+	}
 
 	// Generate embedding for the query
 	emb, err := hc.embedService.Embed(query)
@@ -103,6 +114,7 @@ func (hc *HotCache) Store(userID, query, response, convID string) error {
 
 	msg := CachedMessage{
 		UserID:    userID,
+		Namespace: namespace,
 		Query:     query,
 		Response:  response,
 		Embedding: emb,
@@ -113,17 +125,25 @@ func (hc *HotCache) Store(userID, query, response, convID string) error {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 
-	// Get or create ring buffer for user
-	rb, ok := hc.userMessages[userID]
+	// Get or create namespace map for user
+	nsMap, ok := hc.userMessages[userID]
+	if !ok {
+		nsMap = make(map[string]*ringBuffer)
+		hc.userMessages[userID] = nsMap
+	}
+
+	// Get or create ring buffer for user's namespace
+	rb, ok := nsMap[namespace]
 	if !ok {
 		rb = newRingBuffer(MaxMessagesPerUser)
-		hc.userMessages[userID] = rb
+		nsMap[namespace] = rb
 	}
 
 	rb.push(msg)
 
 	hc.logger.Debug("Stored message in hot cache",
 		zap.String("user_id", userID),
+		zap.String("namespace", namespace),
 		zap.Int("buffer_size", rb.size),
 		zap.Duration("embed_time", time.Since(startTime)))
 
@@ -132,8 +152,16 @@ func (hc *HotCache) Store(userID, query, response, convID string) error {
 
 // Search finds the most similar messages to the query.
 // Returns up to topK results with similarity >= threshold.
-func (hc *HotCache) Search(userID, query string, topK int, threshold float32) ([]SearchResult, error) {
+// SECURITY: Namespace isolation ensures search only returns messages from the specified namespace
+func (hc *HotCache) Search(userID, namespace, query string, topK int, threshold float32) ([]SearchResult, error) {
 	startTime := time.Now()
+
+	// SECURITY: Reject empty namespace to prevent cross-tenant leakage
+	if namespace == "" {
+		hc.logger.Warn("Hot cache search rejected: empty namespace",
+			zap.String("user_id", userID))
+		return nil, nil // Return empty results for invalid namespace
+	}
 
 	// Generate embedding for query
 	queryEmb, err := hc.embedService.Embed(query)
@@ -142,10 +170,15 @@ func (hc *HotCache) Search(userID, query string, topK int, threshold float32) ([
 	}
 
 	hc.mu.RLock()
-	rb, ok := hc.userMessages[userID]
+	nsMap, ok := hc.userMessages[userID]
 	if !ok {
 		hc.mu.RUnlock()
 		return nil, nil // No messages for this user
+	}
+	rb, ok := nsMap[namespace]
+	if !ok {
+		hc.mu.RUnlock()
+		return nil, nil // No messages for this user in this namespace
 	}
 	messages := rb.all()
 	hc.mu.RUnlock()
@@ -180,6 +213,18 @@ func (hc *HotCache) Search(userID, query string, topK int, threshold float32) ([
 		results = results[:topK]
 	}
 
+	// SECURITY: Timing attack mitigation
+	// Normalize response time to prevent attackers from determining:
+	// - Whether a user has messages in cache (cache hit vs miss)
+	// - How many messages a user has (iteration time)
+	// What results were found (similarity calculation time)
+	elapsed := time.Since(startTime)
+	targetTime := 50 * time.Millisecond // Minimum response time
+	if elapsed < targetTime {
+		time.Sleep(targetTime - elapsed)
+	}
+	// If operation took longer, return immediately (can't speed up)
+
 	hc.logger.Debug("Hot cache search completed",
 		zap.String("user_id", userID),
 		zap.Int("candidates", len(messages)),
@@ -189,22 +234,37 @@ func (hc *HotCache) Search(userID, query string, topK int, threshold float32) ([
 	return results, nil
 }
 
-// GetRecent returns the N most recent messages for a user (no similarity filtering).
+// GetRecent returns the N most recent messages for a user across all namespaces.
 func (hc *HotCache) GetRecent(userID string, n int) []CachedMessage {
 	hc.mu.RLock()
 	defer hc.mu.RUnlock()
 
-	rb, ok := hc.userMessages[userID]
+	nsMap, ok := hc.userMessages[userID]
 	if !ok {
 		return nil
 	}
 
-	messages := rb.all()
-	if len(messages) > n {
-		messages = messages[:n]
+	// Collect messages from all namespaces for this user
+	var allMessages []CachedMessage
+	for _, rb := range nsMap {
+		allMessages = append(allMessages, rb.all()...)
 	}
 
-	return messages
+	// Sort by timestamp (most recent first)
+	// Simple sort by timestamp descending
+	for i := 0; i < len(allMessages)-1; i++ {
+		for j := i + 1; j < len(allMessages); j++ {
+			if allMessages[j].Timestamp.After(allMessages[i].Timestamp) {
+				allMessages[i], allMessages[j] = allMessages[j], allMessages[i]
+			}
+		}
+	}
+
+	if len(allMessages) > n {
+		allMessages = allMessages[:n]
+	}
+
+	return allMessages
 }
 
 // Stats returns cache statistics.
@@ -213,12 +273,18 @@ func (hc *HotCache) Stats() map[string]interface{} {
 	defer hc.mu.RUnlock()
 
 	totalMessages := 0
-	for _, rb := range hc.userMessages {
-		totalMessages += rb.size
+	totalNamespaces := 0
+
+	for _, nsMap := range hc.userMessages {
+		for _, rb := range nsMap {
+			totalMessages += rb.size
+		}
+		totalNamespaces += len(nsMap)
 	}
 
 	return map[string]interface{}{
-		"total_users":    len(hc.userMessages),
-		"total_messages": totalMessages,
+		"total_users":     len(hc.userMessages),
+		"total_namespaces": totalNamespaces,
+		"total_messages":   totalMessages,
 	}
 }

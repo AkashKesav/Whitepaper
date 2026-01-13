@@ -82,10 +82,20 @@ type TemporalPattern struct {
 
 // detectTemporalPatterns finds recurring time-based patterns
 func (m *AnticipationModule) detectTemporalPatterns(ctx context.Context) ([]graph.Pattern, error) {
-	// Get events with timestamps from Redis cache
-	pattern := "context:*:recent"
-	keys, err := m.redisClient.Keys(ctx, pattern).Result()
-	if err != nil {
+	// PERFORMANCE: Use SCAN instead of KEYS to prevent blocking on large datasets
+	// KEYS is O(N) and blocks the entire Redis database
+	// SCAN is incremental and won't block
+	var keys []string
+	iter := m.redisClient.Scan(ctx, 0, "context:*:recent", 100).Iterator()
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+		// Limit to prevent excessive memory usage
+		if len(keys) >= 1000 {
+			m.logger.Warn("Pattern detection: reached key scan limit", zap.Int("limit", 1000))
+			break
+		}
+	}
+	if err := iter.Err(); err != nil {
 		return nil, err
 	}
 
@@ -262,7 +272,7 @@ func (m *AnticipationModule) detectSequencePatterns(ctx context.Context) ([]grap
 // persistPattern saves a pattern to the graph
 func (m *AnticipationModule) persistPattern(ctx context.Context, pattern graph.Pattern) error {
 	// Check if pattern already exists
-	existingNode, err := m.graphClient.FindNodeByName(ctx, pattern.Name, graph.NodeTypePattern)
+	existingNode, err := m.graphClient.FindNodeByName(ctx, pattern.Namespace, pattern.Name, graph.NodeTypePattern)
 	if err != nil {
 		return err
 	}
@@ -276,6 +286,7 @@ func (m *AnticipationModule) persistPattern(ctx context.Context, pattern graph.P
 	node := &graph.Node{
 		DType:       []string{string(graph.NodeTypePattern)},
 		Name:        pattern.Name,
+		Namespace:   pattern.Namespace,
 		Description: pattern.PredictedAction,
 		Activation:  pattern.ConfidenceScore,
 		Confidence:  pattern.ConfidenceScore,

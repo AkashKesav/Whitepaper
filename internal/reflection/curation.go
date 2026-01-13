@@ -67,7 +67,9 @@ func (m *CurationModule) checkFunctionalConstraints(ctx context.Context) ([]grap
 	var allContradictions []graph.Contradiction
 
 	for edgeType := range graph.FunctionalEdges {
-		contradictions, err := m.queryBuilder.FindPotentialContradictions(ctx, edgeType)
+		// SYSTEM OPERATION: Empty namespace for system-wide contradiction detection
+		// This is a background reflection process that scans all namespaces
+		contradictions, err := m.queryBuilder.FindPotentialContradictions(ctx, "", edgeType)
 		if err != nil {
 			continue
 		}

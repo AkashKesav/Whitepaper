@@ -1,103 +1,162 @@
 package precortex
 
 import (
-	"regexp"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"go.uber.org/zap"
 )
 
-// IntentClassifier classifies user messages into intent categories
+// IntentClassifier classifies user messages into intent categories using LLM
 type IntentClassifier struct {
-	logger *zap.Logger
-
-	// Compiled patterns for each intent
-	greetingPatterns   []*regexp.Regexp
-	navigationPatterns []*regexp.Regexp
-	factPatterns       []*regexp.Regexp
+	logger         *zap.Logger
+	aiServicesURL  string
+	client         *http.Client
+	requestCount   atomic.Int64
+	cacheHits      atomic.Int64
 }
 
-// NewIntentClassifier creates a new intent classifier
-// Currently uses rule-based classification; can be upgraded to ONNX later
+// NewIntentClassifier creates a new LLM-based intent classifier
 func NewIntentClassifier(logger *zap.Logger) *IntentClassifier {
-	ic := &IntentClassifier{
-		logger: logger,
+	// Use Docker service name for container-to-container communication
+	// Check if running in Docker by testing if rmk-ai-services is reachable
+	aiURL := "http://rmk-ai-services:8000"
+	return &IntentClassifier{
+		logger:        logger,
+		aiServicesURL: aiURL,
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+		},
 	}
-
-	// Greeting patterns
-	ic.greetingPatterns = compilePatterns([]string{
-		`^(hi|hello|hey|yo|sup|greetings)[\s!.?]*$`,
-		`^good\s+(morning|afternoon|evening|day)[\s!.?]*$`,
-		`^(howdy|hiya|what'?s\s+up)[\s!.?]*$`,
-		`^(bye|goodbye|see\s+you|later|cya|farewell)[\s!.?]*$`,
-		`^(thanks|thank\s+you|thx|ty)[\s!.?]*$`,
-	})
-
-	// Navigation patterns
-	ic.navigationPatterns = compilePatterns([]string{
-		`^(go\s+to|open|show|take\s+me\s+to|navigate\s+to)\s+`,
-		`^(open|show)\s+(my\s+)?(settings|profile|dashboard|groups|memory)`,
-		`^(settings|profile|dashboard|home|groups)\s*$`,
-	})
-
-	// Fact retrieval patterns
-	ic.factPatterns = compilePatterns([]string{
-		`^what\s+(is|are|was|were)\s+(my|the)`,
-		`^(tell|show)\s+me\s+(my|about)`,
-		`^(list|get|fetch|find)\s+(my|all)`,
-		`^who\s+(is|are|was)`,
-		`^when\s+(did|was|is)`,
-		`^where\s+(is|are|did)`,
-		`^(do|did)\s+i\s+(have|know|like|say)`,
-		`\?(my|email|name|phone|address|age|birthday)`,
-	})
-
-	return ic
 }
 
-// Classify determines the intent of a user message
-func (ic *IntentClassifier) Classify(message string) Intent {
-	// Normalize message
-	msg := strings.ToLower(strings.TrimSpace(message))
+// SetAIServicesURL sets the AI services URL
+func (ic *IntentClassifier) SetAIServicesURL(url string) {
+	ic.aiServicesURL = url
+	ic.logger.Info("IntentClassifier: AI services URL updated", zap.String("url", url))
+}
 
-	// Empty or very short messages
+// Classify determines the intent of a user message using LLM
+func (ic *IntentClassifier) Classify(message string) Intent {
+	ic.requestCount.Add(1)
+
+	// Normalize message
+	msg := strings.TrimSpace(message)
 	if len(msg) < 2 {
 		return IntentGreeting
 	}
 
-	// Check greeting patterns
-	for _, pattern := range ic.greetingPatterns {
-		if pattern.MatchString(msg) {
+	// Fast path for obvious greetings (no LLM call needed)
+	lowerMsg := strings.ToLower(msg)
+	for _, greeting := range []string{"hi", "hello", "hey", "yo", "sup", "thanks", "thank you", "thx", "bye", "goodbye"} {
+		if lowerMsg == greeting || lowerMsg == greeting+"!" || lowerMsg == greeting+"." {
+			ic.cacheHits.Add(1)
 			return IntentGreeting
 		}
 	}
 
-	// Check navigation patterns
-	for _, pattern := range ic.navigationPatterns {
-		if pattern.MatchString(msg) {
+	// Call LLM for classification
+	intent, err := ic.classifyWithLLM(msg)
+	if err != nil {
+		ic.logger.Warn("LLM classification failed, using fallback", zap.Error(err))
+		// Fallback: use simple heuristic
+		return ic.fallbackClassify(msg)
+	}
+
+	ic.logger.Debug("LLM classified intent", zap.String("intent", string(intent)))
+	return intent
+}
+
+// classifyWithLLM calls the AI service to classify intent
+func (ic *IntentClassifier) classifyWithLLM(message string) (Intent, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	reqBody := map[string]string{
+		"query": message,
+	}
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		ic.aiServicesURL+"/classify-intent",
+		bytes.NewReader(jsonBody))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := ic.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("classify-intent returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Intent string `json:"intent"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	// Map string to Intent
+	switch result.Intent {
+	case "GREETING":
+		return IntentGreeting, nil
+	case "NAVIGATION":
+		return IntentNavigation, nil
+	case "FACT_RETRIEVAL":
+		return IntentFactRetrieval, nil
+	default:
+		return IntentComplex, nil
+	}
+}
+
+// fallbackClassify provides simple rule-based fallback when LLM is unavailable
+func (ic *IntentClassifier) fallbackClassify(message string) Intent {
+	lowerMsg := strings.ToLower(message)
+
+	// Check for navigation keywords
+	for _, kw := range []string{"go to", "open", "show my", "navigate to", "settings", "dashboard", "profile"} {
+		if strings.Contains(lowerMsg, kw) {
 			return IntentNavigation
 		}
 	}
 
-	// Check fact retrieval patterns
-	for _, pattern := range ic.factPatterns {
-		if pattern.MatchString(msg) {
-			return IntentFactRetrieval
-		}
+	// Check for fact retrieval patterns
+	if strings.Contains(lowerMsg, "?") ||
+		strings.HasPrefix(lowerMsg, "what") ||
+		strings.HasPrefix(lowerMsg, "where") ||
+		strings.HasPrefix(lowerMsg, "who") ||
+		strings.HasPrefix(lowerMsg, "when") ||
+		strings.HasPrefix(lowerMsg, "how") ||
+		strings.HasPrefix(lowerMsg, "do i") ||
+		strings.HasPrefix(lowerMsg, "did i") ||
+		strings.Contains(lowerMsg, "my name") ||
+		strings.Contains(lowerMsg, "my email") ||
+		strings.Contains(lowerMsg, "i live") {
+		return IntentFactRetrieval
 	}
 
-	// Default to complex (requires LLM)
+	// Default to complex
 	return IntentComplex
 }
 
-// compilePatterns compiles a list of regex patterns
-func compilePatterns(patterns []string) []*regexp.Regexp {
-	compiled := make([]*regexp.Regexp, 0, len(patterns))
-	for _, p := range patterns {
-		re, err := regexp.Compile("(?i)" + p)
-		if err == nil {
-			compiled = append(compiled, re)
-		}
-	}
-	return compiled
+// Stats returns classification statistics
+func (ic *IntentClassifier) Stats() (total int64, cacheHits int64) {
+	return ic.requestCount.Load(), ic.cacheHits.Load()
 }

@@ -188,52 +188,73 @@ func (s *Server) GetVisualGraph(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// SECONDARY: Also try to add the user node and expand connections if available
-	if len(nodes) == 0 {
-		seedName := userID
-		if seedName == "" {
-			seedName = "David Brown" // Fallback to sample data
+	// CRITICAL: Always ensure the User node is present as the "Anchor"
+	// Previously this was only a fallback, causing the user to disappear when real data existed.
+	seedName := userID
+	if seedName == "" {
+		seedName = "David Brown" // Fallback to sample data
+	}
+
+	seedNode, err := s.agent.mkClient.FindNodeByName(ctx, namespace, seedName, graph.NodeTypeUser)
+	if err != nil || seedNode == nil {
+		// Try finding as generic entity if User type fails
+		seedNode, err = s.agent.mkClient.FindNodeByName(ctx, namespace, seedName, graph.NodeTypeEntity)
+	}
+
+	if err == nil && seedNode != nil {
+		// Only add if not already present in sample nodes
+		alreadyExists := false
+		for _, n := range nodes {
+			if n.ID == seedNode.UID {
+				alreadyExists = true
+				break
+			}
 		}
 
-		seedNode, err := s.agent.mkClient.FindNodeByName(ctx, seedName, graph.NodeTypeUser)
-		if err != nil || seedNode == nil {
-			seedNode, err = s.agent.mkClient.FindNodeByName(ctx, seedName, graph.NodeTypeEntity)
-		}
-
-		if err == nil && seedNode != nil {
+		if !alreadyExists {
 			nodes = append(nodes, GraphNode{
 				ID:    seedNode.UID,
 				Label: seedNode.Name,
 				Group: "User",
 				Size:  15,
 			})
+		}
 
-			// Try expansion
-			expandOpts := graph.ExpandOpts{
-				StartUID:   seedNode.UID,
-				MaxHops:    2,
-				MaxResults: 30,
-			}
-			res, err := s.agent.mkClient.ExpandFromNode(ctx, expandOpts)
-			if err == nil && res != nil {
-				for _, levelNodes := range res.ByHop {
-					for _, n := range levelNodes {
-						if n.UID == seedNode.UID {
-							continue
+		// Try expansion from the User Node to show direct connections
+		// This ensures that even if sample nodes are disjoint, we see the user's immediate context
+		expandOpts := graph.ExpandOpts{
+			StartUID:   seedNode.UID,
+			MaxHops:    1, // Keep it tight for the dashboard
+			MaxResults: 20,
+		}
+		res, err := s.agent.mkClient.ExpandFromNode(ctx, expandOpts)
+		if err == nil && res != nil {
+			for _, levelNodes := range res.ByHop {
+				for _, n := range levelNodes {
+					// Add related nodes if not present
+					exists := false
+					for _, existing := range nodes {
+						if existing.ID == n.UID {
+							exists = true
+							break
 						}
+					}
+					if !exists {
 						nodes = append(nodes, GraphNode{
 							ID:    n.UID,
 							Label: n.Name,
 							Group: "Entity",
 							Size:  10,
 						})
-						edges = append(edges, GraphEdge{
-							ID:     fmt.Sprintf("%s-%s", seedNode.UID, n.UID),
-							Source: seedNode.UID,
-							Target: n.UID,
-							Label:  "related",
-						})
 					}
+
+					// Add edge from User to this node
+					edges = append(edges, GraphEdge{
+						ID:     fmt.Sprintf("%s-%s", seedNode.UID, n.UID),
+						Source: seedNode.UID,
+						Target: n.UID,
+						Label:  "related",
+					})
 				}
 			}
 		}

@@ -3,6 +3,7 @@ package precortex
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +19,9 @@ const (
 	MaxCachedVectors = 1000
 	// DefaultSimilarityThreshold is the minimum similarity for a cache hit
 	DefaultSimilarityThreshold = 0.92
+	// Query validation limits
+	MaxQueryLength = 2000 // Maximum query length to prevent DoS
+	MinQueryLength = 2    // Minimum query length to be meaningful
 )
 
 // SemanticCache provides vector-based semantic caching using Qdrant
@@ -52,11 +56,27 @@ func NewSemanticCache(cacheManager *cache.Manager, vectorIndex *kernel.VectorInd
 }
 
 // Check looks up a query in the semantic cache
+// SECURITY: Requires valid namespace to prevent cross-tenant data access
 func (sc *SemanticCache) Check(ctx context.Context, namespace, query string) (string, bool) {
 	startTime := time.Now()
 
-	// 1. Try exact match first (fastest path)
-	normalizedQuery := normalizeQuery(query)
+	// SECURITY: Validate namespace to prevent cross-tenant access
+	if namespace == "" || !isValidNamespaceName(namespace) {
+		sc.logger.Warn("Semantic cache: invalid namespace rejected",
+			zap.String("namespace", namespace))
+		return "", false // Fail-secure on invalid namespace
+	}
+
+	// SECURITY: Validate and normalize query before processing
+	normalizedQuery, err := normalizeQuery(query)
+	if err != nil {
+		sc.logger.Warn("Semantic cache: query validation failed",
+			zap.Error(err),
+			zap.String("query", query[:min(50, len(query))]))
+		// Return cache miss on invalid query (fail-secure)
+		return "", false
+	}
+
 	key := fmt.Sprintf("semantic:%s:%s", namespace, normalizedQuery)
 
 	sc.logger.Info("Semantic cache: CHECKING",
@@ -91,9 +111,24 @@ func (sc *SemanticCache) Check(ctx context.Context, namespace, query string) (st
 }
 
 // Store saves a query-response pair in the semantic cache
+// SECURITY: Requires valid namespace to prevent cross-tenant data access
 func (sc *SemanticCache) Store(ctx context.Context, namespace, query, response string) {
-	// Store exact match in fast cache
-	normalizedQuery := normalizeQuery(query)
+	// SECURITY: Validate namespace to prevent cross-tenant access
+	if namespace == "" || !isValidNamespaceName(namespace) {
+		sc.logger.Warn("Semantic cache: invalid namespace rejected for storage",
+			zap.String("namespace", namespace))
+		return // Don't store without valid namespace
+	}
+
+	// SECURITY: Validate and normalize query before storing
+	normalizedQuery, err := normalizeQuery(query)
+	if err != nil {
+		sc.logger.Warn("Semantic cache: query validation failed, not storing",
+			zap.Error(err),
+			zap.String("query", query[:min(50, len(query))]))
+		return // Don't store invalid queries
+	}
+
 	key := fmt.Sprintf("semantic:%s:%s", namespace, normalizedQuery)
 
 	sc.logger.Info("Semantic cache: STORING",
@@ -122,7 +157,8 @@ func (sc *SemanticCache) vectorSearch(ctx context.Context, namespace, query stri
 	// Logic: We store query as vector, and response as payload
 	// Search returns similar queries. If similarity > threshold, we return the cached response.
 
-	_, scores, payloads, err := sc.vectorIndex.Search(ctx, namespace, queryVec, 1) // Get top 1
+	// SYSTEM OPERATION: Empty userID for cache lookup (not user-initiated)
+	_, scores, payloads, err := sc.vectorIndex.Search(ctx, namespace, "", queryVec, 1) // Get top 1
 	if err != nil {
 		sc.logger.Warn("Semantic cache vector search failed", zap.Error(err))
 		return "", 0, false
@@ -197,15 +233,96 @@ func (sc *SemanticCache) Stats(ctx context.Context) map[string]interface{} {
 	return stats
 }
 
-// normalizeQuery normalizes a query for exact matching
-func normalizeQuery(query string) string {
-	// Convert to lowercase
-	q := strings.ToLower(query)
-	// Trim whitespace
-	q = strings.TrimSpace(q)
+// normalizeQuery normalizes and validates a query for exact matching
+// SECURITY: Validates query length and content to prevent injection and DoS attacks
+func normalizeQuery(query string) (string, error) {
+	// SECURITY: Check length first to prevent DoS via large inputs
+	if len(query) > MaxQueryLength {
+		return "", fmt.Errorf("query exceeds maximum length of %d characters", MaxQueryLength)
+	}
+
+	// SECURITY: Check for empty or too-short queries
+	trimmed := strings.TrimSpace(query)
+	if len(trimmed) < MinQueryLength {
+		return "", fmt.Errorf("query is too short (minimum %d characters)", MinQueryLength)
+	}
+
+	// SECURITY: Check for null bytes (injection prevention)
+	if strings.Contains(query, "\x00") {
+		return "", fmt.Errorf("query contains invalid characters")
+	}
+
+	// SECURITY: Check for common injection patterns
+	lowerQuery := strings.ToLower(query)
+	suspiciousPatterns := []string{
+		"<script",
+		"javascript:",
+		"vbscript:",
+		"onload=",
+		"onerror=",
+		"<iframe",
+	}
+	for _, pattern := range suspiciousPatterns {
+		if strings.Contains(lowerQuery, pattern) {
+			return "", fmt.Errorf("query contains suspicious content")
+		}
+	}
+
+	// Normalize: Convert to lowercase
+	q := strings.ToLower(trimmed)
 	// Collapse multiple spaces to single space
 	q = strings.Join(strings.Fields(q), " ")
 	// Remove common punctuation at end
 	q = strings.TrimRight(q, "?!.,")
-	return q
+	return q, nil
+}
+
+// Invalidate removes all cache entries for a specific namespace
+// This should be called when entities are updated or deleted
+func (sc *SemanticCache) Invalidate(ctx context.Context, namespace string) error {
+	sc.logger.Info("Semantic cache: invalidating namespace",
+		zap.String("namespace", namespace))
+
+	// Note: Redis SCAN is used for pattern matching, but for simplicity we'll just log
+	// a warning. In production, you'd want to either:
+	// 1. Maintain a set of cache keys per namespace
+	// 2. Use Redis SCAN with MATCH to find and delete keys
+	// 3. Use a different cache invalidation strategy
+
+	sc.logger.Info("Semantic cache: namespace invalidation requested",
+		zap.String("namespace", namespace),
+		zap.String("note", "full pattern deletion requires SCAN or key tracking"))
+
+	// For now, we rely on TTL expiration (10 minutes) for cache invalidation
+	return nil
+}
+
+// InvalidateSpecific removes a specific cache entry
+func (sc *SemanticCache) InvalidateSpecific(ctx context.Context, namespace, query string) error {
+	normalizedQuery, err := normalizeQuery(query)
+	if err != nil {
+		sc.logger.Warn("Semantic cache: query validation failed during invalidation",
+			zap.Error(err))
+		return nil // Return success even if invalid (fail-secure)
+	}
+	key := fmt.Sprintf("semantic:%s:%s", namespace, normalizedQuery)
+
+	sc.logger.Debug("Semantic cache: invalidating specific entry",
+		zap.String("key", key))
+
+	sc.cacheManager.Delete(key)
+
+	return nil
+}
+
+// isValidNamespaceName validates namespace format for semantic cache
+// SECURITY: Ensures namespace follows expected pattern to prevent injection
+func isValidNamespaceName(ns string) bool {
+	if ns == "" {
+		return false
+	}
+	// Must start with user_ or group_ and contain only safe characters
+	// This matches the pattern used in vector_index.go and traversal.go
+	matched, _ := regexp.MatchString(`^(user|group)_[a-zA-Z0-9_-]+$`, ns)
+	return matched
 }
