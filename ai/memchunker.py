@@ -90,32 +90,30 @@ class MemChunker:
         text_bytes = text.encode('utf-8')
         results = []
 
-        # Build chunker with configuration
-        chunker = rust_chunk(text_bytes)
-
-        # Apply configuration
+        # Build Chunker with configuration
+        kwargs = {'text': text_bytes}
         if self.config.chunk_size != 4096:
-            chunker = chunker.size(self.config.chunk_size)
-
-        if self.config.pattern:
-            chunker = chunker.pattern(self.config.pattern)
-        elif self.config.delimiters != b'\n.?':
-            chunker = chunker.delimiters(self.config.delimiters)
-
+            kwargs['size'] = self.config.chunk_size
+        if self.config.delimiters != b'\n.?':
+            kwargs['delimiters'] = self.config.delimiters
+        if self.config.pattern is not None:
+            kwargs['pattern'] = self.config.pattern
         if self.config.prefix_mode:
-            chunker = chunker.prefix()
-        else:
-            chunker = chunker.suffix()
-
+            kwargs['prefix'] = True
         if self.config.consecutive:
-            chunker = chunker.consecutive()
-
+            kwargs['consecutive'] = True
         if self.config.forward_fallback:
-            chunker = chunker.forward_fallback()
+            kwargs['forward_fallback'] = True
+
+        # Import Chunker class from memchunk
+        from memchunk import Chunker as RustChunker
+        chunker = RustChunker(**kwargs)
 
         # Collect chunks
         position = 0
-        for chunk_bytes in chunker:
+        for chunk_view in chunker:
+            # Rust returns memoryview, convert to bytes then str
+            chunk_bytes = bytes(chunk_view)
             chunk_text = chunk_bytes.decode('utf-8', errors='replace')
             end_pos = position + len(chunk_bytes)
             results.append(ChunkResult(
