@@ -1,16 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 import {
     Settings as SettingsIcon, User, Bell, Key, Palette,
     Shield, Database, ChevronRight, Moon, Sun, Check,
-    LogOut, Trash2, Download, Upload
+    LogOut, Trash2, Download, Upload, Cpu, X
 } from 'lucide-react';
+import { NVIDIAConfigCard } from '@/components/settings/NVIDIAConfigCard';
 
-type SettingsSection = 'profile' | 'notifications' | 'api' | 'appearance' | 'privacy' | 'data';
+type SettingsSection = 'profile' | 'notifications' | 'api' | 'ai-providers' | 'appearance' | 'privacy' | 'data';
 
 export const Settings: React.FC = () => {
-    const { user, logout } = useAuth();
+    const { user, logout, preferences, updatePreference, saveAPIKey, deleteAPIKey } = useAuth();
     const [activeSection, setActiveSection] = useState<SettingsSection>('profile');
     const [theme, setTheme] = useState<'dark' | 'light' | 'system'>('dark');
     const [notifications, setNotifications] = useState({
@@ -24,6 +25,7 @@ export const Settings: React.FC = () => {
         { id: 'profile' as const, label: 'Profile', icon: User },
         { id: 'notifications' as const, label: 'Notifications', icon: Bell },
         { id: 'api' as const, label: 'API Keys', icon: Key },
+        { id: 'ai-providers' as const, label: 'AI Providers', icon: Cpu },
         { id: 'appearance' as const, label: 'Appearance', icon: Palette },
         { id: 'privacy' as const, label: 'Privacy & Security', icon: Shield },
         { id: 'data' as const, label: 'Data Management', icon: Database },
@@ -178,6 +180,42 @@ export const Settings: React.FC = () => {
                                 <button className="w-full p-4 border border-dashed border-white/20 rounded-xl text-white/50 hover:bg-white/5 hover:border-white/30 transition-colors text-sm">
                                     + Generate New API Key
                                 </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {activeSection === 'ai-providers' && (
+                        <div>
+                            <h2 className="text-xl font-semibold text-white mb-6">AI Providers</h2>
+                            <p className="text-sm text-white/50 mb-6">
+                                Configure AI model providers for chat and embeddings. Your API keys are encrypted and stored securely.
+                            </p>
+                            <div className="space-y-4">
+                                <NVIDIAConfigCard
+                                    apiKey={preferences.nimApiKey}
+                                    hasKey={preferences.hasNimKey}
+                                    onSave={async (key) => {
+                                        const result = await saveAPIKey('nim', key);
+                                        return result.success;
+                                    }}
+                                    onDelete={async () => {
+                                        const result = await deleteAPIKey('nim');
+                                        return result.success;
+                                    }}
+                                    onTest={async (key) => {
+                                        try {
+                                            const response = await fetch('/api/test/nim', {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ api_key: key })
+                                            });
+                                            const result = await response.json();
+                                            return result.success === true;
+                                        } catch {
+                                            return false;
+                                        }
+                                    }}
+                                />
                             </div>
                         </div>
                     )}

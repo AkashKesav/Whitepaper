@@ -741,6 +741,33 @@ func (c *MKClient) PersistChunks(ctx context.Context, namespace, docID string, c
 	return fmt.Errorf("HTTP mode not supported for PersistChunks")
 }
 
+// GetUserSettings retrieves user settings from DGraph
+func (c *MKClient) GetUserSettings(ctx context.Context, userID string) (*graph.UserSettings, error) {
+	graphClient := c.GetGraphClient()
+	if graphClient == nil {
+		return nil, fmt.Errorf("graph client not available")
+	}
+	return graphClient.GetUserSettings(ctx, userID)
+}
+
+// StoreUserSettings stores user settings in DGraph
+func (c *MKClient) StoreUserSettings(ctx context.Context, userID string, settings *graph.UserSettings) error {
+	graphClient := c.GetGraphClient()
+	if graphClient == nil {
+		return fmt.Errorf("graph client not available")
+	}
+	return graphClient.StoreUserSettings(ctx, userID, settings)
+}
+
+// DeleteUserAPIKey deletes a user's API key from settings
+func (c *MKClient) DeleteUserAPIKey(ctx context.Context, userID, provider string) error {
+	graphClient := c.GetGraphClient()
+	if graphClient == nil {
+		return fmt.Errorf("graph client not available")
+	}
+	return graphClient.DeleteUserAPIKey(ctx, userID, provider)
+}
+
 // AIClient is a client for AI services
 type AIClient struct {
 	baseURL    string
@@ -761,16 +788,23 @@ func NewAIClient(baseURL string, logger *zap.Logger) *AIClient {
 
 // GenerateResponse generates a conversational response
 func (c *AIClient) GenerateResponse(ctx context.Context, query, context string, alerts []string) (string, error) {
+	return c.GenerateResponseWithUserKeys(ctx, query, context, alerts, nil)
+}
+
+// GenerateResponseWithUserKeys generates a response using user-specific API keys
+func (c *AIClient) GenerateResponseWithUserKeys(ctx context.Context, query, context string, alerts []string, userAPIKeys map[string]string) (string, error) {
 	type GenerateRequest struct {
-		Query           string   `json:"query"`
-		Context         string   `json:"context,omitempty"`
-		ProactiveAlerts []string `json:"proactive_alerts,omitempty"`
+		Query           string            `json:"query"`
+		Context         string            `json:"context,omitempty"`
+		ProactiveAlerts []string          `json:"proactive_alerts,omitempty"`
+		UserAPIKeys     map[string]string `json:"user_api_keys,omitempty"`
 	}
 
 	reqBody := GenerateRequest{
 		Query:           query,
 		Context:         context,
 		ProactiveAlerts: alerts,
+		UserAPIKeys:     userAPIKeys,
 	}
 
 	jsonData, err := json.Marshal(reqBody)

@@ -6,10 +6,26 @@ interface User {
     token: string;
 }
 
+interface UserPreferences {
+    nimApiKey: string;  // Local temporary storage before save
+    openaiApiKey: string;  // Local temporary storage before save
+    anthropicApiKey: string;  // Local temporary storage before save
+    hasNimKey: boolean;  // Backend status
+    hasOpenaiKey: boolean;  // Backend status
+    hasAnthropicKey: boolean;  // Backend status
+    theme: 'dark' | 'light' | 'system';
+    notifications: boolean;
+}
+
 interface AuthContextType {
     user: User | null;
     isAdmin: boolean;
     isLoading: boolean;
+    preferences: UserPreferences;
+    updatePreference: (key: keyof UserPreferences, value: string) => void;
+    saveAPIKey: (provider: 'nim' | 'openai' | 'anthropic', key: string) => Promise<{ success: boolean; error?: string }>;
+    deleteAPIKey: (provider: 'nim' | 'openai' | 'anthropic') => Promise<{ success: boolean; error?: string }>;
+    loadPreferences: () => Promise<void>;
     login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
     register: (username: string, password: string, role: 'admin' | 'user') => Promise<{ success: boolean; error?: string }>;
     logout: () => void;
@@ -41,6 +57,113 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [user, setUser] = useState<User | null>(null);
     const [isLoading, setIsLoading] = useState(true);
 
+    // Initialize preferences from localStorage (for theme/notifications only)
+    // API keys are loaded from backend
+    const [preferences, setPreferences] = useState<UserPreferences>(() => ({
+        nimApiKey: '',  // Local temporary storage before save
+        openaiApiKey: '',  // Local temporary storage before save
+        anthropicApiKey: '',  // Local temporary storage before save
+        hasNimKey: false,  // Backend status
+        hasOpenaiKey: false,  // Backend status
+        hasAnthropicKey: false,  // Backend status
+        theme: (localStorage.getItem('rmk_theme') as 'dark' | 'light' | 'system') || 'dark',
+        notifications: localStorage.getItem('rmk_notifications') === 'true',
+    }));
+
+    // Update preference and persist to localStorage (for theme/notifications)
+    const updatePreference = useCallback((key: keyof UserPreferences, value: string | boolean) => {
+        setPreferences(prev => ({ ...prev, [key]: value }));
+        if (key === 'theme' || key === 'notifications') {
+            localStorage.setItem(`rmk_${key}`, String(value));
+        }
+    }, []);
+
+    // Load preferences from backend after login
+    const loadPreferences = useCallback(async () => {
+        const token = localStorage.getItem('rmk_token');
+        if (!token) return;
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/user/settings`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                setPreferences(prev => ({
+                    ...prev,
+                    nimApiKey: '',  // Never load actual keys, only status
+                    openaiApiKey: '',
+                    anthropicApiKey: '',
+                    hasNimKey: data.has_nim_key || false,
+                    hasOpenaiKey: data.has_openai_key || false,
+                    hasAnthropicKey: data.has_anthropic_key || false,
+                    theme: data.theme || prev.theme,
+                    notifications: data.notifications_enabled ?? prev.notifications,
+                }));
+            }
+        } catch (error) {
+            console.warn('Failed to load preferences from backend:', error);
+        }
+    }, []);
+
+    // Save API key to backend (encrypted)
+    const saveAPIKey = useCallback(async (provider: 'nim' | 'openai' | 'anthropic', key: string): Promise<{ success: boolean; error?: string }> => {
+        const token = localStorage.getItem('rmk_token');
+        if (!token) return { success: false, error: 'Not authenticated' };
+
+        try {
+            const body: Record<string, string> = {};
+            if (provider === 'nim') body.nim_api_key = key;
+            if (provider === 'openai') body.openai_api_key = key;
+            if (provider === 'anthropic') body.anthropic_api_key = key;
+
+            const response = await fetch(`${API_BASE_URL}/api/user/settings`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(body),
+            });
+
+            if (response.ok) {
+                // Update local status
+                await loadPreferences();
+                return { success: true };
+            } else {
+                const errorText = await response.text();
+                return { success: false, error: errorText || 'Failed to save API key' };
+            }
+        } catch (error) {
+            return { success: false, error: 'Network error. Please try again.' };
+        }
+    }, [loadPreferences]);
+
+    // Delete API key from backend
+    const deleteAPIKey = useCallback(async (provider: 'nim' | 'openai' | 'anthropic'): Promise<{ success: boolean; error?: string }> => {
+        const token = localStorage.getItem('rmk_token');
+        if (!token) return { success: false, error: 'Not authenticated' };
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/user/settings/keys/${provider}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            if (response.ok) {
+                // Update local status
+                await loadPreferences();
+                return { success: true };
+            } else {
+                const errorText = await response.text();
+                return { success: false, error: errorText || 'Failed to delete API key' };
+            }
+        } catch (error) {
+            return { success: false, error: 'Network error. Please try again.' };
+        }
+    }, [loadPreferences]);
+
     // Initialize from localStorage
     useEffect(() => {
         const storedToken = localStorage.getItem('rmk_token');
@@ -52,10 +175,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     role: (decoded.role as 'admin' | 'user') || 'user',
                     token: storedToken,
                 });
+                // Load preferences from backend after setting user
+                loadPreferences();
             }
         }
         setIsLoading(false);
-    }, []);
+    }, [loadPreferences]);
 
     const login = useCallback(async (username: string, password: string): Promise<{ success: boolean; error?: string }> => {
         try {
@@ -81,6 +206,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 };
                 setUser(newUser);
                 localStorage.setItem('rmk_token', data.token);
+                // Load preferences from backend after login
+                await loadPreferences();
                 return { success: true };
             }
 
@@ -88,7 +215,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch (error) {
             return { success: false, error: 'Network error. Please try again.' };
         }
-    }, []);
+    }, [loadPreferences]);
 
     const register = useCallback(async (username: string, password: string, role: 'admin' | 'user'): Promise<{ success: boolean; error?: string }> => {
         try {
@@ -114,6 +241,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 };
                 setUser(newUser);
                 localStorage.setItem('rmk_token', data.token);
+                // Load preferences from backend after registration
+                await loadPreferences();
                 return { success: true };
             }
 
@@ -121,17 +250,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch (error) {
             return { success: false, error: 'Network error. Please try again.' };
         }
-    }, []);
+    }, [loadPreferences]);
 
     const logout = useCallback(() => {
         setUser(null);
         localStorage.removeItem('rmk_token');
+        // Clear API keys from state
+        setPreferences(prev => ({
+            ...prev,
+            nimApiKey: '',
+            openaiApiKey: '',
+            anthropicApiKey: '',
+            hasNimKey: false,
+            hasOpenaiKey: false,
+            hasAnthropicKey: false,
+        }));
     }, []);
 
     const isAdmin = user?.role === 'admin';
 
     return (
-        <AuthContext.Provider value={{ user, isAdmin, isLoading, login, register, logout }}>
+        <AuthContext.Provider value={{ user, isAdmin, isLoading, preferences, updatePreference, saveAPIKey, deleteAPIKey, loadPreferences, login, register, logout }}>
             {children}
         </AuthContext.Provider>
     );

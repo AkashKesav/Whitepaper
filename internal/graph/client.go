@@ -46,6 +46,18 @@ func DefaultClientConfig() ClientConfig {
 	}
 }
 
+// quoteString properly escapes a string for N-Quads format (RFC4180-like quoting)
+// It wraps the string in double quotes and escapes special characters
+func quoteString(s string) string {
+	// Replace backslash first, then quotes, then newlines
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	s = strings.ReplaceAll(s, "\t", "\\t")
+	return "\"" + s + "\""
+}
+
 // timeoutInterceptor creates a gRPC unary interceptor that enforces per-call timeouts.
 // This prevents slow DGraph queries from blocking the API indefinitely.
 func timeoutInterceptor(timeout time.Duration) grpc.UnaryClientInterceptor {
@@ -110,10 +122,10 @@ func (c *Client) initSchema(ctx context.Context) error {
 		# Edges
 		group_has_admin: [uid] @reverse .
 		group_has_member: [uid] @reverse .
-		
+
 		# Node types
 		# Group Management (V2)
-		
+
 		type Group {
 			name
 			description
@@ -134,6 +146,15 @@ func (c *Client) initSchema(ctx context.Context) error {
 			last_accessed
 			activation
 			access_count
+		}
+
+		type UserSettings {
+			nim_api_key_encrypted
+			openai_api_key_encrypted
+			anthropic_api_key_encrypted
+			theme
+			notifications_enabled
+			updated_at
 		}
 
 		type Entity {
@@ -293,11 +314,27 @@ func (c *Client) initSchema(ctx context.Context) error {
 		is_active: bool @index(bool) .
 		role: string @index(exact) .
 
+		# User Settings Predicates
+		nim_api_key_encrypted: string .
+		openai_api_key_encrypted: string .
+		anthropic_api_key_encrypted: string .
+		theme: string .
+		notifications_enabled: bool .
+
 	`
 
 	op := &api.Operation{Schema: schema}
 	if err := c.dg.Alter(ctx, op); err != nil {
 		return fmt.Errorf("failed to alter schema: %w", err)
+	}
+
+	// Try to add reverse edge for user_settings if it doesn't exist
+	// This is a best-effort operation - if it fails, we continue anyway
+	reverseEdgeSchema := `user_settings: uid @reverse .`
+	reverseOp := &api.Operation{Schema: reverseEdgeSchema}
+	if err := c.dg.Alter(ctx, reverseOp); err != nil {
+		// Log but don't fail - the predicate might already exist with reverse edge
+		c.logger.Debug("Could not add reverse edge for user_settings (may already exist)", zap.Error(err))
 	}
 
 	c.logger.Info("DGraph schema initialized successfully")
@@ -2767,4 +2804,329 @@ func (c *Client) GetShareLinks(ctx context.Context, workspaceNS string) ([]Share
 	}
 
 	return result.Links, nil
+}
+
+// ============================================================================
+// USER SETTINGS FUNCTIONS
+// ============================================================================
+
+// UserSettings represents user preferences including encrypted API keys
+type UserSettings struct {
+	UserID                  string
+	NimApiKeyEncrypted     string
+	OpenaiApiKeyEncrypted  string
+	AnthropicApiKeyEncrypted string
+	Theme                   string
+	NotificationsEnabled    bool
+	UpdatedAt               time.Time
+}
+
+// StoreUserSettings stores encrypted user settings in DGraph
+// Creates or updates a UserSettings node linked to the User node
+// Uses JSON mutation format for proper string handling
+func (c *Client) StoreUserSettings(ctx context.Context, userID string, settings *UserSettings) error {
+	// Find the User node first
+	userNode, err := c.FindNodeByName(ctx, fmt.Sprintf("user_%s", userID), userID, NodeTypeUser)
+	if err != nil || userNode == nil {
+		return fmt.Errorf("user not found: %s", userID)
+	}
+
+	// Check if settings node already exists by traversing from user
+	query := `query GetSettings($user: string) {
+		user(func: uid($user)) {
+			user_settings {
+				uid
+			}
+		}
+	}`
+	resp, err := c.Query(ctx, query, map[string]string{"$user": userNode.UID})
+	if err != nil {
+		return err
+	}
+
+	var existingResult struct {
+		User []struct {
+			UserSettings []struct {
+				UID string `json:"uid"`
+			} `json:"user_settings"`
+		} `json:"user"`
+	}
+	json.Unmarshal(resp, &existingResult)
+
+	// Extract settings UID from nested structure
+	var existingSettingsUID string
+	if len(existingResult.User) > 0 && len(existingResult.User[0].UserSettings) > 0 {
+		existingSettingsUID = existingResult.User[0].UserSettings[0].UID
+	}
+
+	now := time.Now().Format(time.RFC3339)
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	if existingSettingsUID != "" {
+		// Update existing settings node using JSON mutation
+		// Build JSON object for the update
+		// Only include fields that are explicitly set (not empty strings for API keys)
+		updateData := map[string]interface{}{
+			"uid":                     existingSettingsUID,
+			"nim_api_key_encrypted":   settings.NimApiKeyEncrypted,
+			"openai_api_key_encrypted": settings.OpenaiApiKeyEncrypted,
+			"anthropic_api_key_encrypted": settings.AnthropicApiKeyEncrypted,
+			"theme":                   settings.Theme,
+			"notifications_enabled":   settings.NotificationsEnabled,
+			"updated_at":              now,
+		}
+
+		// Debug: log what we're saving
+		c.logger.Debug("Updating settings",
+			zap.String("nim_len", fmt.Sprintf("%d", len(settings.NimApiKeyEncrypted))),
+			zap.String("openai_len", fmt.Sprintf("%d", len(settings.OpenaiApiKeyEncrypted))),
+			zap.String("anthropic_len", fmt.Sprintf("%d", len(settings.AnthropicApiKeyEncrypted))))
+
+		jsonData, err := json.Marshal(updateData)
+		if err != nil {
+			return fmt.Errorf("failed to marshal settings: %w", err)
+		}
+
+		c.logger.Debug("Saving settings JSON", zap.String("json", string(jsonData)))
+
+		mu := &api.Mutation{
+			CommitNow: true,
+			SetJson:   jsonData,
+		}
+
+		_, err = txn.Mutate(ctx, mu)
+		if err != nil {
+			return fmt.Errorf("failed to update user settings: %w", err)
+		}
+	} else {
+		// Create new settings node with a named blank node for UID tracking
+		// Use a unique blank node identifier that we can reference
+		settingsData := map[string]interface{}{
+			"uid":                      "_:newSettings",
+			"dgraph.type":              "UserSettings",
+			"nim_api_key_encrypted":    settings.NimApiKeyEncrypted,
+			"openai_api_key_encrypted": settings.OpenaiApiKeyEncrypted,
+			"anthropic_api_key_encrypted": settings.AnthropicApiKeyEncrypted,
+			"theme":                    settings.Theme,
+			"notifications_enabled":    settings.NotificationsEnabled,
+			"updated_at":               now,
+		}
+
+		jsonData, err := json.Marshal(settingsData)
+		if err != nil {
+			return fmt.Errorf("failed to marshal settings: %w", err)
+		}
+
+		mu := &api.Mutation{
+			CommitNow: false, // Don't commit yet, we need the UID
+			SetJson:   jsonData,
+		}
+
+		assigned, err := txn.Mutate(ctx, mu)
+		if err != nil {
+			return fmt.Errorf("failed to create user settings: %w", err)
+		}
+
+		// Get the UID of the newly created settings node using our named blank node
+		settingsUID := assigned.Uids["newSettings"]
+		if settingsUID == "" {
+			return fmt.Errorf("failed to get UID for new settings node")
+		}
+
+		// Step 2: Create the edge from user to settings using N-Quad
+		// This is simpler for just adding an edge
+		edgeNquad := fmt.Sprintf("<%s> <user_settings> <%s> .\n", userNode.UID, settingsUID)
+		muEdge := &api.Mutation{
+			CommitNow: true,
+			SetNquads: []byte(edgeNquad),
+		}
+
+		_, err = txn.Mutate(ctx, muEdge)
+		if err != nil {
+			return fmt.Errorf("failed to link settings to user: %w", err)
+		}
+	}
+
+	c.logger.Info("User settings stored",
+		zap.String("user", userID),
+		zap.Bool("has_nim_key", settings.NimApiKeyEncrypted != ""),
+		zap.Bool("has_openai_key", settings.OpenaiApiKeyEncrypted != ""))
+
+	return nil
+}
+
+// GetUserSettings retrieves user settings from DGraph
+// Returns empty UserSettings if not found (not an error)
+func (c *Client) GetUserSettings(ctx context.Context, userID string) (*UserSettings, error) {
+	// Find the User node first
+	userNode, err := c.FindNodeByName(ctx, fmt.Sprintf("user_%s", userID), userID, NodeTypeUser)
+	if err != nil || userNode == nil {
+		c.logger.Debug("User node not found", zap.String("user", userID))
+		return &UserSettings{UserID: userID}, nil // Return empty settings, not an error
+	}
+
+	c.logger.Debug("Found user node for settings lookup", zap.String("user", userID), zap.String("uid", userNode.UID))
+
+	// Query the User node directly and traverse user_settings edge
+	// This avoids needing a reverse edge on user_settings predicate
+	query := `query GetSettings($user: string) {
+		user(func: uid($user)) {
+			user_settings {
+				uid
+				nim_api_key_encrypted
+				openai_api_key_encrypted
+				anthropic_api_key_encrypted
+				theme
+				notifications_enabled
+				updated_at
+			}
+		}
+	}`
+
+	c.logger.Debug("Executing settings query", zap.String("user_uid", userNode.UID))
+
+	resp, err := c.Query(ctx, query, map[string]string{"$user": userNode.UID})
+	if err != nil {
+		c.logger.Warn("Settings query failed", zap.Error(err), zap.String("user", userID))
+		return &UserSettings{UserID: userID}, nil // Return empty settings on query error
+	}
+
+	c.logger.Debug("Settings query response", zap.String("response", string(resp)))
+
+	var result struct {
+		User []struct {
+			UserSettings []struct {
+				UID                     string `json:"uid"`
+				NimApiKeyEncrypted     string `json:"nim_api_key_encrypted"`
+				OpenaiApiKeyEncrypted  string `json:"openai_api_key_encrypted"`
+				AnthropicApiKeyEncrypted string `json:"anthropic_api_key_encrypted"`
+				Theme                    string `json:"theme"`
+				NotificationsEnabled    bool   `json:"notifications_enabled"`
+				UpdatedAt               string `json:"updated_at"`
+			} `json:"user_settings"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		c.logger.Warn("Failed to unmarshal settings", zap.Error(err))
+		return &UserSettings{UserID: userID}, nil
+	}
+
+	// Extract settings from the nested structure
+	var settingsList []struct {
+		UID                     string `json:"uid"`
+		NimApiKeyEncrypted     string `json:"nim_api_key_encrypted"`
+		OpenaiApiKeyEncrypted  string `json:"openai_api_key_encrypted"`
+		AnthropicApiKeyEncrypted string `json:"anthropic_api_key_encrypted"`
+		Theme                    string `json:"theme"`
+		NotificationsEnabled    bool   `json:"notifications_enabled"`
+		UpdatedAt               string `json:"updated_at"`
+	}
+	if len(result.User) > 0 && len(result.User[0].UserSettings) > 0 {
+		settingsList = result.User[0].UserSettings
+	}
+
+	c.logger.Debug("Settings found", zap.Int("count", len(settingsList)))
+
+	if len(settingsList) == 0 {
+		// No settings found, return defaults
+		c.logger.Debug("No settings found for user, returning defaults", zap.String("user", userID))
+		return &UserSettings{
+			UserID:               userID,
+			Theme:                "dark",
+			NotificationsEnabled: true,
+		}, nil
+	}
+
+	s := settingsList[0]
+	updatedAt, _ := time.Parse(time.RFC3339, s.UpdatedAt)
+
+	c.logger.Debug("Returning settings", zap.String("user", userID), zap.Bool("has_nim_key", s.NimApiKeyEncrypted != ""))
+
+	return &UserSettings{
+		UserID:                  userID,
+		NimApiKeyEncrypted:     s.NimApiKeyEncrypted,
+		OpenaiApiKeyEncrypted:  s.OpenaiApiKeyEncrypted,
+		AnthropicApiKeyEncrypted: s.AnthropicApiKeyEncrypted,
+		Theme:                   s.Theme,
+		NotificationsEnabled:    s.NotificationsEnabled,
+		UpdatedAt:               updatedAt,
+	}, nil
+}
+
+// DeleteUserAPIKey removes an API key from a user's settings
+func (c *Client) DeleteUserAPIKey(ctx context.Context, userID, provider string) error {
+	// Find the User node first
+	userNode, err := c.FindNodeByName(ctx, fmt.Sprintf("user_%s", userID), userID, NodeTypeUser)
+	if err != nil || userNode == nil {
+		return fmt.Errorf("user not found: %s", userID)
+	}
+
+	// Find settings node using direct edge traversal
+	query := `query GetSettings($user: string) {
+		user(func: uid($user)) {
+			user_settings {
+				uid
+			}
+		}
+	}`
+	resp, err := c.Query(ctx, query, map[string]string{"$user": userNode.UID})
+	if err != nil {
+		return err
+	}
+
+	var existingResult struct {
+		User []struct {
+			UserSettings []struct {
+				UID string `json:"uid"`
+			} `json:"user_settings"`
+		} `json:"user"`
+	}
+	json.Unmarshal(resp, &existingResult)
+
+	if len(existingResult.User) == 0 || len(existingResult.User[0].UserSettings) == 0 {
+		return nil // No settings to delete from
+	}
+
+	settingsUID := existingResult.User[0].UserSettings[0].UID
+
+	// Clear the specific API key field
+	var predicateName string
+	switch provider {
+	case "nim":
+		predicateName = "nim_api_key_encrypted"
+	case "openai":
+		predicateName = "openai_api_key_encrypted"
+	case "anthropic":
+		predicateName = "anthropic_api_key_encrypted"
+	default:
+		return fmt.Errorf("unknown provider: %s", provider)
+	}
+
+	// Use JSON mutation to set to empty string (we treat empty as deleted)
+	deleteData := map[string]interface{}{
+		"uid":         settingsUID,
+		predicateName: "",
+	}
+	jsonData, _ := json.Marshal(deleteData)
+
+	txn := c.dg.NewTxn()
+	defer txn.Discard(ctx)
+
+	mu := &api.Mutation{
+		SetJson:   jsonData,
+		CommitNow: true,
+	}
+
+	_, err = txn.Mutate(ctx, mu)
+	if err != nil {
+		return fmt.Errorf("failed to delete API key: %w", err)
+	}
+
+	c.logger.Info("User API key deleted",
+		zap.String("user", userID),
+		zap.String("provider", provider))
+
+	return nil
 }

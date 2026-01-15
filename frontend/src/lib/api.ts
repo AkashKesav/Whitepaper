@@ -104,7 +104,8 @@ export const api = {
     // Dashboard Data
     getStats: async (): Promise<DashboardStats> => {
         try {
-            const res = await fetch(`${API_BASE_URL}/api/dashboard/stats`);
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/dashboard/stats`, { headers });
             if (!res.ok) throw new Error("Failed to fetch stats");
             return await res.json();
         } catch (e) {
@@ -127,7 +128,8 @@ export const api = {
 
     getIngestionStats: async (): Promise<IngestionStats> => {
         try {
-            const res = await fetch(`${API_BASE_URL}/api/dashboard/ingestion`);
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/dashboard/ingestion`, { headers });
             if (!res.ok) throw new Error("Failed to fetch ingestion stats");
             return await res.json();
         } catch (e) {
@@ -290,9 +292,10 @@ export const api = {
     // Kernel Operations
     spreadActivation: async (startNode: string, depth: number = 3): Promise<SpreadActivationResult> => {
         try {
+            const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() } as Record<string, string>;
             const res = await fetch(`${API_BASE_URL}/api/graph/spread-activation`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ start_node: startNode, max_depth: depth }),
             });
             if (!res.ok) throw new Error("Spread activation failed");
@@ -305,9 +308,10 @@ export const api = {
 
     detectCommunities: async (): Promise<CommunityResult> => {
         try {
+            const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() } as Record<string, string>;
             const res = await fetch(`${API_BASE_URL}/api/graph/community`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({}),
             });
             if (!res.ok) throw new Error("Community detection failed");
@@ -320,9 +324,10 @@ export const api = {
 
     temporalQuery: async (lookbackDays: number = 30): Promise<TemporalQueryResult> => {
         try {
+            const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() } as Record<string, string>;
             const res = await fetch(`${API_BASE_URL}/api/graph/temporal`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ lookback_days: lookbackDays }),
             });
             if (!res.ok) throw new Error("Temporal query failed");
@@ -335,9 +340,10 @@ export const api = {
 
     expandNode: async (nodeId: string, maxHops: number = 2): Promise<GraphData> => {
         try {
+            const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() } as Record<string, string>;
             const res = await fetch(`${API_BASE_URL}/api/graph/expand`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ node_id: nodeId, max_hops: maxHops }),
             });
             if (!res.ok) throw new Error("Node expansion failed");
@@ -360,6 +366,23 @@ export const api = {
             console.error("Reflection error:", e);
             return { success: false, insights: [] };
         }
+    },
+
+    // Conversations
+    getConversations: async (): Promise<{ conversations: any[] }> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        const res = await fetch(`${API_BASE_URL}/api/conversations`, { headers });
+        if (!res.ok) throw new Error("Failed to fetch conversations");
+        return await res.json();
+    },
+
+    deleteConversation: async (conversationId: string): Promise<void> => {
+        const headers = getAuthHeaders() as Record<string, string>;
+        const res = await fetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
+            method: 'DELETE',
+            headers
+        });
+        if (!res.ok) throw new Error("Failed to delete conversation");
     },
 
     // Chat
@@ -435,7 +458,8 @@ export const api = {
 
     searchEntities: async (query: string): Promise<GraphNode[]> => {
         try {
-            const res = await fetch(`${API_BASE_URL}/api/search?q=${encodeURIComponent(query)}`);
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/search?q=${encodeURIComponent(query)}`, { headers });
             if (!res.ok) throw new Error("Search failed");
             return await res.json();
         } catch (e) {
@@ -709,6 +733,61 @@ export const api = {
                 headers
             });
             if (!res.ok) throw new Error("Failed to deny request");
+        }
+    },
+
+    // User Settings (Per-user encrypted API key storage)
+    userSettings: {
+        // Get current user's settings (API keys are NOT returned, only status)
+        getSettings: async (): Promise<{
+            has_nim_key: boolean;
+            has_openai_key: boolean;
+            has_anthropic_key: boolean;
+            theme: string;
+            notifications_enabled: boolean;
+            updated_at: string;
+        }> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/user/settings`, { headers });
+            if (!res.ok) throw new Error("Failed to fetch user settings");
+            return await res.json();
+        },
+
+        // Save user settings (API keys encrypted on backend)
+        saveSettings: async (settings: {
+            nim_api_key?: string;
+            openai_api_key?: string;
+            anthropic_api_key?: string;
+            theme?: string;
+        }): Promise<void> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/user/settings`, {
+                method: 'PUT',
+                headers,
+                body: JSON.stringify(settings),
+            });
+            if (!res.ok) throw new Error("Failed to save user settings");
+        },
+
+        // Delete an API key
+        deleteAPIKey: async (provider: 'nim' | 'openai' | 'anthropic'): Promise<void> => {
+            const headers = getAuthHeaders() as Record<string, string>;
+            const res = await fetch(`${API_BASE_URL}/api/user/settings/keys/${provider}`, {
+                method: 'DELETE',
+                headers
+            });
+            if (!res.ok) throw new Error("Failed to delete API key");
+        },
+
+        // Test NIM API key connection (before saving)
+        testNIMConnection: async (apiKey: string): Promise<{ success: boolean; message?: string; model?: string }> => {
+            const res = await fetch(`${API_BASE_URL}/api/test/nim`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ api_key: apiKey }),
+            });
+            if (!res.ok) throw new Error("Connection test failed");
+            return await res.json();
         }
     }
 };

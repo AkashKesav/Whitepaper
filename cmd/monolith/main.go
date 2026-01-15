@@ -21,6 +21,36 @@ import (
 	"github.com/reflective-memory-kernel/internal/precortex"
 )
 
+// spaHandler implements http.Handler for Single Page Application support
+type spaHandler struct {
+	staticDir http.FileSystem
+}
+
+func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Try to serve the file directly
+	path := r.URL.Path
+	// Prevent directory traversal
+	if strings.Contains(path, "..") {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Check if file exists
+	file, err := h.staticDir.Open(path)
+	if err == nil {
+		stat, _ := file.Stat()
+		// If it's a file (not a directory), serve it
+		if !stat.IsDir() {
+			http.FileServer(h.staticDir).ServeHTTP(w, r)
+			return
+		}
+		file.Close()
+	}
+
+	// Otherwise serve index.html for SPA routing
+	http.ServeFile(w, r, "./static/index.html")
+}
+
 // ollamaEmbedderAdapter wraps local.OllamaEmbedder to implement precortex.Embedder
 type ollamaEmbedderAdapter struct {
 	embedder *local.OllamaEmbedder
@@ -208,7 +238,9 @@ func main() {
 	// Serve static files for web UI (must be after API routes to avoid conflicts)
 	staticDir := "./static"
 	if _, err := os.Stat(staticDir); err == nil {
-		router.PathPrefix("/").Handler(http.FileServer(http.Dir(staticDir)))
+		// SPA fallback: serve index.html for non-file routes
+		spaHandler := &spaHandler{staticDir: http.Dir(staticDir)}
+		router.PathPrefix("/").Handler(spaHandler)
 		logger.Info("Serving static files from", zap.String("dir", staticDir))
 	}
 

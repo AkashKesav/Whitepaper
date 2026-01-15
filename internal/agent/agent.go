@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,7 @@ type Agent struct {
 	mkClient      *MKClient
 	aiClient      *AIClient
 	RedisClient   *redis.Client         // Exposed for user authentication
+	crypto        *Crypto               // Encryption/decryption for user API keys
 	preCortex     *precortex.PreCortex  // Cognitive firewall for cost reduction
 	PolicyManager *policy.PolicyManager // Policy enforcement
 
@@ -126,6 +128,18 @@ func (a *Agent) Start() error {
 	if err := a.RedisClient.Ping(a.ctx).Err(); err != nil {
 		a.logger.Warn("Failed to connect to Redis for auth, user credentials will not persist", zap.Error(err))
 		// Don't fail startup - just continue without auth persistence
+	}
+
+	// Initialize crypto for user API key encryption
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		jwtSecret = "default-dev-secret-change-in-production" // Fallback for development
+		a.logger.Warn("Using default JWT secret for crypto - set JWT_SECRET in production")
+	}
+	a.crypto, err = NewCrypto(jwtSecret, a.logger.Named("crypto"))
+	if err != nil {
+		a.logger.Warn("Failed to initialize crypto, per-user API keys will be disabled", zap.Error(err))
+		a.crypto = nil
 	}
 
 	a.logger.Info("Front-End Agent started successfully")
@@ -302,7 +316,21 @@ func (a *Agent) Chat(ctx context.Context, userID, conversationID, namespace, mes
 			zap.Int("facts_count", len(mkResponse.RelevantFacts)))
 	}
 
-	response, err := a.aiClient.GenerateResponse(ctx, message, contextBrief, proactiveAlerts)
+	// Get user's API keys for this request (for per-user billing)
+	var userAPIKeys map[string]string
+	if a.crypto != nil {
+		keys, err := a.getUserAPIKeys(ctx, userID)
+		if err != nil {
+			a.logger.Debug("Could not get user API keys, using defaults", zap.Error(err))
+		} else if len(keys) > 0 {
+			userAPIKeys = keys
+			a.logger.Info("Using user's API keys for request",
+				zap.String("user", userID),
+				zap.Int("keys_provided", len(keys)))
+		}
+	}
+
+	response, err := a.aiClient.GenerateResponseWithUserKeys(ctx, message, contextBrief, proactiveAlerts, userAPIKeys)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate response: %w", err)
 	}
@@ -531,4 +559,83 @@ func (a *Agent) getUserGroupsForPolicy(ctx context.Context, userID string) []str
 		}
 	}
 	return nil // No groups - policy will evaluate without group context
+}
+
+// getUserAPIKeys retrieves and decrypts user's stored API keys
+// Returns map of provider -> API key (e.g., "nim" -> "nvapi-...")
+func (a *Agent) getUserAPIKeys(ctx context.Context, userID string) (map[string]string, error) {
+	if a.crypto == nil {
+		return nil, fmt.Errorf("crypto not initialized")
+	}
+	if a.mkClient == nil {
+		return nil, fmt.Errorf("memory kernel client not initialized")
+	}
+
+	settings, err := a.mkClient.GetUserSettings(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user settings: %w", err)
+	}
+
+	keys := make(map[string]string)
+
+	// Decrypt NIM API key
+	if settings.NimApiKeyEncrypted != "" {
+		decrypted, err := a.crypto.Decrypt(settings.NimApiKeyEncrypted)
+		if err != nil {
+			a.logger.Warn("Failed to decrypt NIM API key", zap.Error(err))
+		} else {
+			keys["nim"] = decrypted
+			a.logger.Debug("Using user's NIM API key",
+				zap.String("user", userID),
+				zap.String("key_preview", MaskAPIKey(decrypted)))
+		}
+	}
+
+	// Decrypt OpenAI API key
+	if settings.OpenaiApiKeyEncrypted != "" {
+		decrypted, err := a.crypto.Decrypt(settings.OpenaiApiKeyEncrypted)
+		if err != nil {
+			a.logger.Warn("Failed to decrypt OpenAI API key", zap.Error(err))
+		} else {
+			keys["openai"] = decrypted
+			a.logger.Debug("Using user's OpenAI API key",
+				zap.String("user", userID),
+				zap.String("key_preview", MaskAPIKey(decrypted)))
+		}
+	}
+
+	// Decrypt Anthropic API key
+	if settings.AnthropicApiKeyEncrypted != "" {
+		decrypted, err := a.crypto.Decrypt(settings.AnthropicApiKeyEncrypted)
+		if err != nil {
+			a.logger.Warn("Failed to decrypt Anthropic API key", zap.Error(err))
+		} else {
+			keys["anthropic"] = decrypted
+			a.logger.Debug("Using user's Anthropic API key",
+				zap.String("user", userID),
+				zap.String("key_preview", MaskAPIKey(decrypted)))
+		}
+	}
+
+	return keys, nil
+}
+
+// GetMKClient returns the Memory Kernel client (for MCP handlers)
+func (a *Agent) GetMKClient() *MKClient {
+	return a.mkClient
+}
+
+// GetGraphClient returns the graph client (for MCP handlers)
+func (a *Agent) GetGraphClient() *graph.Client {
+	if a.mkClient != nil {
+		return a.mkClient.GetGraphClient()
+	}
+	return nil
+}
+
+// GetConversation returns a conversation by ID (for MCP handlers)
+func (a *Agent) GetConversation(conversationID string) *Conversation {
+	a.convMu.RLock()
+	defer a.convMu.RUnlock()
+	return a.conversations[conversationID]
 }

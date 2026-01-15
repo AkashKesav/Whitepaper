@@ -62,30 +62,46 @@ class LLMRouter:
         model: str = None,
         format: str = None,
         system_instruction: str = None,
+        user_api_keys: dict = None,
     ) -> str:
-        """Route query to the configured LLM provider."""
+        """Route query to the configured LLM provider.
+
+        Args:
+            query: User query
+            context: Memory context
+            alerts: Proactive alerts
+            provider: LLM provider to use
+            model: Model name
+            format: Response format
+            system_instruction: Custom system instruction
+            user_api_keys: Dict of provider -> API key (e.g., {"nim": "nvapi-..."})
+        """
         # Use default provider if none specified
         provider = provider or self.default_provider
-        
+
         # Use provided system instruction or build default one
         system = system_instruction or self._build_system_prompt(context, alerts)
-        
-        print(f"DEBUG: Using provider={provider}, model={model}", flush=True)
+
+        print(f"DEBUG: Using provider={provider}, model={model}, user_keys_provided={user_api_keys is not None}", flush=True)
 
         if provider == "glm":
-            return await self._call_glm(system, query, model or "glm-4.5")
+            glm_key = user_api_keys.get("glm") if user_api_keys else self.glm_key
+            return await self._call_glm(system, query, model or "glm-4.5", glm_key)
         if provider == "nvidia":
-            return await self._call_nvidia(system, query, model or "meta/llama-3.1-70b-instruct")
+            nvidia_key = user_api_keys.get("nim") if user_api_keys else self.nvidia_key
+            return await self._call_nvidia(system, query, model or "meta/llama-3.1-70b-instruct", nvidia_key)
         elif provider == "openai":
-            return await self._call_openai(system, query, model or "gpt-4o-mini")
+            openai_key = user_api_keys.get("openai") if user_api_keys else self.openai_key
+            return await self._call_openai(system, query, model or "gpt-4o-mini", openai_key)
         elif provider == "anthropic":
-            return await self._call_anthropic(system, query, model or "claude-3-haiku-20240307")
+            anthropic_key = user_api_keys.get("anthropic") if user_api_keys else self.anthropic_key
+            return await self._call_anthropic(system, query, model or "claude-3-haiku-20240307", anthropic_key)
         elif provider == "ollama":
             return await self._call_ollama(system, query, model or "llama3.2")
         else:
             # Fallback to GLM or Ollama for local dev
             if self.glm_key:
-                return await self._call_glm(system, query, model or "glm-4-plus")
+                return await self._call_glm(system, query, model or "glm-4-plus", self.glm_key)
             return await self._call_ollama(system, query, model or "llama3.2")
 
     def _build_system_prompt(self, context: Optional[str], alerts: list) -> str:
@@ -242,17 +258,29 @@ class LLMRouter:
             response.raise_for_status()
             return response.json()["choices"][0]["message"]["content"]
 
-    async def _call_nvidia(self, system: str, query: str, model: str) -> str:
-        """Call NVIDIA NIM API (OpenAI-compatible)."""
+    async def _call_nvidia(self, system: str, query: str, model: str, api_key: str = None) -> str:
+        """Call NVIDIA NIM API (OpenAI-compatible).
+
+        Args:
+            system: System prompt
+            query: User query
+            model: Model name
+            api_key: API key (uses self.nvidia_key if None)
+        """
+        # Use provided API key or fall back to default
+        key = api_key or self.nvidia_key
+        if not key:
+            raise ValueError("No NVIDIA API key available")
+
         # Use explicit timeout to prevent ReadTimeout on slow LLM responses
         timeout = httpx.Timeout(180.0, connect=30.0, read=180.0, write=30.0)
         try:
-            print(f"DEBUG _call_nvidia: key_present={bool(self.nvidia_key)}, key_len={len(self.nvidia_key) if self.nvidia_key else 0}, model={model}", flush=True)
+            print(f"DEBUG _call_nvidia: key_present={bool(key)}, key_len={len(key) if key else 0}, model={model}", flush=True)
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
                     "https://integrate.api.nvidia.com/v1/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {self.nvidia_key}",
+                        "Authorization": f"Bearer {key}",
                         "Content-Type": "application/json",
                     },
                     json={
@@ -309,15 +337,26 @@ class LLMRouter:
                 print(f"DEBUG: Ollama call failed: {e}", flush=True)
                 return f"Error: Ollama not available. Please ensure Ollama is running with 'ollama serve' and has the model '{model}' downloaded."
 
-    async def _call_glm(self, system: str, query: str, model: str) -> str:
-        """Call GLM (Zhipu AI) API - OpenAI compatible."""
+    async def _call_glm(self, system: str, query: str, model: str, api_key: str = None) -> str:
+        """Call GLM (Zhipu AI) API - OpenAI compatible.
+
+        Args:
+            system: System prompt
+            query: User query
+            model: Model name
+            api_key: API key (uses self.glm_key if None)
+        """
+        key = api_key or self.glm_key
+        if not key:
+            raise ValueError("No GLM API key available")
+
         timeout = httpx.Timeout(60.0, connect=10.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 response = await client.post(
                     "https://open.bigmodel.cn/api/paas/v4/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {self.glm_key}",
+                        "Authorization": f"Bearer {key}",
                         "Content-Type": "application/json",
                     },
                     json={
@@ -336,12 +375,23 @@ class LLMRouter:
                 print(f"DEBUG: GLM call failed: {e}", flush=True)
                 return f"Error: GLM API call failed - {str(e)}"
 
-    async def _call_openai(self, system: str, query: str, model: str) -> str:
-        """Call OpenAI API."""
+    async def _call_openai(self, system: str, query: str, model: str, api_key: str = None) -> str:
+        """Call OpenAI API.
+
+        Args:
+            system: System prompt
+            query: User query
+            model: Model name
+            api_key: API key (uses self.openai_key if None)
+        """
+        key = api_key or self.openai_key
+        if not key:
+            raise ValueError("No OpenAI API key available")
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {self.openai_key}"},
+                headers={"Authorization": f"Bearer {key}"},
                 json={
                     "model": model,
                     "messages": [
@@ -356,13 +406,24 @@ class LLMRouter:
             data = response.json()
             return data["choices"][0]["message"]["content"]
 
-    async def _call_anthropic(self, system: str, query: str, model: str) -> str:
-        """Call Anthropic API."""
+    async def _call_anthropic(self, system: str, query: str, model: str, api_key: str = None) -> str:
+        """Call Anthropic API.
+
+        Args:
+            system: System prompt
+            query: User query
+            model: Model name
+            api_key: API key (uses self.anthropic_key if None)
+        """
+        key = api_key or self.anthropic_key
+        if not key:
+            raise ValueError("No Anthropic API key available")
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
-                    "x-api-key": self.anthropic_key,
+                    "x-api-key": key,
                     "anthropic-version": "2023-06-01",
                 },
                 json={

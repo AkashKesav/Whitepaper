@@ -30,8 +30,8 @@ WORKDIR /app
 # Copy binary
 COPY --from=builder /monolith /app/monolith
 
-# Copy static assets
-COPY static/ /app/static/
+# Copy frontend assets (built React app)
+COPY frontend/dist/ /app/static/
 
 # Expose port
 EXPOSE 9090

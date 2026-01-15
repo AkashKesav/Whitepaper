@@ -18,22 +18,29 @@ interface Message {
 
 interface Conversation {
     id: string;
-    title: string;
-    lastMessage: string;
-    timestamp: Date;
+    title?: string;
+    last_message?: string;
+    created_at?: string;
+    updated_at?: string;
+    // For UI display
+    timestamp?: Date;
     unread?: boolean;
 }
 
-// Mock conversations
-const mockConversations: Conversation[] = [
-    { id: '1', title: 'Project Planning', lastMessage: 'Let me check the team availability...', timestamp: new Date(), unread: true },
-    { id: '2', title: 'Research Notes', lastMessage: 'Based on the previous discussion...', timestamp: new Date(Date.now() - 3600000) },
-    { id: '3', title: 'Meeting Summary', lastMessage: 'Here are the key takeaways...', timestamp: new Date(Date.now() - 86400000) },
-];
-
 export const Chat: React.FC = () => {
     const { user } = useAuth();
-    const [selectedConversation, setSelectedConversation] = useState<string | null>('1');
+    const queryClient = useQueryClient();
+
+    // Fetch conversations from API
+    const { data: conversationsData, isLoading: conversationsLoading, refetch: refetchConversations } = useQuery({
+        queryKey: ['conversations'],
+        queryFn: () => api.getConversations(),
+        retry: false,
+    });
+
+    const conversations = conversationsData?.conversations || [];
+
+    const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
     const [messages, setMessages] = useState<Message[]>([
         { id: '1', role: 'assistant', content: 'Hello! I\'m your AI assistant with persistent memory. How can I help you today?', timestamp: new Date() },
     ]);
@@ -81,6 +88,8 @@ export const Chat: React.FC = () => {
             if (data.conversation_id && data.conversation_id !== selectedConversation) {
                 setSelectedConversation(data.conversation_id);
             }
+            // Refetch conversations to show latest
+            refetchConversations();
         } catch (error) {
             console.error('Chat error:', error);
             const errorMessage: Message = {
@@ -95,8 +104,8 @@ export const Chat: React.FC = () => {
         }
     };
 
-    const filteredConversations = mockConversations.filter(c =>
-        c.title.toLowerCase().includes(searchQuery.toLowerCase())
+    const filteredConversations = conversations.filter((c: Conversation) =>
+        (c.title || 'New Conversation').toLowerCase().includes(searchQuery.toLowerCase())
     );
 
     return (
@@ -131,37 +140,46 @@ export const Chat: React.FC = () => {
 
                 {/* Conversation List */}
                 <div className="flex-1 overflow-y-auto p-2">
-                    {filteredConversations.map((conv) => (
-                        <button
-                            key={conv.id}
-                            onClick={() => setSelectedConversation(conv.id)}
-                            className={cn(
-                                "w-full p-3 rounded-xl text-left transition-all mb-1",
-                                selectedConversation === conv.id
-                                    ? "bg-white/10"
-                                    : "hover:bg-white/5"
-                            )}
-                        >
-                            <div className="flex items-start gap-3">
-                                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center flex-shrink-0">
-                                    <MessageCircle className="w-5 h-5 text-white" />
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="flex items-center justify-between">
-                                        <span className={cn("font-medium text-sm", conv.unread ? "text-white" : "text-white/80")}>
-                                            {conv.title}
-                                        </span>
-                                        {conv.unread && (
-                                            <span className="w-2 h-2 rounded-full bg-blue-500" />
-                                        )}
+                    {conversationsLoading ? (
+                        <div className="text-center text-white/50 py-8">Loading conversations...</div>
+                    ) : filteredConversations.length === 0 ? (
+                        <div className="text-center text-white/50 py-8">
+                            <p>No conversations yet</p>
+                            <p className="text-xs mt-2">Start a new conversation below</p>
+                        </div>
+                    ) : (
+                        filteredConversations.map((conv: Conversation) => (
+                            <button
+                                key={conv.id}
+                                onClick={() => setSelectedConversation(conv.id)}
+                                className={cn(
+                                    "w-full p-3 rounded-xl text-left transition-all mb-1",
+                                    selectedConversation === conv.id
+                                        ? "bg-white/10"
+                                        : "hover:bg-white/5"
+                                )}
+                            >
+                                <div className="flex items-start gap-3">
+                                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center flex-shrink-0">
+                                        <MessageCircle className="w-5 h-5 text-white" />
                                     </div>
-                                    <p className="text-xs text-white/50 truncate mt-0.5">
-                                        {conv.lastMessage}
-                                    </p>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex items-center justify-between">
+                                            <span className={cn("font-medium text-sm", conv.unread ? "text-white" : "text-white/80")}>
+                                                {conv.title || 'New Conversation'}
+                                            </span>
+                                            {conv.unread && (
+                                                <span className="w-2 h-2 rounded-full bg-blue-500" />
+                                            )}
+                                        </div>
+                                        <p className="text-xs text-white/50 truncate mt-0.5">
+                                            {conv.last_message || 'Start chatting...'}
+                                        </p>
+                                    </div>
                                 </div>
-                            </div>
-                        </button>
-                    ))}
+                            </button>
+                        ))
+                    )}
                 </div>
 
                 {/* Bottom Nav */}

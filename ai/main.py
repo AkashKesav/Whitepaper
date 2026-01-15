@@ -122,6 +122,7 @@ class GenerateRequest(BaseModel):
     query: str
     context: Optional[str] = None
     proactive_alerts: Optional[list] = []
+    user_api_keys: Optional[dict] = None  # Per-user API keys (e.g., {"nim": "nvapi-..."})
 
 
 class GenerateResponse(BaseModel):
@@ -559,10 +560,21 @@ async def synthesize_insight(request: InsightRequest):
 
 @app.post("/generate", response_model=GenerateResponse)
 async def generate_response(request: GenerateRequest):
-    """Generate a conversational response."""
+    """Generate a conversational response.
+
+    Supports per-user API keys via user_api_keys parameter:
+    - {"nim": "nvapi-..."} for NVIDIA NIM
+    - {"openai": "sk-..."} for OpenAI
+    - {"anthropic": "sk-ant-..."} for Anthropic
+    - {"glm": "..."} for GLM (Zhipu AI)
+    """
     try:
         # Debug: verify LLMRouter state
-        print(f"DEBUG /generate: nvidia_key_present={bool(app.state.llm_router.nvidia_key)}, key_len={len(app.state.llm_router.nvidia_key) if app.state.llm_router.nvidia_key else 0}", flush=True)
+        user_keys_info = ""
+        if request.user_api_keys:
+            providers = list(request.user_api_keys.keys())
+            user_keys_info = f", user_keys_providers={providers}"
+        print(f"DEBUG /generate: nvidia_key_present={bool(app.state.llm_router.nvidia_key)}, key_len={len(app.state.llm_router.nvidia_key) if app.state.llm_router.nvidia_key else 0}{user_keys_info}", flush=True)
         print(f"DEBUG /generate: query='{request.query[:50]}...' context_len={len(request.context) if request.context else 0}", flush=True)
         if request.context:
             print(f"DEBUG /generate CONTEXT: {request.context[:200]}...", flush=True)
@@ -570,6 +582,7 @@ async def generate_response(request: GenerateRequest):
             query=request.query,
             context=request.context,
             alerts=request.proactive_alerts,
+            user_api_keys=request.user_api_keys,
         )
         return GenerateResponse(response=response)
     except Exception as e:

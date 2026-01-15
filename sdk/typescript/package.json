@@ -1,0 +1,46 @@
+{
+  "name": "@rmk/sdk",
+  "version": "1.0.0",
+  "description": "Reflective Memory Kernel TypeScript/JavaScript SDK",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "prepublishOnly": "npm run build",
+    "test": "vitest",
+    "example": "tsx examples/basic.ts"
+  },
+  "keywords": [
+    "rmk",
+    "memory-kernel",
+    "knowledge-graph",
+    "mcp",
+    "ai"
+  ],
+  "author": "Reflective Memory Kernel",
+  "license": "MIT",
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

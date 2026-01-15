@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -29,6 +30,7 @@ type Server struct {
 	upgrader       websocket.Upgrader
 	allowedOrigins []string  // Allowed origins for WebSocket connections
 	groupLock      *GroupLockManager // Distributed lock manager for group operations
+	crypto         *Crypto    // Encryption/decryption for sensitive user data
 }
 
 // NewServer creates a new HTTP server for the agent
@@ -45,11 +47,24 @@ func NewServer(agent *Agent, logger *zap.Logger, allowedOrigins ...string) *Serv
 		groupLock = NewGroupLockManager(agent.RedisClient, logger.Named("group_lock"))
 	}
 
+	// Initialize crypto for sensitive data encryption
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		jwtSecret = "default-dev-secret-change-in-production" // Fallback for development
+		logger.Warn("Using default JWT secret for crypto - set JWT_SECRET in production")
+	}
+	crypto, err := NewCrypto(jwtSecret, logger.Named("crypto"))
+	if err != nil {
+		logger.Warn("Failed to initialize crypto, API key encryption will be disabled", zap.Error(err))
+		crypto = nil
+	}
+
 	return &Server{
 		agent:          agent,
 		logger:         logger,
 		allowedOrigins: origins,
 		groupLock:      groupLock,
+		crypto:         crypto,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				origin := r.Header.Get("Origin")
@@ -96,6 +111,7 @@ func originMatches(origin, pattern string) bool {
 // SetupRoutes configures the HTTP routes
 func (s *Server) SetupRoutes(r *mux.Router) error {
 	s.logger.Info("Registering routes...")
+	fmt.Println("DEBUG: SetupRoutes called")
 
 	// Create JWT middleware (now returns error for security)
 	jwtMiddleware, err := NewJWTMiddleware(s.logger)
@@ -115,6 +131,28 @@ func (s *Server) SetupRoutes(r *mux.Router) error {
 	// Bootstrap endpoint (creates initial admin user if system is empty)
 	// This is a special endpoint that works before any users exist
 	api.HandleFunc("/bootstrap", s.handleBootstrap).Methods("POST")
+
+	// User Settings (Per-user encrypted API key storage) - registering on root router
+	fmt.Println("DEBUG: Registering /profile/settings routes on root router")
+	r.Handle("/api/profile/settings", jwtMiddleware.Middleware(s.rateLimitMiddleware(http.HandlerFunc(s.handleGetUserSettings)))).Methods("GET")
+	r.Handle("/api/profile/settings", jwtMiddleware.Middleware(s.rateLimitMiddleware(http.HandlerFunc(s.handleSaveUserSettings)))).Methods("PUT")
+	r.Handle("/api/profile/settings/keys/{provider}", jwtMiddleware.Middleware(s.rateLimitMiddleware(http.HandlerFunc(s.handleDeleteUserAPIKey)))).Methods("DELETE")
+	fmt.Println("DEBUG: /profile/settings routes registered on root router")
+
+	// Alias routes for /api/user/settings (compatibility with frontend)
+	r.Handle("/api/user/settings", jwtMiddleware.Middleware(s.rateLimitMiddleware(http.HandlerFunc(s.handleGetUserSettings)))).Methods("GET")
+	r.Handle("/api/user/settings", jwtMiddleware.Middleware(s.rateLimitMiddleware(http.HandlerFunc(s.handleSaveUserSettings)))).Methods("PUT")
+	r.Handle("/api/user/settings/keys/{provider}", jwtMiddleware.Middleware(s.rateLimitMiddleware(http.HandlerFunc(s.handleDeleteUserAPIKey)))).Methods("DELETE")
+	fmt.Println("DEBUG: /user/settings alias routes registered")
+
+	// NIM API Key Test endpoint (public, for testing API key before saving)
+	api.HandleFunc("/test/nim", s.handleTestNIM).Methods("POST")
+
+	// TEST: Simple profile endpoint
+	api.HandleFunc("/test/profile", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "profile test works"})
+	}).Methods("GET")
 
 	// Public Routes
 	api.HandleFunc("/register", s.handleRegister).Methods("POST")
@@ -174,6 +212,11 @@ func (s *Server) SetupRoutes(r *mux.Router) error {
 
 	// Health check (public, on root router or api?)
 	r.HandleFunc("/health", s.handleHealth).Methods("GET")
+
+	// MCP (Model Context Protocol) endpoints
+	api.Handle("/mcp", protect(s.handleMCPJSONRPC)).Methods("POST")
+	api.Handle("/mcp/tools", protect(s.handleMCPGetTools)).Methods("GET")
+	api.Handle("/mcp/tools/call", protect(s.handleMCPInvokeTool)).Methods("POST")
 
 	r.Walk(func(route *mux.Route, router *mux.Router, ancestors []*mux.Route) error {
 		pathTemplate, _ := route.GetPathTemplate()
@@ -492,8 +535,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	if req.Namespace != "" {
 		// Direct namespace specification (preferred by frontend)
-		// For group namespaces, verify membership
-		if strings.HasPrefix(req.Namespace, "group_") {
+		// SECURITY: Validate namespace access to prevent cross-namespace access
+		if strings.HasPrefix(req.Namespace, "user_") {
+			// Users can only access their own namespace
+			expectedNamespace := fmt.Sprintf("user_%s", userID)
+			if req.Namespace != expectedNamespace {
+				s.logger.Warn("Attempted cross-namespace access denied",
+					zap.String("user_id", userID),
+					zap.String("requested_namespace", req.Namespace))
+				http.Error(w, "Access denied: you can only access your own namespace", http.StatusForbidden)
+				return
+			}
+		} else if strings.HasPrefix(req.Namespace, "group_") {
+			// Verify group membership
 			isMember, err := s.agent.mkClient.IsWorkspaceMember(r.Context(), req.Namespace, userID)
 			if err != nil {
 				s.logger.Error("Failed to check workspace membership", zap.Error(err))
@@ -501,9 +555,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if !isMember {
+				s.logger.Warn("Attempted group access by non-member",
+					zap.String("user_id", userID),
+					zap.String("requested_namespace", req.Namespace))
 				http.Error(w, "You are not a member of this workspace", http.StatusForbidden)
 				return
 			}
+		} else {
+			// Invalid namespace format
+			s.logger.Warn("Invalid namespace format",
+				zap.String("user_id", userID),
+				zap.String("requested_namespace", req.Namespace))
+			http.Error(w, "Invalid namespace format", http.StatusBadRequest)
+			return
 		}
 		namespace = req.Namespace
 	} else if req.ContextType == "group" && req.ContextID != "" {
@@ -2050,4 +2114,543 @@ func (s *Server) groupOperationRateLimiter() mux.MiddlewareFunc {
 				retryAfter.Round(time.Second)), http.StatusTooManyRequests)
 		})
 	}
+}
+
+// MCP Handlers
+
+// handleMCPJSONRPC handles the main MCP JSON-RPC endpoint
+func (s *Server) handleMCPJSONRPC(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var req struct {
+		JSONRPC string                 `json:"jsonrpc"`
+		ID      interface{}            `json:"id,omitempty"`
+		Method  string                 `json:"method"`
+		Params  map[string]interface{} `json:"params,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.logger.Error("Failed to decode MCP request", zap.Error(err))
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      nil,
+			"error": map[string]interface{}{
+				"code":    -32700,
+				"message": "Parse error",
+			},
+		})
+		return
+	}
+
+	// Handle different MCP methods
+	var result interface{}
+	var err error
+
+	switch req.Method {
+	case "initialize":
+		result = map[string]interface{}{
+			"protocolVersion": "2024-11-05",
+			"capabilities": map[string]interface{}{
+				"tools": map[string]bool{},
+			},
+			"serverInfo": map[string]string{
+				"name":    "reflective-memory-kernel",
+				"version": "1.0.0",
+			},
+		}
+	case "tools/list":
+		result = map[string]interface{}{
+			"tools": []map[string]interface{}{
+				{
+					"name":        "memory_store",
+					"description": "Store a memory in the knowledge graph",
+					"inputSchema": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"content": map[string]interface{}{
+								"type":        "string",
+								"description": "The content to store",
+							},
+							"node_type": map[string]interface{}{
+								"type":        "string",
+								"description": "Type of node (Fact, Entity, Concept, etc.)",
+								"default":     "Fact",
+							},
+						},
+						"required": []string{"content"},
+					},
+				},
+				{
+					"name":        "memory_search",
+					"description": "Search memories in the knowledge graph",
+					"inputSchema": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"query": map[string]interface{}{
+								"type":        "string",
+								"description": "Search query",
+							},
+							"limit": map[string]interface{}{
+								"type":        "integer",
+								"description": "Maximum results",
+								"default":     10,
+							},
+						},
+						"required": []string{"query"},
+					},
+				},
+				{
+					"name":        "chat",
+					"description": "Chat with the AI assistant with memory context",
+					"inputSchema": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"message": map[string]interface{}{
+								"type":        "string",
+								"description": "Message to send",
+							},
+						},
+						"required": []string{"message"},
+					},
+				},
+			},
+		}
+	case "tools/call":
+		name, _ := req.Params["name"].(string)
+		arguments, _ := req.Params["arguments"].(map[string]interface{})
+		result, err = s.handleMCPToolCallInner(r.Context(), name, arguments)
+	case "ping":
+		result = map[string]interface{}{"status": "ok"}
+	default:
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"error": map[string]interface{}{
+				"code":    -32601,
+				"message": fmt.Sprintf("method not found: %s", req.Method),
+			},
+		})
+		return
+	}
+
+	response := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      req.ID,
+	}
+
+	if err != nil {
+		response["error"] = map[string]interface{}{
+			"code":    -32603,
+			"message": err.Error(),
+		}
+	} else {
+		response["result"] = result
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleMCPGetTools handles GET /api/mcp/tools
+func (s *Server) handleMCPGetTools(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	tools := []map[string]interface{}{
+		{
+			"name":        "memory_search",
+			"description": "Search memories in the knowledge graph",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{
+						"type":        "string",
+						"description": "Search query",
+					},
+				},
+				"required": []string{"query"},
+			},
+		},
+		{
+			"name":        "chat",
+			"description": "Chat with the AI assistant with memory context",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"message": map[string]interface{}{
+						"type":        "string",
+						"description": "Message to send",
+					},
+				},
+				"required": []string{"message"},
+			},
+		},
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"tools": tools,
+	})
+}
+
+// handleMCPInvokeTool handles POST /api/mcp/tools/call
+func (s *Server) handleMCPInvokeTool(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var req struct {
+		Name      string                 `json:"name"`
+		Arguments map[string]interface{} `json:"arguments"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": "Invalid request body",
+		})
+		return
+	}
+
+	result, err := s.handleMCPToolCallInner(r.Context(), req.Name, req.Arguments)
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"result": result,
+	})
+}
+
+// handleMCPToolCallInner implements the actual tool calling logic
+func (s *Server) handleMCPToolCallInner(ctx context.Context, name string, arguments map[string]interface{}) (interface{}, error) {
+	userID := GetUserID(ctx)
+	if userID == "" {
+		return nil, fmt.Errorf("unauthorized")
+	}
+
+	namespace := fmt.Sprintf("user_%s", userID)
+
+	s.logger.Info("MCP tool called",
+		zap.String("tool", name),
+		zap.String("user", userID),
+		zap.String("namespace", namespace))
+
+	switch name {
+	case "memory_search":
+		query, _ := arguments["query"].(string)
+		if query == "" {
+			return nil, fmt.Errorf("query is required")
+		}
+
+		// Search memories using MKClient
+		nodes, err := s.agent.mkClient.SearchNodes(ctx, namespace, query)
+		if err != nil {
+			return nil, fmt.Errorf("search failed: %w", err)
+		}
+
+		return map[string]interface{}{
+			"query":   query,
+			"count":   len(nodes),
+			"results": nodes,
+		}, nil
+
+	case "chat":
+		message, _ := arguments["message"].(string)
+		if message == "" {
+			return nil, fmt.Errorf("message is required")
+		}
+
+		// Use the Consult method for chat
+		req := &graph.ConsultationRequest{
+			Namespace: namespace,
+			Query:     message,
+		}
+		response, err := s.agent.mkClient.Consult(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("chat failed: %w", err)
+		}
+
+		return map[string]interface{}{
+			"response":  response.SynthesizedBrief,
+			"facts":     len(response.RelevantFacts),
+			"insights":  len(response.Insights),
+			"confidence": response.Confidence,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unknown tool: %s", name)
+	}
+}
+
+// NIMTestRequest represents a request to test NVIDIA NIM API key
+type NIMTestRequest struct {
+	APIKey string `json:"api_key"`
+}
+
+// NIMTestResponse represents the response from NIM API test
+type NIMTestResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Model   string `json:"model,omitempty"`
+}
+
+// handleTestNIM tests a NVIDIA NIM API key by making a simple chat request
+// POST /api/test/nim
+func (s *Server) handleTestNIM(w http.ResponseWriter, r *http.Request) {
+	var req NIMTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.APIKey == "" {
+		http.Error(w, "API key is required", http.StatusBadRequest)
+		return
+	}
+
+	// Create a test NIM client
+	testClient := NewNIMClient(NIMConfig{
+		APIKey:  req.APIKey,
+		Timeout: 30 * time.Second,
+	}, s.logger.Named("nim_test"))
+
+	// Test with a simple chat request
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	testMessages := []ChatMessage{
+		{Role: "user", Content: "Hello, this is a connection test."},
+	}
+
+	resp, err := testClient.Chat(ctx, testMessages)
+	if err != nil {
+		s.logger.Warn("NIM API key test failed", zap.Error(err))
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(NIMTestResponse{
+			Success: false,
+			Message: fmt.Sprintf("Connection failed: %v", err),
+		})
+		return
+	}
+
+	s.logger.Info("NIM API key test succeeded",
+		zap.String("model", resp.Model),
+		zap.Int("tokens", resp.Usage.TotalTokens))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(NIMTestResponse{
+		Success: true,
+		Message: "Connection successful!",
+		Model:   resp.Model,
+	})
+}
+
+// ============================================================================
+// USER SETTINGS HANDLERS (Per-User Encrypted API Key Storage)
+// ============================================================================
+
+// UserSettingsRequest represents user settings save request
+type UserSettingsRequest struct {
+	NimApiKey      string `json:"nim_api_key,omitempty"`
+	OpenaiApiKey   string `json:"openai_api_key,omitempty"`
+	AnthropicApiKey string `json:"anthropic_api_key,omitempty"`
+	Theme          string `json:"theme,omitempty"`
+}
+
+// UserSettingsResponse represents user settings response (never returns actual keys)
+type UserSettingsResponse struct {
+	HasNimKey            bool   `json:"has_nim_key"`
+	HasOpenaiKey         bool   `json:"has_openai_key"`
+	HasAnthropicKey      bool   `json:"has_anthropic_key"`
+	Theme                string `json:"theme"`
+	NotificationsEnabled bool   `json:"notifications_enabled"`
+	UpdatedAt            string `json:"updated_at"`
+}
+
+// handleGetUserSettings retrieves current user's settings
+// GET /api/user/settings
+// Returns key status (configured/not configured) but never the actual keys
+func (s *Server) handleGetUserSettings(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+
+	// Get settings from DGraph
+	settings, err := s.agent.mkClient.GetUserSettings(r.Context(), userID)
+	if err != nil {
+		s.logger.Error("Failed to get user settings", zap.Error(err))
+		http.Error(w, "Failed to retrieve settings", http.StatusInternalServerError)
+		return
+	}
+
+	// Build response (never return actual API keys, only status)
+	// Note: DGraph may store empty strings as "[]" for list-type predicates
+	resp := UserSettingsResponse{
+		HasNimKey:            settings.NimApiKeyEncrypted != "" && settings.NimApiKeyEncrypted != "[]",
+		HasOpenaiKey:         settings.OpenaiApiKeyEncrypted != "" && settings.OpenaiApiKeyEncrypted != "[]",
+		HasAnthropicKey:      settings.AnthropicApiKeyEncrypted != "" && settings.AnthropicApiKeyEncrypted != "[]",
+		Theme:                settings.Theme,
+		NotificationsEnabled: settings.NotificationsEnabled,
+		UpdatedAt:            settings.UpdatedAt.Format(time.RFC3339),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleSaveUserSettings saves user settings with encrypted API keys
+// PUT /api/user/settings
+func (s *Server) handleSaveUserSettings(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+
+	var req UserSettingsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Get existing settings to preserve unchanged fields
+	existingSettings, err := s.agent.mkClient.GetUserSettings(r.Context(), userID)
+	if err != nil {
+		s.logger.Warn("Failed to get existing settings, creating new", zap.Error(err))
+		existingSettings = &graph.UserSettings{
+			UserID:               userID,
+			Theme:                "dark",
+			NotificationsEnabled: true,
+		}
+	}
+
+	// Encrypt and store API keys
+	settings := &graph.UserSettings{
+		UserID:               userID,
+		Theme:                existingSettings.Theme,
+		NotificationsEnabled: existingSettings.NotificationsEnabled,
+		UpdatedAt:            time.Now(),
+	}
+
+	// Update theme if provided
+	if req.Theme != "" {
+		settings.Theme = req.Theme
+	}
+
+	// Encrypt and store NIM API key
+	if req.NimApiKey != "" {
+		if s.crypto == nil {
+			s.logger.Warn("Crypto not initialized, cannot encrypt API key")
+			http.Error(w, "Encryption service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		encrypted, err := s.crypto.Encrypt(req.NimApiKey)
+		if err != nil {
+			s.logger.Error("Failed to encrypt NIM API key", zap.Error(err))
+			http.Error(w, "Failed to encrypt API key", http.StatusInternalServerError)
+			return
+		}
+		settings.NimApiKeyEncrypted = encrypted
+		s.logger.Info("NIM API key encrypted for user",
+			zap.String("user", userID),
+			zap.String("key_preview", MaskAPIKey(req.NimApiKey)))
+	} else {
+		settings.NimApiKeyEncrypted = existingSettings.NimApiKeyEncrypted
+	}
+
+	// Encrypt and store OpenAI API key
+	if req.OpenaiApiKey != "" {
+		if s.crypto == nil {
+			http.Error(w, "Encryption service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		encrypted, err := s.crypto.Encrypt(req.OpenaiApiKey)
+		if err != nil {
+			s.logger.Error("Failed to encrypt OpenAI API key", zap.Error(err))
+			http.Error(w, "Failed to encrypt API key", http.StatusInternalServerError)
+			return
+		}
+		settings.OpenaiApiKeyEncrypted = encrypted
+		s.logger.Info("OpenAI API key encrypted for user",
+			zap.String("user", userID),
+			zap.String("key_preview", MaskAPIKey(req.OpenaiApiKey)))
+	} else {
+		settings.OpenaiApiKeyEncrypted = existingSettings.OpenaiApiKeyEncrypted
+	}
+
+	// Encrypt and store Anthropic API key
+	if req.AnthropicApiKey != "" {
+		if s.crypto == nil {
+			http.Error(w, "Encryption service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		encrypted, err := s.crypto.Encrypt(req.AnthropicApiKey)
+		if err != nil {
+			s.logger.Error("Failed to encrypt Anthropic API key", zap.Error(err))
+			http.Error(w, "Failed to encrypt API key", http.StatusInternalServerError)
+			return
+		}
+		settings.AnthropicApiKeyEncrypted = encrypted
+		s.logger.Info("Anthropic API key encrypted for user",
+			zap.String("user", userID),
+			zap.String("key_preview", MaskAPIKey(req.AnthropicApiKey)))
+	} else {
+		settings.AnthropicApiKeyEncrypted = existingSettings.AnthropicApiKeyEncrypted
+	}
+
+	// Save to DGraph
+	if err := s.agent.mkClient.StoreUserSettings(r.Context(), userID, settings); err != nil {
+		s.logger.Error("Failed to store user settings", zap.Error(err))
+		http.Error(w, "Failed to save settings", http.StatusInternalServerError)
+		return
+	}
+
+	s.logger.Info("User settings saved",
+		zap.String("user", userID),
+		zap.Bool("has_nim_key", settings.NimApiKeyEncrypted != ""),
+		zap.Bool("has_openai_key", settings.OpenaiApiKeyEncrypted != ""),
+		zap.Bool("has_anthropic_key", settings.AnthropicApiKeyEncrypted != ""))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "saved",
+		"message": "Settings saved successfully",
+	})
+}
+
+// handleDeleteUserAPIKey deletes a specific API key from user settings
+// DELETE /api/user/settings/keys/{provider}
+func (s *Server) handleDeleteUserAPIKey(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	vars := mux.Vars(r)
+	provider := vars["provider"]
+
+	// Validate provider
+	validProviders := map[string]bool{
+		"nim":       true,
+		"openai":    true,
+		"anthropic": true,
+	}
+	if !validProviders[provider] {
+		http.Error(w, "Invalid provider", http.StatusBadRequest)
+		return
+	}
+
+	// Delete the key
+	if err := s.agent.mkClient.DeleteUserAPIKey(r.Context(), userID, provider); err != nil {
+		s.logger.Error("Failed to delete user API key",
+			zap.Error(err),
+			zap.String("provider", provider),
+			zap.String("user", userID))
+		http.Error(w, "Failed to delete API key", http.StatusInternalServerError)
+		return
+	}
+
+	s.logger.Info("User API key deleted",
+		zap.String("user", userID),
+		zap.String("provider", provider))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "deleted",
+		"message": fmt.Sprintf("%s API key deleted successfully", strings.ToUpper(provider)),
+	})
 }
