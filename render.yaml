@@ -5,7 +5,7 @@ services:
   # Main Application - Monolith (Go + React)
   - type: web
     name: monolith
-    runtime: docker
+    env: docker
     dockerfilePath: ./Dockerfile.monolith
     dockerContext: .
     envVars:
@@ -36,7 +36,7 @@ services:
   # DGraph Database
   - type: pserv
     name: dgraph
-    runtime: docker
+    env: docker
     dockerfilePath: ./services/dgraph/Dockerfile
     dockerContext: .
     disk:
@@ -47,14 +47,14 @@ services:
   # NATS Message Queue
   - type: pserv
     name: nats
-    runtime: docker
+    env: docker
     dockerfilePath: ./services/nats/Dockerfile
     dockerContext: .
 
   # Qdrant Vector Database
   - type: pserv
     name: qdrant
-    runtime: docker
+    env: docker
     dockerfilePath: ./services/qdrant/Dockerfile
     dockerContext: .
     disk:
