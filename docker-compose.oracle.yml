@@ -1,0 +1,267 @@
+# Reflective Memory Kernel - Oracle Compute Infrastructure Deployment
+# Production configuration optimized for Oracle Cloud Infrastructure (OCI)
+
+version: "3.8"
+
+services:
+  # DGraph Zero - Cluster management
+  # For production: Consider using managed DGraph or external cluster
+  dgraph-zero:
+    image: dgraph/dgraph:v24.0.0
+    container_name: rmk-dgraph-zero
+    restart: unless-stopped
+    ports:
+      - "5080:5080"
+      - "6080:6080"
+    volumes:
+      - dgraph-zero-data:/dgraph
+    command: dgraph zero --my=dgraph-zero:5080 --replicas 1
+    networks:
+      - rmk-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+  # DGraph Alpha - Graph database
+  # For production: Use OCI Block Volumes with encryption at rest
+  dgraph-alpha:
+    image: dgraph/dgraph:v24.0.0
+    container_name: rmk-dgraph-alpha
+    restart: unless-stopped
+    ports:
+      - "18080:8080"
+      - "19080:9080"
+    volumes:
+      - dgraph-alpha-data:/dgraph
+    # TLS configuration for production
+    command: >
+      dgraph alpha
+      --my=dgraph-alpha:7080
+      --zero=dgraph-zero:5080
+      --security whitelist=0.0.0.0/0
+    networks:
+      - rmk-network
+    depends_on:
+      dgraph-zero:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+        reservations:
+          cpus: "2"
+          memory: 4G
+
+  # NATS - Message queue for streaming
+  nats:
+    image: nats:2.10-alpine
+    container_name: rmk-nats
+    restart: unless-stopped
+    ports:
+      - "4322:4222"
+      - "8322:8222"
+    command: ["--jetstream", "--http_port", "8222", "--max_memory=2GB"]
+    volumes:
+      - nats-data:/data
+    networks:
+      - rmk-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+  # Redis - Caching activation scores and hot paths
+  # For production: Use Redis with persistence and optionally Redis Sentinel
+  redis:
+    image: redis:7-alpine
+    container_name: rmk-redis
+    restart: unless-stopped
+    ports:
+      - "6479:6379"
+    volumes:
+      - redis-data:/data
+    # Enable AOF persistence for production
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+    networks:
+      - rmk-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+  # AI Services - Python FastAPI for SLM orchestration
+  # Uses NVIDIA NIM for LLM inference (cloud API, no local service needed)
+  ai-services:
+    build:
+      context: ./ai
+      dockerfile: Dockerfile
+    container_name: rmk-ai-services
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.oracle
+    environment:
+      - RMK_ENV=${RMK_ENV:-production}
+    networks:
+      - rmk-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+
+  # Qdrant - Vector database for Hybrid RAG
+  # For production: Use OCI Block Volumes with encryption at rest
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: rmk-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    # Production configuration with persistence
+    command: >
+      ./qdrant
+      --storage-path /qdrant/storage
+      --snapshot-path /qdrant/snapshots
+    networks:
+      - rmk-network
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 3 bash -c 'cat < /dev/null > /dev/tcp/localhost/6333' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+        reservations:
+          cpus: "1"
+          memory: 2G
+
+  # Monolith - Unified Agent + Kernel (Quantum Architecture)
+  # Main application server
+  monolith:
+    build:
+      context: .
+      dockerfile: Dockerfile.monolith
+    container_name: rmk-monolith
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    env_file:
+      - .env.oracle
+    environment:
+      - RMK_ENV=${RMK_ENV:-production}
+      - DGRAPH_ADDRESS=dgraph-alpha:9080
+      - NATS_URL=nats://nats:4222
+      - REDIS_ADDRESS=redis:6379
+      - AI_SERVICES_URL=http://ai-services:8000
+      - QDRANT_URL=http://qdrant:6333
+      - PORT=9090
+    networks:
+      - rmk-network
+    depends_on:
+      dgraph-alpha:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ai-services:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+        reservations:
+          cpus: "1"
+          memory: 2G
+    # Logging configuration for production
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+
+volumes:
+  dgraph-zero-data:
+    driver: local
+  dgraph-alpha-data:
+    driver: local
+  redis-data:
+    driver: local
+  nats-data:
+    driver: local
+  qdrant-data:
+    driver: local
+
+networks:
+  rmk-network:
+    driver: bridge
