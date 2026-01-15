@@ -1,0 +1,68 @@
+# Render.com Blueprint - Auto-deploys all services
+# Deploy: Push to GitHub, then on Render.com: New → Blueprint → Connect Repo
+
+services:
+  # Main Application - Monolith (Go + React)
+  - type: web
+    name: monolith
+    runtime: docker
+    dockerfilePath: ./Dockerfile.monolith
+    dockerContext: .
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DGRAPH_ADDRESS
+        fromService:
+          type: pserv
+          name: dgraph
+          property: hostport
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
+      - key: NATS_URL
+        value: nats://nats:4222
+      - key: QDRANT_URL
+        fromService:
+          type: pserv
+          name: qdrant
+          property: hostport
+    healthCheckPath: /health
+    autoDeploy: true
+
+  # DGraph Database
+  - type: pserv
+    name: dgraph
+    runtime: docker
+    dockerfilePath: ./services/dgraph/Dockerfile
+    dockerContext: .
+    disk:
+      name: dgraph-data
+      mountPath: /dgraph
+      sizeGB: 10
+
+  # NATS Message Queue
+  - type: pserv
+    name: nats
+    runtime: docker
+    dockerfilePath: ./services/nats/Dockerfile
+    dockerContext: .
+
+  # Qdrant Vector Database
+  - type: pserv
+    name: qdrant
+    runtime: docker
+    dockerfilePath: ./services/qdrant/Dockerfile
+    dockerContext: .
+    disk:
+      name: qdrant-data
+      mountPath: /qdrant/storage
+      sizeGB: 10
+
+databases:
+  # Redis (Managed by Render)
+  - name: redis
+    plan: free
