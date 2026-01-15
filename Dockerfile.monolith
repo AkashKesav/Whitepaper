@@ -1,10 +1,10 @@
-# Build stage - Simple Alpine build (no CGO needed for Ollama)
+# Build stage - Go + Node.js for full stack build
 FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
-# Install minimal build dependencies
-RUN apk add --no-cache git
+# Install build dependencies (Go + Node.js)
+RUN apk add --no-cache git nodejs npm
 
 # Copy go mod files
 COPY go.mod go.sum* ./
@@ -13,7 +13,12 @@ RUN go mod download
 # Copy source
 COPY . .
 
-# Build Unified Monolith (CGO disabled - using Ollama for embeddings)
+# Build frontend React app
+WORKDIR /app/frontend
+RUN npm ci && npm run build
+
+# Build Go monolith
+WORKDIR /app
 RUN CGO_ENABLED=0 GOOS=linux go build -o /monolith ./cmd/monolith
 
 # Runtime stage - Minimal Alpine
@@ -30,8 +35,8 @@ WORKDIR /app
 # Copy binary
 COPY --from=builder /monolith /app/monolith
 
-# Copy frontend assets (built React app)
-COPY frontend/dist/ /app/static/
+# Copy frontend assets (built React app from build stage)
+COPY --from=builder /app/frontend/dist/ /app/static/
 
 # Expose port
 EXPOSE 9090
