@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"io"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,38 +28,27 @@ type spaHandler struct {
 }
 
 func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Try to serve the file directly
-	path := r.URL.Path
 	// Prevent directory traversal
-	if strings.Contains(path, "..") {
+	if strings.Contains(r.URL.Path, "..") {
 		http.NotFound(w, r)
 		return
 	}
 
-	// Check if file exists
-	file, err := h.staticDir.Open(path)
+	// Try to open the requested file
+	file, err := h.staticDir.Open(strings.TrimPrefix(r.URL.Path, "/"))
 	if err == nil {
-		stat, _ := file.Stat()
-		// If it's a file (not a directory), serve it
-		if !stat.IsDir() {
+		stat, err := file.Stat()
+		if err == nil && !stat.IsDir() {
+			// File exists and is not a directory - serve it
 			http.FileServer(h.staticDir).ServeHTTP(w, r)
 			return
 		}
 		file.Close()
 	}
 
-	// Otherwise serve index.html for SPA routing (using FileSystem, not relative path)
-	index, err := h.staticDir.Open("index.html")
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	defer index.Close()
-
-	stat, _ := index.Stat()
-	http.ServeContent(w, r, "index.html", stat.ModTime(), index.(interface {
-		io.ReadSeeker
-	}))
+	// File doesn't exist or is a directory - serve index.html for SPA routing
+	r.URL.Path = "/"
+	http.FileServer(h.staticDir).ServeHTTP(w, r)
 }
 
 // ollamaEmbedderAdapter wraps local.OllamaEmbedder to implement precortex.Embedder
@@ -98,8 +87,13 @@ func main() {
 	if dgraph := os.Getenv("DGRAPH_ADDRESS"); dgraph != "" {
 		kernelCfg.DGraphAddress = dgraph
 	}
+	// Railway uses REDIS_URL or REDIS_PRIVATE_URL
 	if redis := os.Getenv("REDIS_ADDRESS"); redis != "" {
 		kernelCfg.RedisAddress = redis
+	} else if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
+		kernelCfg.RedisAddress = redisURL
+	} else if redisPrivate := os.Getenv("REDIS_PRIVATE_URL"); redisPrivate != "" {
+		kernelCfg.RedisAddress = redisPrivate
 	}
 	if nats := os.Getenv("NATS_URL"); nats != "" {
 		kernelCfg.NATSAddress = nats
@@ -247,11 +241,40 @@ func main() {
 	}
 
 	// Serve static files for web UI (must be after API routes to avoid conflicts)
+	// Docker uses /app/static, local dev uses ./frontend/dist
 	staticDir := "./static"
+	if sd := os.Getenv("STATIC_DIR"); sd != "" {
+		staticDir = sd
+	} else if _, err := os.Stat("./frontend/dist"); err == nil {
+		// Local dev fallback: use frontend/dist if it exists
+		staticDir = "./frontend/dist"
+	}
 	// Always serve static files - SPA fallback handles missing files
 	spaHandler := &spaHandler{staticDir: http.Dir(staticDir)}
 	router.PathPrefix("/").Handler(spaHandler)
 	logger.Info("Serving static files from", zap.String("dir", staticDir))
+
+	// Debug endpoint to check if static files exist
+	router.HandleFunc("/debug-static", func(w http.ResponseWriter, r *http.Request) {
+		files, err := os.ReadDir(staticDir)
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write([]byte(fmt.Sprintf("Error reading static dir: %v", err)))
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte(fmt.Sprintf("Static dir: %s\nFiles:\n", staticDir)))
+		for _, f := range files {
+			w.Write([]byte(fmt.Sprintf("  - %s\n", f.Name())))
+		}
+		// Try to read index.html
+		indexContent, err := os.ReadFile(staticDir + "/index.html")
+		if err != nil {
+			w.Write([]byte(fmt.Sprintf("\nError reading index.html: %v", err)))
+		} else {
+			w.Write([]byte(fmt.Sprintf("\nindex.html size: %d bytes, first 100 chars: %s", len(indexContent), string(indexContent[:min(100, len(indexContent))]))))
+		}
+	}).Methods("GET")
 
 	corsObj := handlers.CORS(
 		handlers.AllowedOrigins(allowedOrigins),
@@ -260,7 +283,9 @@ func main() {
 		handlers.AllowCredentials(),
 	)
 
-	apiPort := "0.0.0.0:8080"
+	// Default port 9090 for local dev (vite proxies to this)
+	// Docker sets PORT=8080 via environment
+	apiPort := "0.0.0.0:9090"
 	if p := os.Getenv("PORT"); p != "" {
 		apiPort = ":" + p
 	}

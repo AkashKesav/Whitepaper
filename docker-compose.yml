@@ -158,6 +158,15 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+  # NOTE: Frontend is embedded in monolith - no separate container needed
+  # The monolith serves the React SPA from /app/static (built during Docker build)
+  # Access the full app at http://localhost:8080
 
 volumes:
   dgraph-zero-data:

@@ -1,25 +1,33 @@
 # Build stage - Go + Node.js for full stack build
-FROM golang:1.24-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
 # Install build dependencies (Go + Node.js)
-RUN apk add --no-cache git nodejs npm
+RUN apk add --no-cache git nodejs npm curl
 
-# Copy go mod files
+# Copy go mod files first (better caching)
 COPY go.mod go.sum* ./
 RUN go mod download
 
-# Copy source
+# Copy frontend package files (better caching)
+COPY frontend/package*.json frontend/
+
+# Install frontend dependencies
+WORKDIR /app/frontend
+RUN npm ci --legacy-peer-deps
+
+# Copy all source files
+WORKDIR /app
 COPY . .
 
 # Build frontend React app
 WORKDIR /app/frontend
-RUN npm ci && npm run build
+RUN npm run build
 
 # Build Go monolith
 WORKDIR /app
-RUN CGO_ENABLED=0 GOOS=linux go build -o /monolith ./cmd/monolith
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /monolith ./cmd/monolith
 
 # Runtime stage - Minimal Alpine
 FROM alpine:3.19
@@ -38,9 +46,19 @@ COPY --from=builder /monolith /app/monolith
 # Copy frontend assets (built React app from build stage)
 COPY --from=builder /app/frontend/dist/ /app/static/
 
-# Expose port
+# Create non-root user for security
+RUN adduser -D -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+# Expose port (Railway sets PORT env var)
 EXPOSE 8080
 
+# Default environment variables (Railway overrides these)
 ENV PORT=8080
+ENV STATIC_DIR=/app/static
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
 
 CMD ["/app/monolith"]
