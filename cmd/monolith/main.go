@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -47,8 +48,18 @@ func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		file.Close()
 	}
 
-	// Otherwise serve index.html for SPA routing
-	http.ServeFile(w, r, "./static/index.html")
+	// Otherwise serve index.html for SPA routing (using FileSystem, not relative path)
+	index, err := h.staticDir.Open("index.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer index.Close()
+
+	stat, _ := index.Stat()
+	http.ServeContent(w, r, "index.html", stat.ModTime(), index.(interface {
+		io.ReadSeeker
+	}))
 }
 
 // ollamaEmbedderAdapter wraps local.OllamaEmbedder to implement precortex.Embedder
@@ -237,12 +248,10 @@ func main() {
 
 	// Serve static files for web UI (must be after API routes to avoid conflicts)
 	staticDir := "./static"
-	if _, err := os.Stat(staticDir); err == nil {
-		// SPA fallback: serve index.html for non-file routes
-		spaHandler := &spaHandler{staticDir: http.Dir(staticDir)}
-		router.PathPrefix("/").Handler(spaHandler)
-		logger.Info("Serving static files from", zap.String("dir", staticDir))
-	}
+	// Always serve static files - SPA fallback handles missing files
+	spaHandler := &spaHandler{staticDir: http.Dir(staticDir)}
+	router.PathPrefix("/").Handler(spaHandler)
+	logger.Info("Serving static files from", zap.String("dir", staticDir))
 
 	corsObj := handlers.CORS(
 		handlers.AllowedOrigins(allowedOrigins),
