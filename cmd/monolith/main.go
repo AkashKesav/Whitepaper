@@ -251,7 +251,7 @@ func main() {
 		handlers.AllowCredentials(),
 	)
 
-	apiPort := "0.0.0.0:9090"
+	apiPort := "0.0.0.0:8080"
 	if p := os.Getenv("PORT"); p != "" {
 		apiPort = ":" + p
 	}

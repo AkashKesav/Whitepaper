@@ -39,8 +39,8 @@ COPY --from=builder /monolith /app/monolith
 COPY --from=builder /app/frontend/dist/ /app/static/
 
 # Expose port
-EXPOSE 9090
+EXPOSE 8080
 
-ENV PORT=9090
+ENV PORT=8080
 
 CMD ["/app/monolith"]
