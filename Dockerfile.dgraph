@@ -1,6 +1,5 @@
 # DGraph Service for Railway
+# Using standalone image which has built-in entrypoint
 FROM dgraph/standalone:latest
 EXPOSE 8080 9080
-# Note: Healthcheck disabled - DGraph standalone doesn't include curl
-# Railway will detect the service is running via the exposed ports
-CMD ["dgraph", "standalone"]
+# Don't override CMD - the standalone image handles everything
