@@ -143,6 +143,7 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-production-32chars-minimum-length}
       - PORT=8080
+      - FRONTEND_ONLY=${FRONTEND_ONLY:-false}
     networks:
       - rmk-network
     depends_on:
