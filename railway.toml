@@ -1,14 +1,37 @@
-# Railway.toml - Force Dockerfile builds
+# Railway.toml - Separate Frontend and Backend services
 
-[monolith.build]
+# ===================
+# FRONTEND SERVICE
+# ===================
+[frontend.build]
 type = "dockerfile"
-dockerfile = "Dockerfile.monolith"
+dockerfile = "Dockerfile.frontend"
 context = "."
 
-[monolith.env]
+[frontend.env]
+PORT = "80"
+
+# ===================
+# BACKEND SERVICE
+# ===================
+[backend.build]
+type = "dockerfile"
+dockerfile = "Dockerfile.backend"
+context = "."
+
+[backend.env]
 PORT = "8080"
 STATIC_DIR = "/app/static"
 FRONTEND_ONLY = "false"
+
+# Backend will connect to these services
+DGRAPH_ADDRESS = "dgraph:8080"
+NATS_URL = "nats://nats:4222"
+QDRANT_URL = "qdrant:6333"
+
+# ===================
+# DATABASE SERVICES
+# ===================
 
 [dgraph.build]
 type = "dockerfile"
