@@ -81,138 +81,159 @@ func main() {
 
 	logger.Info("Starting Monolith (Unified Agent + Kernel)...")
 
-	// 1. Initialize Kernel (Reflective Memory)
-	kernelCfg := kernel.DefaultConfig()
-	// Override defaults with Env Vars if needed (simplified for MVP)
-	if dgraph := os.Getenv("DGRAPH_ADDRESS"); dgraph != "" {
-		kernelCfg.DGraphAddress = dgraph
-	}
-	// Railway uses REDIS_URL or REDIS_PRIVATE_URL
-	if redis := os.Getenv("REDIS_ADDRESS"); redis != "" {
-		kernelCfg.RedisAddress = redis
-	} else if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
-		kernelCfg.RedisAddress = redisURL
-	} else if redisPrivate := os.Getenv("REDIS_PRIVATE_URL"); redisPrivate != "" {
-		kernelCfg.RedisAddress = redisPrivate
-	}
-	if nats := os.Getenv("NATS_URL"); nats != "" {
-		kernelCfg.NATSAddress = nats
-	}
-	if ai := os.Getenv("AI_SERVICES_URL"); ai != "" {
-		kernelCfg.AIServicesURL = ai
-	}
-	if qdrant := os.Getenv("QDRANT_URL"); qdrant != "" {
-		kernelCfg.QdrantURL = qdrant
-	}
+	// Check if we should run in frontend-only mode (for deployment when backend services aren't ready)
+	frontendOnly := os.Getenv("FRONTEND_ONLY") == "true"
 
-	k, err := kernel.New(kernelCfg, logger.Named("kernel"))
-	if err != nil {
-		logger.Fatal("Failed to initialize Kernel", zap.Error(err))
-	}
+	var k *kernel.Kernel
+	var a *agent.Agent
 
-	// 2. Initialize Agent (Consciousness)
-	agentCfg := agent.DefaultConfig()
-	if aiURL := os.Getenv("AI_SERVICES_URL"); aiURL != "" {
-		agentCfg.AIServicesURL = aiURL
-	}
-	if redisAddr := os.Getenv("REDIS_ADDRESS"); redisAddr != "" {
-		agentCfg.RedisAddress = redisAddr
-	}
-	// Since we are monolithic, Agent can talk to Kernel API directly via localhost
-	// IF we kept the HTTP client. BUT we want zero-copy for Ingestion.
-	// For Consultation (Read), we currently still use HTTP (agent -> mkClient -> HTTP -> Kernel).
-	// TODO: Optimize Consultation to be zero-copy too (Phase 3.5)
+	if !frontendOnly {
+		// 1. Initialize Kernel (Reflective Memory)
+		kernelCfg := kernel.DefaultConfig()
+		// Override defaults with Env Vars if needed (simplified for MVP)
+		if dgraph := os.Getenv("DGRAPH_ADDRESS"); dgraph != "" {
+			kernelCfg.DGraphAddress = dgraph
+		}
+		// Railway uses REDIS_URL or REDIS_PRIVATE_URL
+		if redis := os.Getenv("REDIS_ADDRESS"); redis != "" {
+			kernelCfg.RedisAddress = redis
+		} else if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
+			kernelCfg.RedisAddress = redisURL
+		} else if redisPrivate := os.Getenv("REDIS_PRIVATE_URL"); redisPrivate != "" {
+			kernelCfg.RedisAddress = redisPrivate
+		}
+		if nats := os.Getenv("NATS_URL"); nats != "" {
+			kernelCfg.NATSAddress = nats
+		}
+		if ai := os.Getenv("AI_SERVICES_URL"); ai != "" {
+			kernelCfg.AIServicesURL = ai
+		}
+		if qdrant := os.Getenv("QDRANT_URL"); qdrant != "" {
+			kernelCfg.QdrantURL = qdrant
+		}
 
-	a, err := agent.New(agentCfg, logger.Named("agent"))
-	if err != nil {
-		logger.Fatal("Failed to initialize Agent", zap.Error(err))
-	}
+		k, err := kernel.New(kernelCfg, logger.Named("kernel"))
+		if err != nil {
+			logger.Warn("Failed to initialize Kernel, running in frontend-only mode", zap.Error(err))
+			k = nil
+		}
 
-	// 3. Unification: Zero-Copy Bridge
-	// Create buffered channel for transcripts
-	ingestChan := make(chan *graph.TranscriptEvent, 1000)
+		// 2. Initialize Agent (Consciousness)
+		agentCfg := agent.DefaultConfig()
+		if aiURL := os.Getenv("AI_SERVICES_URL"); aiURL != "" {
+			agentCfg.AIServicesURL = aiURL
+		}
+		if redisAddr := os.Getenv("REDIS_ADDRESS"); redisAddr != "" {
+			agentCfg.RedisAddress = redisAddr
+		}
 
-	// Configure Agent to use this channel
-	a.SetIngestChannel(ingestChan)
+		a, err := agent.New(agentCfg, logger.Named("agent"))
+		if err != nil {
+			logger.Warn("Failed to initialize Agent, running in frontend-only mode", zap.Error(err))
+			a = nil
+		}
 
-	// Start Bridge Goroutine
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		// Only start backend services if both kernel and agent initialized successfully
+		if k != nil && a != nil {
+			// 3. Unification: Zero-Copy Bridge
+			// Create buffered channel for transcripts
+			ingestChan := make(chan *graph.TranscriptEvent, 1000)
 
-	go func() {
-		logger.Info("Zero-Copy Bridge Active: Agent -> Kernel")
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case event := <-ingestChan:
-				// Direct function call across memory space
-				if err := k.IngestEvent(ctx, event); err != nil {
-					logger.Error("Bridge: Failed to ingest event", zap.Error(err))
+			// Configure Agent to use this channel
+			a.SetIngestChannel(ingestChan)
+
+			// Start Bridge Goroutine
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			go func() {
+				logger.Info("Zero-Copy Bridge Active: Agent -> Kernel")
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case event := <-ingestChan:
+						// Direct function call across memory space
+						if err := k.IngestEvent(ctx, event); err != nil {
+							logger.Error("Bridge: Failed to ingest event", zap.Error(err))
+						}
+					}
 				}
+			}()
+
+			// 4. Start Services
+			// Start Kernel Background Loops
+			if err := k.Start(); err != nil {
+				logger.Warn("Failed to start Kernel, running in frontend-only mode", zap.Error(err))
+				k = nil
+			} else {
+				defer k.Stop()
+			}
+
+			// Start Agent Internals (Connects to Redis, NATS, initializes mkClient)
+			if err := a.Start(); err != nil {
+				logger.Warn("Failed to start Agent, running in frontend-only mode", zap.Error(err))
+				a = nil
+			} else {
+				defer a.Stop()
+			}
+
+			// NOW configure Agent to use Kernel directly (Zero-Copy Consultation)
+			// MUST be called AFTER a.Start() since mkClient is initialized there
+			if a != nil && k != nil {
+				a.SetKernel(k)
 			}
 		}
-	}()
-
-	// 4. Start Services
-
-	// Start Kernel Background Loops
-	if err := k.Start(); err != nil {
-		logger.Fatal("Failed to start Kernel", zap.Error(err))
+	} else {
+		logger.Info("Running in FRONTEND_ONLY mode - backend services disabled")
 	}
-	defer k.Stop()
-
-	// Start Agent Internals (Connects to Redis, NATS, initializes mkClient)
-	if err := a.Start(); err != nil {
-		logger.Fatal("Failed to start Agent", zap.Error(err))
-	}
-	defer a.Stop()
-
-	// NOW configure Agent to use Kernel directly (Zero-Copy Consultation)
-	// MUST be called AFTER a.Start() since mkClient is initialized there
-	a.SetKernel(k)
 
 	// 5. Initialize Pre-Cortex (Cognitive Firewall for 90% cost reduction)
-	logger.Info("Initializing Pre-Cortex cognitive firewall...")
-	cacheManager, err := cache.NewManager(cache.DefaultConfig(), logger.Named("cache"))
-	if err != nil {
-		logger.Warn("Failed to initialize cache manager, Pre-Cortex will work without caching", zap.Error(err))
+	// Skip if kernel not available
+	if k != nil {
+		logger.Info("Initializing Pre-Cortex cognitive firewall...")
+		cacheManager, err := cache.NewManager(cache.DefaultConfig(), logger.Named("cache"))
+		if err != nil {
+			logger.Warn("Failed to initialize cache manager, Pre-Cortex will work without caching", zap.Error(err))
+		} else {
+			defer cacheManager.Close()
+		}
+
+		// Pre-Cortex configuration with semantic cache
+		pcConfig := precortex.Config{
+			EnableSemanticCache: true,
+			EnableIntentRouter:  true,
+			EnableDGraphReflex:  true, // Enabled for full functionality
+			CacheSimilarity:     0.85, // 85% similarity threshold for cache hits
+		}
+
+		// Initialize Cache Vector Index
+		// Use same Qdrant URL as Kernel (env var or default)
+		qdrantURL := os.Getenv("QDRANT_URL") // Fallback handled by NewVectorIndex
+		cacheIndex := kernel.NewVectorIndex(qdrantURL, kernel.CacheCollectionName, logger.Named("cache_index"))
+		if err := cacheIndex.Initialize(context.Background()); err != nil {
+			logger.Warn("Failed to initialize cache vector index", zap.Error(err))
+		}
+
+		pc, err := precortex.NewPreCortex(
+			pcConfig,
+			cacheManager,
+			k.GetGraphClient(),
+			cacheIndex,
+			logger.Named("precortex"),
+		)
+		if err != nil {
+			logger.Warn("Failed to initialize Pre-Cortex, LLM will be used for all requests", zap.Error(err))
+		} else if a != nil {
+			a.SetPreCortex(pc)
+
+			// Wire up Ollama embedder for semantic similarity cache
+			ollamaEmbedder := local.NewOllamaEmbedder("", "")
+			pc.SetEmbedder(&ollamaEmbedderAdapter{ollamaEmbedder})
+			logger.Info("Pre-Cortex semantic cache enabled with Ollama embeddings")
+		}
 	} else {
-		defer cacheManager.Close()
-	}
-
-	// Pre-Cortex configuration with semantic cache
-	pcConfig := precortex.Config{
-		EnableSemanticCache: true,
-		EnableIntentRouter:  true,
-		EnableDGraphReflex:  true, // Enabled for full functionality
-		CacheSimilarity:     0.85, // 85% similarity threshold for cache hits
-	}
-
-	// Initialize Cache Vector Index
-	// Use same Qdrant URL as Kernel (env var or default)
-	qdrantURL := os.Getenv("QDRANT_URL") // Fallback handled by NewVectorIndex
-	cacheIndex := kernel.NewVectorIndex(qdrantURL, kernel.CacheCollectionName, logger.Named("cache_index"))
-	if err := cacheIndex.Initialize(context.Background()); err != nil {
-		logger.Warn("Failed to initialize cache vector index", zap.Error(err))
-	}
-
-	pc, err := precortex.NewPreCortex(
-		pcConfig,
-		cacheManager,
-		k.GetGraphClient(),
-		cacheIndex,
-		logger.Named("precortex"),
-	)
-	if err != nil {
-		logger.Warn("Failed to initialize Pre-Cortex, LLM will be used for all requests", zap.Error(err))
-	} else {
-		a.SetPreCortex(pc)
-
-		// Wire up Ollama embedder for semantic similarity cache
-		ollamaEmbedder := local.NewOllamaEmbedder("", "")
-		pc.SetEmbedder(&ollamaEmbedderAdapter{ollamaEmbedder})
-		logger.Info("Pre-Cortex semantic cache enabled with Ollama embeddings")
+		logger.Info("Skipping Pre-Cortex initialization - no kernel available")
 	}
 
 	// Configure allowed origins for WebSocket and CORS (from ALLOWED_ORIGINS env var)

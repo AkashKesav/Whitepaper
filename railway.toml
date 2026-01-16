@@ -8,6 +8,7 @@ context = "."
 [monolith.env]
 PORT = "8080"
 STATIC_DIR = "/app/static"
+FRONTEND_ONLY = "false"
 
 [dgraph.build]
 type = "dockerfile"
