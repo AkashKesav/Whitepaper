@@ -1,0 +1,6 @@
+# NATS Service for Railway
+FROM nats:2.10-alpine
+EXPOSE 4222 8222
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --spider -q http://localhost:8222/healthz || exit 1
+CMD ["--jetstream", "--http_port", "8222"]
