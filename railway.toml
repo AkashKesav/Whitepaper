@@ -1,27 +1,23 @@
 # Railway.toml - Deploy Whitepaper to Railway
-# All services use Docker with generous free tier
+# Force Dockerfile usage to build frontend + backend together
 
 [monolith]
-name = "monolith"
-dockerfile = "Dockerfile.monolith"
-context = ""
+# Force Docker build (disable Railpack auto-detection)
+build = { type = "dockerfile", dockerfile = "Dockerfile.monolith", context = "." }
 
-# Environment variables (Railway auto-links these)
+# Environment variables
 [monolith.env]
 PORT = "8080"
 STATIC_DIR = "/app/static"
 
+# DGraph service
 [dgraph]
-name = "dgraph"
-dockerfile = "services/dgraph/Dockerfile"
-context = "."
+build = { type = "dockerfile", dockerfile = "services/dgraph/Dockerfile", context = "." }
 
+# NATS service
 [nats]
-name = "nats"
-dockerfile = "services/nats/Dockerfile"
-context = "."
+build = { type = "dockerfile", dockerfile = "services/nats/Dockerfile", context = "." }
 
+# Qdrant service
 [qdrant]
-name = "qdrant"
-dockerfile = "services/qdrant/Dockerfile"
-context = ""
+build = { type = "dockerfile", dockerfile = "services/qdrant/Dockerfile", context = "." }
