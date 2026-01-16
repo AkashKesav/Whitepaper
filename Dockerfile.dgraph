@@ -1,6 +1,6 @@
 # DGraph Service for Railway
 FROM dgraph/standalone:latest
 EXPOSE 8080 9080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# Note: Healthcheck disabled - DGraph standalone doesn't include curl
+# Railway will detect the service is running via the exposed ports
 CMD ["dgraph", "standalone"]
