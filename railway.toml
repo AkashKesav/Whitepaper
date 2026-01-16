@@ -1,0 +1,27 @@
+# Railway.toml - Deploy Whitepaper to Railway
+# All services use Docker with generous free tier
+
+[monolith]
+name = "monolith"
+dockerfile = "Dockerfile.monolith"
+context = ""
+
+# Environment variables (Railway auto-links these)
+[monolith.env]
+PORT = "8080"
+STATIC_DIR = "/app/static"
+
+[dgraph]
+name = "dgraph"
+dockerfile = "services/dgraph/Dockerfile"
+context = "."
+
+[nats]
+name = "nats"
+dockerfile = "services/nats/Dockerfile"
+context = "."
+
+[qdrant]
+name = "qdrant"
+dockerfile = "services/qdrant/Dockerfile"
+context = ""
