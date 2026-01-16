@@ -242,12 +242,16 @@ func main() {
 
 	// Serve static files for web UI (must be after API routes to avoid conflicts)
 	// Docker uses /app/static, local dev uses ./frontend/dist
-	staticDir := "./static"
+	staticDir := "/app/static"
 	if sd := os.Getenv("STATIC_DIR"); sd != "" {
 		staticDir = sd
-	} else if _, err := os.Stat("./frontend/dist"); err == nil {
-		// Local dev fallback: use frontend/dist if it exists
-		staticDir = "./frontend/dist"
+	} else if _, err := os.Stat("/app/static"); err != nil {
+		// Not in Docker, try local paths
+		if _, err := os.Stat("./static"); err == nil {
+			staticDir = "./static"
+		} else if _, err := os.Stat("./frontend/dist"); err == nil {
+			staticDir = "./frontend/dist"
+		}
 	}
 	// Always serve static files - SPA fallback handles missing files
 	spaHandler := &spaHandler{staticDir: http.Dir(staticDir)}
