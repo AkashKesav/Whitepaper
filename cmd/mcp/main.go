@@ -120,7 +120,7 @@ func initializeAgent(logger *zap.Logger) (*agent.Agent, error) {
 	}
 
 	// Create agent
-	agt, err := agent.New(cfg)
+	agt, err := agent.New(cfg, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create agent: %w", err)
 	}

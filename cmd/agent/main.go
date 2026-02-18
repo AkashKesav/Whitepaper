@@ -1,17 +1,18 @@
-// Front-End Agent main entry point
+// Front-End Agent main entry point - gnet-based server
+// Migrated from net/http to gnet for high-performance event-driven networking
 package main
 
 import (
-	"net/http"
+	"context"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/gorilla/mux"
 	"go.uber.org/zap"
 
 	"github.com/reflective-memory-kernel/internal/agent"
+	"github.com/reflective-memory-kernel/internal/server"
 )
 
 func main() {
@@ -19,7 +20,10 @@ func main() {
 	logger, _ := zap.NewProduction()
 	defer logger.Sync()
 
-	logger.Info("Starting Front-End Agent")
+	logger.Info("Starting Front-End Agent (gnet-based)")
+
+	// Check if we should use gnet or legacy net/http
+	useGnet := os.Getenv("USE_GNET") != "false" // Default to gnet
 
 	// Load configuration
 	cfg := agent.Config{
@@ -40,39 +44,65 @@ func main() {
 		logger.Fatal("Failed to start agent", zap.Error(err))
 	}
 
-	// Setup HTTP server
-	router := mux.NewRouter()
-	server := agent.NewServer(a, logger)
-	if err := server.SetupRoutes(router); err != nil {
-		logger.Fatal("Failed to setup routes", zap.Error(err))
+	if useGnet {
+		startGnetServer(a, logger)
+	} else {
+		startLegacyServer(a, logger)
+	}
+}
+
+func startGnetServer(a *agent.Agent, logger *zap.Logger) {
+	logger.Info("Starting gnet server for agent")
+
+	// Create gnet engine
+	addr := ":" + getEnv("PORT", "3000")
+	opts := &server.Options{
+		Network:   "tcp",
+		Multicore: true,
+		Logger:    logger,
+	}
+	engine := server.New(addr, opts)
+
+	// Create gnet server
+	gnetServer := agent.NewGnetServer(a, logger.Named("server"))
+
+	// Setup routes
+	if err := gnetServer.SetupGnetRoutes(engine); err != nil {
+		logger.Fatal("Failed to setup gnet routes", zap.Error(err))
 	}
 
-	// Serve static files for web UI
-	router.PathPrefix("/").Handler(http.FileServer(http.Dir("./static")))
-
-	port := getEnv("PORT", "3000")
-	httpServer := &http.Server{
-		Addr:         ":" + port,
-		Handler:      router,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-	}
-
+	// Start server in background
 	go func() {
-		logger.Info("HTTP server starting", zap.String("port", port))
-		if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
-			logger.Fatal("HTTP server failed", zap.Error(err))
+		if err := engine.Start(); err != nil {
+			logger.Fatal("gnet server failed", zap.Error(err))
 		}
 	}()
 
-	// Wait for shutdown
+	logger.Info("gnet server listening", zap.String("address", addr))
+
+	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	logger.Info("Shutting down...")
+	logger.Info("Shutting down gnet server...")
+
+	// Graceful shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	engine.Shutdown(ctx)
 	a.Stop()
+
 	logger.Info("Shutdown complete")
+}
+
+func startLegacyServer(a *agent.Agent, logger *zap.Logger) {
+	logger.Info("Starting legacy net/http server for agent")
+
+	// Import legacy server packages
+	// This would use the original server.go with gorilla/mux
+	// For now, just log a message
+	logger.Warn("Legacy server not implemented - please use gnet (USE_GNET=true)")
 }
 
 func getEnv(key, defaultVal string) string {

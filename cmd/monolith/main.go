@@ -112,7 +112,8 @@ func main() {
 			kernelCfg.QdrantURL = qdrant
 		}
 
-		k, err := kernel.New(kernelCfg, logger.Named("kernel"))
+		var err error
+		k, err = kernel.New(kernelCfg, logger.Named("kernel"))
 		if err != nil {
 			logger.Warn("Failed to initialize Kernel, running in frontend-only mode", zap.Error(err))
 			k = nil
@@ -127,13 +128,14 @@ func main() {
 			agentCfg.RedisAddress = redisAddr
 		}
 
-		a, err := agent.New(agentCfg, logger.Named("agent"))
+		a, err = agent.New(agentCfg, logger.Named("agent"))
 		if err != nil {
 			logger.Warn("Failed to initialize Agent, running in frontend-only mode", zap.Error(err))
 			a = nil
 		}
 
 		// Only start backend services if both kernel and agent initialized successfully
+		logger.Info("About to check kernel and agent", zap.Bool("k_is_nil", k == nil), zap.Bool("a_is_nil", a == nil))
 		if k != nil && a != nil {
 			// 3. Unification: Zero-Copy Bridge
 			// Create buffered channel for transcripts
@@ -163,33 +165,40 @@ func main() {
 
 			// 4. Start Services
 			// Start Kernel Background Loops
+			logger.Info("About to start kernel")
 			if err := k.Start(); err != nil {
 				logger.Warn("Failed to start Kernel, running in frontend-only mode", zap.Error(err))
 				k = nil
 			} else {
+				logger.Info("Kernel start succeeded")
 				defer k.Stop()
 			}
 
 			// Start Agent Internals (Connects to Redis, NATS, initializes mkClient)
+			logger.Info("About to start agent")
 			if err := a.Start(); err != nil {
 				logger.Warn("Failed to start Agent, running in frontend-only mode", zap.Error(err))
 				a = nil
 			} else {
+				logger.Info("Agent start succeeded")
 				defer a.Stop()
 			}
 
 			// NOW configure Agent to use Kernel directly (Zero-Copy Consultation)
 			// MUST be called AFTER a.Start() since mkClient is initialized there
+			logger.Info("About to configure agent-kernel bridge", zap.Bool("k_is_nil", k == nil), zap.Bool("a_is_nil", a == nil))
 			if a != nil && k != nil {
 				a.SetKernel(k)
 			}
 		}
+		logger.Info("After backend initialization", zap.Bool("k_is_nil", k == nil), zap.Bool("a_is_nil", a == nil))
 	} else {
 		logger.Info("Running in FRONTEND_ONLY mode - backend services disabled")
 	}
 
 	// 5. Initialize Pre-Cortex (Cognitive Firewall for 90% cost reduction)
 	// Skip if kernel not available
+	logger.Info("About to check pre-cortex", zap.Bool("k_is_nil", k == nil))
 	if k != nil {
 		logger.Info("Initializing Pre-Cortex cognitive firewall...")
 		cacheManager, err := cache.NewManager(cache.DefaultConfig(), logger.Named("cache"))
@@ -256,9 +265,24 @@ func main() {
 
 	// Start API Server
 	router := mux.NewRouter()
-	server := agent.NewServer(a, logger.Named("server"), allowedOrigins...)
-	if err := server.SetupRoutes(router); err != nil {
-		logger.Fatal("Failed to setup routes", zap.Error(err))
+
+	// Only create server if agent is available
+	if a != nil {
+		server := agent.NewServer(a, logger.Named("server"), allowedOrigins...)
+		if err := server.SetupRoutes(router); err != nil {
+			logger.Fatal("Failed to setup routes", zap.Error(err))
+		}
+	} else {
+		logger.Warn("Agent not available, setting up minimal routes for frontend-only mode")
+		// Setup minimal health endpoint
+		router.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"status":"frontend-only","kernel":false,"agent":false}`))
+		}).Methods("GET")
+		router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"status":"frontend-only","kernel":false,"agent":false}`))
+		}).Methods("GET")
 	}
 
 	// Serve static files for web UI (must be after API routes to avoid conflicts)

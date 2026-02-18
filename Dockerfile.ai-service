@@ -1,0 +1,34 @@
+# AI Services - Go gnet-based server for SLM orchestration
+# This replaces the Python FastAPI ai-services
+FROM golang:1.24-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the AI service
+RUN CGO_ENABLED=0 go build -o ai-service ./cmd/ai-service
+
+# Final stage
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates curl
+
+WORKDIR /app
+
+COPY --from=builder /app/ai-service .
+
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["./ai-service"]

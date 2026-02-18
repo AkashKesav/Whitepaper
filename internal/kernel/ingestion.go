@@ -6,7 +6,6 @@ package kernel
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/reflective-memory-kernel/internal/ai/local"
 	"github.com/reflective-memory-kernel/internal/graph"
+	"github.com/reflective-memory-kernel/internal/jsonx"
 	"github.com/reflective-memory-kernel/internal/kernel/wisdom"
 )
 
@@ -252,7 +252,7 @@ func (p *IngestionPipeline) Process(ctx context.Context, data []byte) error {
 	}
 
 	var event graph.TranscriptEvent
-	if err := json.Unmarshal(data, &event); err != nil {
+	if err := jsonx.Unmarshal(data, &event); err != nil {
 		return fmt.Errorf("failed to unmarshal transcript event: %w", err)
 	}
 
@@ -465,7 +465,7 @@ func (p *IngestionPipeline) extractEntities(ctx context.Context, event *graph.Tr
 			AIResponse: event.AIResponse,
 		}
 
-		jsonData, err := json.Marshal(reqBody)
+		jsonData, err := jsonx.Marshal(reqBody)
 		if err != nil {
 			return err
 		}
@@ -490,7 +490,7 @@ func (p *IngestionPipeline) extractEntities(ctx context.Context, event *graph.Tr
 			return fmt.Errorf("extraction service returned status %d", resp.StatusCode)
 		}
 
-		if err := json.NewDecoder(resp.Body).Decode(&entities); err != nil {
+		if err := jsonx.NewDecoder(resp.Body).Decode(&entities); err != nil {
 			return err
 		}
 
@@ -556,7 +556,7 @@ func (p *IngestionPipeline) resolveEntityWithAI(ctx context.Context, newEntity s
 			Candidates: candidates,
 		}
 
-		jsonData, err := json.Marshal(reqBody)
+		jsonData, err := jsonx.Marshal(reqBody)
 		if err != nil {
 			return err
 		}
@@ -581,7 +581,7 @@ func (p *IngestionPipeline) resolveEntityWithAI(ctx context.Context, newEntity s
 			return fmt.Errorf("resolution service returned status %d", resp.StatusCode)
 		}
 
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		if err := jsonx.NewDecoder(resp.Body).Decode(&result); err != nil {
 			return err
 		}
 
@@ -1029,7 +1029,7 @@ func (p *IngestionPipeline) cacheRecentContext(ctx context.Context, event *graph
 	key := fmt.Sprintf("context:%s:recent", ns)
 
 	// Store the last 10 conversation turns
-	data, err := json.Marshal(event)
+	data, err := jsonx.Marshal(event)
 	if err != nil {
 		return err
 	}
@@ -1059,7 +1059,7 @@ func PublishTranscript(js nats.JetStreamContext, event *graph.TranscriptEvent) e
 		event.Timestamp = time.Now()
 	}
 
-	data, err := json.Marshal(event)
+	data, err := jsonx.Marshal(event)
 	if err != nil {
 		return err
 	}

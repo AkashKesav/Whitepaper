@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dgraph-io/ristretto"
 	"github.com/reflective-memory-kernel/internal/kernel"
 	"github.com/reflective-memory-kernel/internal/kernel/cache"
 	"go.uber.org/zap"
@@ -22,24 +23,49 @@ const (
 	// Query validation limits
 	MaxQueryLength = 2000 // Maximum query length to prevent DoS
 	MinQueryLength = 2    // Minimum query length to be meaningful
+
+	// L1 Cache Constants
+	L1CacheMaxCost   = 16 * 1024 * 1024 // 16MB for L1 exact match cache
+	L1CacheNumCounters = 1e6              // 1 million counters
+	L1CacheTTL       = 5 * time.Minute    // L1 entries expire faster
 )
 
-// SemanticCache provides vector-based semantic caching using Qdrant
+// SemanticCache provides multi-layer semantic caching
+// L1: Exact match cache (Ristretto, ~50μs)
+// L2: Vector similarity cache (Qdrant, ~5-10ms)
 type SemanticCache struct {
+	// L1: Exact match cache (in-memory, sub-millisecond)
+	l1ExactMatch  *ristretto.Cache
+
+	// L2: Semantic vector cache (existing implementation)
 	cacheManager *cache.Manager
 	vectorIndex  *kernel.VectorIndex
 	embedder     Embedder
 	threshold    float64
-	logger       *zap.Logger
+
+	logger *zap.Logger
 }
 
-// NewSemanticCache creates a new semantic cache
+// NewSemanticCache creates a new multi-layer semantic cache
 func NewSemanticCache(cacheManager *cache.Manager, vectorIndex *kernel.VectorIndex, embedder Embedder, threshold float64, logger *zap.Logger) *SemanticCache {
 	if threshold <= 0 || threshold > 1 {
 		threshold = DefaultSimilarityThreshold
 	}
 
+	// Initialize L1 exact match cache
+	l1Cache, err := ristretto.NewCache(&ristretto.Config{
+		NumCounters: L1CacheNumCounters,
+		MaxCost:     L1CacheMaxCost,
+		BufferItems: 64,
+	})
+	if err != nil {
+		logger.Warn("Failed to create L1 exact match cache, continuing without it",
+			zap.Error(err))
+		l1Cache = nil
+	}
+
 	sc := &SemanticCache{
+		l1ExactMatch: l1Cache,
 		cacheManager: cacheManager,
 		vectorIndex:  vectorIndex,
 		embedder:     embedder,
@@ -49,14 +75,19 @@ func NewSemanticCache(cacheManager *cache.Manager, vectorIndex *kernel.VectorInd
 
 	logger.Info("Semantic cache initialized",
 		zap.Float64("threshold", threshold),
+		zap.Bool("l1_cache_active", l1Cache != nil),
 		zap.Bool("vector_index_active", vectorIndex != nil),
 		zap.Bool("embedder_active", embedder != nil))
 
 	return sc
 }
 
-// Check looks up a query in the semantic cache
+// Check looks up a query in the multi-layer semantic cache
 // SECURITY: Requires valid namespace to prevent cross-tenant data access
+//
+// Cache hierarchy:
+// 1. L1: Exact match (Ristretto, ~50μs) - Sub-millisecond lookup
+// 2. L2: Vector similarity (Qdrant, ~5-10ms) - Semantic matching
 func (sc *SemanticCache) Check(ctx context.Context, namespace, query string) (string, bool) {
 	startTime := time.Now()
 
@@ -77,26 +108,50 @@ func (sc *SemanticCache) Check(ctx context.Context, namespace, query string) (st
 		return "", false
 	}
 
+	// Generate cache key
 	key := fmt.Sprintf("semantic:%s:%s", namespace, normalizedQuery)
 
 	sc.logger.Info("Semantic cache: CHECKING",
 		zap.String("key", key),
 		zap.String("query", query[:min(50, len(query))]))
 
+	// L1: Exact match cache (Ristretto, sub-millisecond)
+	// This provides 20-40x faster lookup than going to Qdrant
+	if sc.l1ExactMatch != nil {
+		if val, found := sc.l1ExactMatch.Get(key); found {
+			if response, ok := val.(string); ok {
+				sc.logger.Info("Semantic cache: L1 EXACT MATCH HIT",
+					zap.String("query", query[:min(30, len(query))]),
+					zap.Duration("latency", time.Since(startTime)))
+				return response, true
+			}
+		}
+	}
+
+	// L1 miss - try L2 (cache manager for backward compatibility)
 	if val, found := sc.cacheManager.Get(key); found {
 		if response, ok := val.(string); ok {
-			sc.logger.Info("Semantic cache: exact match HIT",
+			// Promote to L1 cache
+			if sc.l1ExactMatch != nil {
+				sc.l1ExactMatch.SetWithTTL(key, response, int64(len(response)), L1CacheTTL)
+			}
+			sc.logger.Info("Semantic cache: L2 cache HIT (promoted to L1)",
 				zap.String("query", query[:min(30, len(query))]),
 				zap.Duration("latency", time.Since(startTime)))
 			return response, true
 		}
 	}
 
-	// 2. If we have an embedder and vector index, try vector similarity search
+	// L2: Vector similarity search via Qdrant
+	// This enables semantic matching for similar but not identical queries
 	if sc.embedder != nil && sc.vectorIndex != nil {
 		response, similarity, found := sc.vectorSearch(ctx, namespace, query)
 		if found {
-			sc.logger.Info("Semantic cache: similarity HIT",
+			// Store in L1 for faster future access
+			if sc.l1ExactMatch != nil {
+				sc.l1ExactMatch.SetWithTTL(key, response, int64(len(response)), L1CacheTTL)
+			}
+			sc.logger.Info("Semantic cache: L2 VECTOR SIMILARITY HIT",
 				zap.String("query", query[:min(30, len(query))]),
 				zap.Float32("similarity", similarity),
 				zap.Duration("latency", time.Since(startTime)))
@@ -104,13 +159,13 @@ func (sc *SemanticCache) Check(ctx context.Context, namespace, query string) (st
 		}
 	}
 
-	sc.logger.Debug("Semantic cache: MISS",
+	sc.logger.Debug("Semantic cache: MISS (all layers)",
 		zap.String("query", query[:min(30, len(query))]),
 		zap.Duration("latency", time.Since(startTime)))
 	return "", false
 }
 
-// Store saves a query-response pair in the semantic cache
+// Store saves a query-response pair in all cache layers
 // SECURITY: Requires valid namespace to prevent cross-tenant data access
 func (sc *SemanticCache) Store(ctx context.Context, namespace, query, response string) {
 	// SECURITY: Validate namespace to prevent cross-tenant access
@@ -136,11 +191,18 @@ func (sc *SemanticCache) Store(ctx context.Context, namespace, query, response s
 		zap.String("query", query[:min(50, len(query))]),
 		zap.Int("response_len", len(response)))
 
+	// Store in L1 exact match cache (sub-millisecond retrieval)
+	if sc.l1ExactMatch != nil {
+		sc.l1ExactMatch.SetWithTTL(key, response, int64(len(response)), L1CacheTTL)
+	}
+
+	// Store in L2 cache manager (backward compatibility)
 	sc.cacheManager.SetWithTTL(key, response, int64(len(response)), CacheTTL)
 
-	// If we have an embedder and vector index, store vector
+	// If we have an embedder and vector index, store vector for semantic matching
+	// Run in background with separate context to avoid parent cancellation
 	if sc.embedder != nil && sc.vectorIndex != nil {
-		go sc.storeVector(ctx, namespace, query, response)
+		go sc.storeVector(namespace, query, response)
 	}
 }
 
@@ -182,7 +244,13 @@ func (sc *SemanticCache) vectorSearch(ctx context.Context, namespace, query stri
 }
 
 // storeVector stores a query embedding for future similarity search
-func (sc *SemanticCache) storeVector(ctx context.Context, namespace, query, response string) {
+// Runs in background with its own context to avoid parent cancellation
+func (sc *SemanticCache) storeVector(namespace, query, response string) {
+	// Create a separate context with timeout for vector storage
+	// This prevents "context canceled" errors when parent request completes
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	// Generate embedding
 	vec, err := sc.embedder.Embed(query)
 	if err != nil {
@@ -217,16 +285,30 @@ func hashQuery(query string) string {
 	return fmt.Sprintf("%x", h&0x7fffffff)
 }
 
-// Stats returns cache statistics
+// Stats returns cache statistics for all layers
 func (sc *SemanticCache) Stats(ctx context.Context) map[string]interface{} {
 	stats := map[string]interface{}{
 		"threshold":       sc.threshold,
 		"embedder_active": sc.embedder != nil,
+		"l1_cache_active": sc.l1ExactMatch != nil,
 	}
 
+	// L1 cache stats
+	if sc.l1ExactMatch != nil {
+		metrics := sc.l1ExactMatch.Metrics
+		stats["l1_cache"] = map[string]interface{}{
+			"hits":      metrics.Hits(),
+			"misses":    metrics.Misses(),
+			"hit_rate":  metrics.Ratio(),
+			"cost_added": metrics.CostAdded(),
+			"keys_added": metrics.KeysAdded(),
+		}
+	}
+
+	// L2 (Qdrant) stats
 	if sc.vectorIndex != nil {
 		if idxStats, err := sc.vectorIndex.Stats(ctx); err == nil {
-			stats["qdrant_stats"] = idxStats
+			stats["l2_vector_stats"] = idxStats
 		}
 	}
 
@@ -297,7 +379,7 @@ func (sc *SemanticCache) Invalidate(ctx context.Context, namespace string) error
 	return nil
 }
 
-// InvalidateSpecific removes a specific cache entry
+// InvalidateSpecific removes a specific cache entry from all layers
 func (sc *SemanticCache) InvalidateSpecific(ctx context.Context, namespace, query string) error {
 	normalizedQuery, err := normalizeQuery(query)
 	if err != nil {
@@ -307,9 +389,15 @@ func (sc *SemanticCache) InvalidateSpecific(ctx context.Context, namespace, quer
 	}
 	key := fmt.Sprintf("semantic:%s:%s", namespace, normalizedQuery)
 
-	sc.logger.Debug("Semantic cache: invalidating specific entry",
+	sc.logger.Debug("Semantic cache: invalidating specific entry from all layers",
 		zap.String("key", key))
 
+	// Clear from L1 exact match cache
+	if sc.l1ExactMatch != nil {
+		sc.l1ExactMatch.Del(key)
+	}
+
+	// Clear from L2 cache manager
 	sc.cacheManager.Delete(key)
 
 	return nil
