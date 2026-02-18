@@ -168,6 +168,23 @@ func (r *Router) Generate(ctx context.Context, req *GenerateRequest) (*GenerateR
 	provider := req.Provider
 	if provider == "" {
 		provider = r.defaultProvider
+
+		// If user has their own API keys, prefer those providers over Ollama
+		if req.UserAPIKeys != nil {
+			if _, ok := req.UserAPIKeys["nim"]; ok && req.UserAPIKeys["nim"] != "" {
+				provider = ProviderNVIDIA
+				r.logger.Debug("Using user's NVIDIA API key, switching provider", zap.String("provider", string(provider)))
+			} else if _, ok := req.UserAPIKeys["openai"]; ok && req.UserAPIKeys["openai"] != "" {
+				provider = ProviderOpenAI
+				r.logger.Debug("Using user's OpenAI API key, switching provider", zap.String("provider", string(provider)))
+			} else if _, ok := req.UserAPIKeys["anthropic"]; ok && req.UserAPIKeys["anthropic"] != "" {
+				provider = ProviderAnthropic
+				r.logger.Debug("Using user's Anthropic API key, switching provider", zap.String("provider", string(provider)))
+			} else if _, ok := req.UserAPIKeys["glm"]; ok && req.UserAPIKeys["glm"] != "" {
+				provider = ProviderGLM
+				r.logger.Debug("Using user's GLM API key, switching provider", zap.String("provider", string(provider)))
+			}
+		}
 	}
 
 	// Build system prompt
