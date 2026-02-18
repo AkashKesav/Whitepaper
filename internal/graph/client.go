@@ -3003,7 +3003,7 @@ func (c *Client) GetUserSettings(ctx context.Context, userID string) (*UserSetti
 
 	var result struct {
 		User []struct {
-			UserSettings []struct {
+			UserSettings *struct {
 				UID                     string `json:"uid"`
 				NimApiKeyEncrypted     string `json:"nim_api_key_encrypted"`
 				OpenaiApiKeyEncrypted  string `json:"openai_api_key_encrypted"`
@@ -3020,24 +3020,8 @@ func (c *Client) GetUserSettings(ctx context.Context, userID string) (*UserSetti
 		return &UserSettings{UserID: userID}, nil
 	}
 
-	// Extract settings from the nested structure
-	var settingsList []struct {
-		UID                     string `json:"uid"`
-		NimApiKeyEncrypted     string `json:"nim_api_key_encrypted"`
-		OpenaiApiKeyEncrypted  string `json:"openai_api_key_encrypted"`
-		AnthropicApiKeyEncrypted string `json:"anthropic_api_key_encrypted"`
-		GlmApiKeyEncrypted     string `json:"glm_api_key_encrypted"`
-		Theme                    string `json:"theme"`
-		NotificationsEnabled    bool   `json:"notifications_enabled"`
-		UpdatedAt               string `json:"updated_at"`
-	}
-	if len(result.User) > 0 && len(result.User[0].UserSettings) > 0 {
-		settingsList = result.User[0].UserSettings
-	}
-
-	c.logger.Debug("Settings found", zap.Int("count", len(settingsList)))
-
-	if len(settingsList) == 0 {
+	// Check if we have settings
+	if len(result.User) == 0 || result.User[0].UserSettings == nil {
 		// No settings found, return defaults
 		c.logger.Debug("No settings found for user, returning defaults", zap.String("user", userID))
 		return &UserSettings{
@@ -3047,7 +3031,7 @@ func (c *Client) GetUserSettings(ctx context.Context, userID string) (*UserSetti
 		}, nil
 	}
 
-	s := settingsList[0]
+	s := result.User[0].UserSettings
 	updatedAt, _ := time.Parse(time.RFC3339, s.UpdatedAt)
 
 	c.logger.Debug("Returning settings", zap.String("user", userID), zap.Bool("has_nim_key", s.NimApiKeyEncrypted != ""))
