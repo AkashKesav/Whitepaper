@@ -213,8 +213,8 @@ func (c *Client) initSchema(ctx context.Context) error {
 		}
 
 		# Predicates with indexes
-		name: string @index(hash) .
-		description: string .
+		name: string @index(hash) @index(fulltext) .
+		description: string @index(fulltext) .
 		attributes: [string] .
 		tags: [string] .
 		entity_type: string @index(exact) .
@@ -318,6 +318,7 @@ func (c *Client) initSchema(ctx context.Context) error {
 		nim_api_key_encrypted: string .
 		openai_api_key_encrypted: string .
 		anthropic_api_key_encrypted: string .
+		glm_api_key_encrypted: string .
 		theme: string .
 		notifications_enabled: bool .
 
@@ -2812,13 +2813,14 @@ func (c *Client) GetShareLinks(ctx context.Context, workspaceNS string) ([]Share
 
 // UserSettings represents user preferences including encrypted API keys
 type UserSettings struct {
-	UserID                  string
-	NimApiKeyEncrypted     string
-	OpenaiApiKeyEncrypted  string
+	UserID                    string
+	NimApiKeyEncrypted       string
+	OpenaiApiKeyEncrypted    string
 	AnthropicApiKeyEncrypted string
-	Theme                   string
-	NotificationsEnabled    bool
-	UpdatedAt               time.Time
+	GlmApiKeyEncrypted       string
+	Theme                     string
+	NotificationsEnabled      bool
+	UpdatedAt                 time.Time
 }
 
 // StoreUserSettings stores encrypted user settings in DGraph
@@ -2873,6 +2875,7 @@ func (c *Client) StoreUserSettings(ctx context.Context, userID string, settings 
 			"nim_api_key_encrypted":   settings.NimApiKeyEncrypted,
 			"openai_api_key_encrypted": settings.OpenaiApiKeyEncrypted,
 			"anthropic_api_key_encrypted": settings.AnthropicApiKeyEncrypted,
+			"glm_api_key_encrypted":   settings.GlmApiKeyEncrypted,
 			"theme":                   settings.Theme,
 			"notifications_enabled":   settings.NotificationsEnabled,
 			"updated_at":              now,
@@ -2882,7 +2885,8 @@ func (c *Client) StoreUserSettings(ctx context.Context, userID string, settings 
 		c.logger.Debug("Updating settings",
 			zap.String("nim_len", fmt.Sprintf("%d", len(settings.NimApiKeyEncrypted))),
 			zap.String("openai_len", fmt.Sprintf("%d", len(settings.OpenaiApiKeyEncrypted))),
-			zap.String("anthropic_len", fmt.Sprintf("%d", len(settings.AnthropicApiKeyEncrypted))))
+			zap.String("anthropic_len", fmt.Sprintf("%d", len(settings.AnthropicApiKeyEncrypted))),
+			zap.String("glm_len", fmt.Sprintf("%d", len(settings.GlmApiKeyEncrypted))))
 
 		jsonData, err := json.Marshal(updateData)
 		if err != nil {
@@ -2909,6 +2913,7 @@ func (c *Client) StoreUserSettings(ctx context.Context, userID string, settings 
 			"nim_api_key_encrypted":    settings.NimApiKeyEncrypted,
 			"openai_api_key_encrypted": settings.OpenaiApiKeyEncrypted,
 			"anthropic_api_key_encrypted": settings.AnthropicApiKeyEncrypted,
+			"glm_api_key_encrypted":    settings.GlmApiKeyEncrypted,
 			"theme":                    settings.Theme,
 			"notifications_enabled":    settings.NotificationsEnabled,
 			"updated_at":               now,
@@ -2978,6 +2983,7 @@ func (c *Client) GetUserSettings(ctx context.Context, userID string) (*UserSetti
 				nim_api_key_encrypted
 				openai_api_key_encrypted
 				anthropic_api_key_encrypted
+				glm_api_key_encrypted
 				theme
 				notifications_enabled
 				updated_at
@@ -3002,6 +3008,7 @@ func (c *Client) GetUserSettings(ctx context.Context, userID string) (*UserSetti
 				NimApiKeyEncrypted     string `json:"nim_api_key_encrypted"`
 				OpenaiApiKeyEncrypted  string `json:"openai_api_key_encrypted"`
 				AnthropicApiKeyEncrypted string `json:"anthropic_api_key_encrypted"`
+				GlmApiKeyEncrypted     string `json:"glm_api_key_encrypted"`
 				Theme                    string `json:"theme"`
 				NotificationsEnabled    bool   `json:"notifications_enabled"`
 				UpdatedAt               string `json:"updated_at"`
@@ -3019,6 +3026,7 @@ func (c *Client) GetUserSettings(ctx context.Context, userID string) (*UserSetti
 		NimApiKeyEncrypted     string `json:"nim_api_key_encrypted"`
 		OpenaiApiKeyEncrypted  string `json:"openai_api_key_encrypted"`
 		AnthropicApiKeyEncrypted string `json:"anthropic_api_key_encrypted"`
+		GlmApiKeyEncrypted     string `json:"glm_api_key_encrypted"`
 		Theme                    string `json:"theme"`
 		NotificationsEnabled    bool   `json:"notifications_enabled"`
 		UpdatedAt               string `json:"updated_at"`
@@ -3045,13 +3053,14 @@ func (c *Client) GetUserSettings(ctx context.Context, userID string) (*UserSetti
 	c.logger.Debug("Returning settings", zap.String("user", userID), zap.Bool("has_nim_key", s.NimApiKeyEncrypted != ""))
 
 	return &UserSettings{
-		UserID:                  userID,
-		NimApiKeyEncrypted:     s.NimApiKeyEncrypted,
-		OpenaiApiKeyEncrypted:  s.OpenaiApiKeyEncrypted,
+		UserID:                    userID,
+		NimApiKeyEncrypted:       s.NimApiKeyEncrypted,
+		OpenaiApiKeyEncrypted:    s.OpenaiApiKeyEncrypted,
 		AnthropicApiKeyEncrypted: s.AnthropicApiKeyEncrypted,
-		Theme:                   s.Theme,
-		NotificationsEnabled:    s.NotificationsEnabled,
-		UpdatedAt:               updatedAt,
+		GlmApiKeyEncrypted:       s.GlmApiKeyEncrypted,
+		Theme:                     s.Theme,
+		NotificationsEnabled:      s.NotificationsEnabled,
+		UpdatedAt:                 updatedAt,
 	}, nil
 }
 
@@ -3100,6 +3109,8 @@ func (c *Client) DeleteUserAPIKey(ctx context.Context, userID, provider string) 
 		predicateName = "openai_api_key_encrypted"
 	case "anthropic":
 		predicateName = "anthropic_api_key_encrypted"
+	case "glm":
+		predicateName = "glm_api_key_encrypted"
 	default:
 		return fmt.Errorf("unknown provider: %s", provider)
 	}

@@ -7,6 +7,9 @@ import {
     LogOut, Trash2, Download, Upload, Cpu, X
 } from 'lucide-react';
 import { NVIDIAConfigCard } from '@/components/settings/NVIDIAConfigCard';
+import { OpenAIConfigCard } from '@/components/settings/OpenAIConfigCard';
+import { AnthropicConfigCard } from '@/components/settings/AnthropicConfigCard';
+import { GLMConfigCard } from '@/components/settings/GLMConfigCard';
 
 type SettingsSection = 'profile' | 'notifications' | 'api' | 'ai-providers' | 'appearance' | 'privacy' | 'data';
 
@@ -205,6 +208,81 @@ export const Settings: React.FC = () => {
                                     onTest={async (key) => {
                                         try {
                                             const response = await fetch('/api/test/nim', {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ api_key: key })
+                                            });
+                                            const result = await response.json();
+                                            return result.success === true;
+                                        } catch {
+                                            return false;
+                                        }
+                                    }}
+                                />
+                                <OpenAIConfigCard
+                                    apiKey={preferences.openaiApiKey}
+                                    hasKey={preferences.hasOpenaiKey}
+                                    onSave={async (key) => {
+                                        const result = await saveAPIKey('openai', key);
+                                        return result.success;
+                                    }}
+                                    onDelete={async () => {
+                                        const result = await deleteAPIKey('openai');
+                                        return result.success;
+                                    }}
+                                    onTest={async (key) => {
+                                        try {
+                                            const response = await fetch('/api/test/openai', {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ api_key: key })
+                                            });
+                                            const result = await response.json();
+                                            return result.success === true;
+                                        } catch {
+                                            return false;
+                                        }
+                                    }}
+                                />
+                                <AnthropicConfigCard
+                                    apiKey={preferences.anthropicApiKey}
+                                    hasKey={preferences.hasAnthropicKey}
+                                    onSave={async (key) => {
+                                        const result = await saveAPIKey('anthropic', key);
+                                        return result.success;
+                                    }}
+                                    onDelete={async () => {
+                                        const result = await deleteAPIKey('anthropic');
+                                        return result.success;
+                                    }}
+                                    onTest={async (key) => {
+                                        try {
+                                            const response = await fetch('/api/test/anthropic', {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ api_key: key })
+                                            });
+                                            const result = await response.json();
+                                            return result.success === true;
+                                        } catch {
+                                            return false;
+                                        }
+                                    }}
+                                />
+                                <GLMConfigCard
+                                    apiKey={preferences.glmApiKey}
+                                    hasKey={preferences.hasGlmKey}
+                                    onSave={async (key) => {
+                                        const result = await saveAPIKey('glm', key);
+                                        return result.success;
+                                    }}
+                                    onDelete={async () => {
+                                        const result = await deleteAPIKey('glm');
+                                        return result.success;
+                                    }}
+                                    onTest={async (key) => {
+                                        try {
+                                            const response = await fetch('/api/test/glm', {
                                                 method: 'POST',
                                                 headers: { 'Content-Type': 'application/json' },
                                                 body: JSON.stringify({ api_key: key })

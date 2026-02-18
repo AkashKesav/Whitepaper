@@ -617,6 +617,19 @@ func (a *Agent) getUserAPIKeys(ctx context.Context, userID string) (map[string]s
 		}
 	}
 
+	// Decrypt GLM API key
+	if settings.GlmApiKeyEncrypted != "" {
+		decrypted, err := a.crypto.Decrypt(settings.GlmApiKeyEncrypted)
+		if err != nil {
+			a.logger.Warn("Failed to decrypt GLM API key", zap.Error(err))
+		} else {
+			keys["glm"] = decrypted
+			a.logger.Debug("Using user's GLM API key",
+				zap.String("user", userID),
+				zap.String("key_preview", MaskAPIKey(decrypted)))
+		}
+	}
+
 	return keys, nil
 }
 

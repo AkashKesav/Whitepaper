@@ -10,9 +10,11 @@ interface UserPreferences {
     nimApiKey: string;  // Local temporary storage before save
     openaiApiKey: string;  // Local temporary storage before save
     anthropicApiKey: string;  // Local temporary storage before save
+    glmApiKey: string;  // Local temporary storage before save
     hasNimKey: boolean;  // Backend status
     hasOpenaiKey: boolean;  // Backend status
     hasAnthropicKey: boolean;  // Backend status
+    hasGlmKey: boolean;  // Backend status
     theme: 'dark' | 'light' | 'system';
     notifications: boolean;
 }
@@ -23,8 +25,8 @@ interface AuthContextType {
     isLoading: boolean;
     preferences: UserPreferences;
     updatePreference: (key: keyof UserPreferences, value: string) => void;
-    saveAPIKey: (provider: 'nim' | 'openai' | 'anthropic', key: string) => Promise<{ success: boolean; error?: string }>;
-    deleteAPIKey: (provider: 'nim' | 'openai' | 'anthropic') => Promise<{ success: boolean; error?: string }>;
+    saveAPIKey: (provider: 'nim' | 'openai' | 'anthropic' | 'glm', key: string) => Promise<{ success: boolean; error?: string }>;
+    deleteAPIKey: (provider: 'nim' | 'openai' | 'anthropic' | 'glm') => Promise<{ success: boolean; error?: string }>;
     loadPreferences: () => Promise<void>;
     login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
     register: (username: string, password: string, role: 'admin' | 'user') => Promise<{ success: boolean; error?: string }>;
@@ -63,9 +65,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         nimApiKey: '',  // Local temporary storage before save
         openaiApiKey: '',  // Local temporary storage before save
         anthropicApiKey: '',  // Local temporary storage before save
+        glmApiKey: '',  // Local temporary storage before save
         hasNimKey: false,  // Backend status
         hasOpenaiKey: false,  // Backend status
         hasAnthropicKey: false,  // Backend status
+        hasGlmKey: false,  // Backend status
         theme: (localStorage.getItem('rmk_theme') as 'dark' | 'light' | 'system') || 'dark',
         notifications: localStorage.getItem('rmk_notifications') === 'true',
     }));
@@ -95,9 +99,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     nimApiKey: '',  // Never load actual keys, only status
                     openaiApiKey: '',
                     anthropicApiKey: '',
+                    glmApiKey: '',
                     hasNimKey: data.has_nim_key || false,
                     hasOpenaiKey: data.has_openai_key || false,
                     hasAnthropicKey: data.has_anthropic_key || false,
+                    hasGlmKey: data.has_glm_key || false,
                     theme: data.theme || prev.theme,
                     notifications: data.notifications_enabled ?? prev.notifications,
                 }));
@@ -108,7 +114,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }, []);
 
     // Save API key to backend (encrypted)
-    const saveAPIKey = useCallback(async (provider: 'nim' | 'openai' | 'anthropic', key: string): Promise<{ success: boolean; error?: string }> => {
+    const saveAPIKey = useCallback(async (provider: 'nim' | 'openai' | 'anthropic' | 'glm', key: string): Promise<{ success: boolean; error?: string }> => {
         const token = localStorage.getItem('rmk_token');
         if (!token) return { success: false, error: 'Not authenticated' };
 
@@ -117,6 +123,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (provider === 'nim') body.nim_api_key = key;
             if (provider === 'openai') body.openai_api_key = key;
             if (provider === 'anthropic') body.anthropic_api_key = key;
+            if (provider === 'glm') body.glm_api_key = key;
 
             const response = await fetch(`${API_BASE_URL}/api/user/settings`, {
                 method: 'PUT',
@@ -141,7 +148,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }, [loadPreferences]);
 
     // Delete API key from backend
-    const deleteAPIKey = useCallback(async (provider: 'nim' | 'openai' | 'anthropic'): Promise<{ success: boolean; error?: string }> => {
+    const deleteAPIKey = useCallback(async (provider: 'nim' | 'openai' | 'anthropic' | 'glm'): Promise<{ success: boolean; error?: string }> => {
         const token = localStorage.getItem('rmk_token');
         if (!token) return { success: false, error: 'Not authenticated' };
 
@@ -261,9 +268,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             nimApiKey: '',
             openaiApiKey: '',
             anthropicApiKey: '',
+            glmApiKey: '',
             hasNimKey: false,
             hasOpenaiKey: false,
             hasAnthropicKey: false,
+            hasGlmKey: false,
         }));
     }, []);
 

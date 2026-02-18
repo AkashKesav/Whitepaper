@@ -2454,10 +2454,11 @@ func (s *Server) handleTestNIM(w http.ResponseWriter, r *http.Request) {
 
 // UserSettingsRequest represents user settings save request
 type UserSettingsRequest struct {
-	NimApiKey      string `json:"nim_api_key,omitempty"`
-	OpenaiApiKey   string `json:"openai_api_key,omitempty"`
+	NimApiKey       string `json:"nim_api_key,omitempty"`
+	OpenaiApiKey    string `json:"openai_api_key,omitempty"`
 	AnthropicApiKey string `json:"anthropic_api_key,omitempty"`
-	Theme          string `json:"theme,omitempty"`
+	GlmApiKey       string `json:"glm_api_key,omitempty"`
+	Theme           string `json:"theme,omitempty"`
 }
 
 // UserSettingsResponse represents user settings response (never returns actual keys)
@@ -2465,6 +2466,7 @@ type UserSettingsResponse struct {
 	HasNimKey            bool   `json:"has_nim_key"`
 	HasOpenaiKey         bool   `json:"has_openai_key"`
 	HasAnthropicKey      bool   `json:"has_anthropic_key"`
+	HasGlmKey            bool   `json:"has_glm_key"`
 	Theme                string `json:"theme"`
 	NotificationsEnabled bool   `json:"notifications_enabled"`
 	UpdatedAt            string `json:"updated_at"`
@@ -2490,6 +2492,7 @@ func (s *Server) handleGetUserSettings(w http.ResponseWriter, r *http.Request) {
 		HasNimKey:            settings.NimApiKeyEncrypted != "" && settings.NimApiKeyEncrypted != "[]",
 		HasOpenaiKey:         settings.OpenaiApiKeyEncrypted != "" && settings.OpenaiApiKeyEncrypted != "[]",
 		HasAnthropicKey:      settings.AnthropicApiKeyEncrypted != "" && settings.AnthropicApiKeyEncrypted != "[]",
+		HasGlmKey:            settings.GlmApiKeyEncrypted != "" && settings.GlmApiKeyEncrypted != "[]",
 		Theme:                settings.Theme,
 		NotificationsEnabled: settings.NotificationsEnabled,
 		UpdatedAt:            settings.UpdatedAt.Format(time.RFC3339),
@@ -2595,6 +2598,26 @@ func (s *Server) handleSaveUserSettings(w http.ResponseWriter, r *http.Request) 
 		settings.AnthropicApiKeyEncrypted = existingSettings.AnthropicApiKeyEncrypted
 	}
 
+	// Encrypt and store GLM API key
+	if req.GlmApiKey != "" {
+		if s.crypto == nil {
+			http.Error(w, "Encryption service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		encrypted, err := s.crypto.Encrypt(req.GlmApiKey)
+		if err != nil {
+			s.logger.Error("Failed to encrypt GLM API key", zap.Error(err))
+			http.Error(w, "Failed to encrypt API key", http.StatusInternalServerError)
+			return
+		}
+		settings.GlmApiKeyEncrypted = encrypted
+		s.logger.Info("GLM API key encrypted for user",
+			zap.String("user", userID),
+			zap.String("key_preview", MaskAPIKey(req.GlmApiKey)))
+	} else {
+		settings.GlmApiKeyEncrypted = existingSettings.GlmApiKeyEncrypted
+	}
+
 	// Save to DGraph
 	if err := s.agent.mkClient.StoreUserSettings(r.Context(), userID, settings); err != nil {
 		s.logger.Error("Failed to store user settings", zap.Error(err))
@@ -2606,7 +2629,8 @@ func (s *Server) handleSaveUserSettings(w http.ResponseWriter, r *http.Request) 
 		zap.String("user", userID),
 		zap.Bool("has_nim_key", settings.NimApiKeyEncrypted != ""),
 		zap.Bool("has_openai_key", settings.OpenaiApiKeyEncrypted != ""),
-		zap.Bool("has_anthropic_key", settings.AnthropicApiKeyEncrypted != ""))
+		zap.Bool("has_anthropic_key", settings.AnthropicApiKeyEncrypted != ""),
+		zap.Bool("has_glm_key", settings.GlmApiKeyEncrypted != ""))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -2628,6 +2652,7 @@ func (s *Server) handleDeleteUserAPIKey(w http.ResponseWriter, r *http.Request) 
 		"nim":       true,
 		"openai":    true,
 		"anthropic": true,
+		"glm":       true,
 	}
 	if !validProviders[provider] {
 		http.Error(w, "Invalid provider", http.StatusBadRequest)

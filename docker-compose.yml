@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # DGraph Zero - Cluster management
   dgraph-zero:
@@ -43,7 +41,7 @@ services:
 
   # NATS - Message queue for streaming
   nats:
-    image: nats:2.10-alpine
+    image: nats:alpine
     container_name: rmk-nats
     ports:
       - "4322:4222"
@@ -74,22 +72,33 @@ services:
       timeout: 3s
       retries: 5
 
-  # AI Services - Python FastAPI for SLM orchestration (NVIDIA NIM only)
+  # AI Services - Go gnet-based server for SLM orchestration
+  # Replaces Python FastAPI with high-performance Go implementation
   ai-services:
     build:
-      context: ./ai
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: Dockerfile.ai-service
     container_name: rmk-ai-services
     ports:
       - "8000:8000"
-    env_file:
-      - .env
     environment:
       - GLM_API_KEY=${GLM_API_KEY:-}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OLLAMA_URL=http://ollama:11434
+      - AI_SERVICE_HOST=0.0.0.0
+      - AI_SERVICE_PORT=8000
+      - LOG_LEVEL=info
+      - AI_CLASSIFICATION_TIMEOUT=15s
     networks:
       - rmk-network
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # Ollama - Local LLM/Embedding service (replaces ONNX)
   ollama:
@@ -101,12 +110,13 @@ services:
       - ollama-data:/root/.ollama
     networks:
       - rmk-network
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 10 && ollama pull nomic-embed-text && sleep infinity"]
     healthcheck:
-      test: [ "CMD-SHELL", "ollama list || exit 1" ]
-      interval: 10s
-      timeout: 5s
+      test: [ "CMD-SHELL", "ollama list | grep nomic-embed-text || exit 1" ]
+      interval: 15s
+      timeout: 10s
       retries: 5
-      start_period: 30s
+      start_period: 120s
 
   # Qdrant - Vector database for Hybrid RAG
   qdrant:
@@ -125,6 +135,74 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  # Inngest - Durable execution for workflows
+  inngest:
+    image: inngest/inngest:latest
+    container_name: rmk-inngest
+    command: ["/bin/sh", "-c", "exec /usr/bin/inngest dev"]
+    ports:
+      - "8288:8288"
+      - "8283:8283"
+    environment:
+      - INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY:-test-event-key}
+      - INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY:-test-signing-key}
+      - INNGEST_DATABASE_POSTGRES_STRING=postgresql://postgres:postgres@inngest-db:5432/inngest
+      - INNGEST_JOBS_DATABASE_POSTGRES_STRING=postgresql://postgres:postgres@inngest-db:5432/inngest
+      - INNGEST_ENV=dev
+    networks:
+      - rmk-network
+    depends_on:
+      - inngest-db
+    # Disable healthcheck for now - inngest image doesn't have wget/curl
+    # and the service logs show it's running fine
+
+  # Inngest PostgreSQL - Database for Inngest state
+  inngest-db:
+    image: postgres:15-alpine
+    container_name: rmk-inngest-db
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=inngest
+    volumes:
+      - inngest-db-data:/var/lib/postgresql/data
+    networks:
+      - rmk-network
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "postgres" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Workflow Worker - Inngest workflow processor for RMK
+  workflow-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.workflow
+    container_name: rmk-workflow-worker
+    ports:
+      - "8082:8082"
+    environment:
+      - DGRAPH_ADDRESS=dgraph-alpha:9080
+      - INNGEST_API_KEY=${INNGEST_SIGNING_KEY:-test-signing-key}
+      - INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY:-test-event-key}
+      - INNGEST_APP_ID=rmk-workflows
+      - OLLAMA_URL=http://ollama:11434
+      - LOG_LEVEL=info
+      - ADDR=:8082
+    networks:
+      - rmk-network
+    depends_on:
+      - dgraph-alpha
+      - ollama
+      - inngest
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8082/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   # Monolith - Unified Agent + Kernel (Quantum Architecture)
   monolith:
@@ -175,6 +253,7 @@ volumes:
   redis-data:
   ollama-data:
   qdrant-data:
+  inngest-db-data:
 
 
 networks:
