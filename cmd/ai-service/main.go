@@ -251,6 +251,15 @@ func setupRoutes(engine *server.Engine, svc *AIService) {
 		}
 		return svc.cognifyBatch(req, r)
 	})
+
+	// Summarize batch (for wisdom layer entity extraction)
+	engine.POST("/summarize_batch", func(req *server.Request) *server.Response {
+		var r SummarizeBatchRequest
+		if err := server.ParseJSON(req, &r); err != nil {
+			return server.JSON(map[string]string{"error": "invalid request", "details": err.Error()}, 400)
+		}
+		return svc.summarizeBatch(req, r)
+	})
 }
 
 // Request/Response types
@@ -402,6 +411,18 @@ type CognifyResult struct {
 	SourceID   string            `json:"source_id"`
 	Entities   []ExtractedEntity `json:"entities,omitempty"`
 	Relations  []interface{}     `json:"relations,omitempty"`
+}
+
+// SummarizeBatchRequest is the request for wisdom layer summarization
+type SummarizeBatchRequest struct {
+	Text string `json:"text"`
+	Type string `json:"type"` // "crystallize"
+}
+
+// SummarizeBatchResponse is the response for wisdom layer summarization
+type SummarizeBatchResponse struct {
+	Summary  string            `json:"summary"`
+	Entities []ExtractedEntity `json:"entities"`
 }
 
 // Handler implementations
@@ -974,6 +995,85 @@ func (s *AIService) cognifyBatch(req *server.Request, r CognifyBatchRequest) *se
 	}
 
 	return server.JSON(results, 200)
+}
+
+// summarizeBatch handles wisdom layer crystallization - extracts entities from conversation
+func (s *AIService) summarizeBatch(req *server.Request, r SummarizeBatchRequest) *server.Response {
+	start := time.Now()
+	ctx := context.Background()
+
+	// Build extraction prompt for conversation
+	prompt := fmt.Sprintf(`Analyze this conversation and extract meaningful entities and facts. Return JSON.
+
+Conversation:
+%s
+
+INSTRUCTIONS:
+1. Extract entities that represent important information shared by the user
+2. Focus on: preferences, relationships, facts about the user, important events, locations, organizations
+3. Each entity should have a clear name, type, and description
+4. Also provide a brief summary of the conversation
+
+Return JSON:
+{
+  "summary": "A brief summary of the key information shared",
+  "entities": [
+    {"name": "Entity Name", "type": "Person|Preference|Location|Organization|Event|Fact|Concept", "description": "What we learned about this entity"}
+  ]
+}
+
+IMPORTANT:
+- Skip generic greetings (hi, hello, thanks, bye)
+- Only extract meaningful facts and preferences
+- Be specific in descriptions
+
+JSON:`, r.Text)
+
+	// Use LLM to extract
+	result, err := s.llmRouter.ExtractJSON(ctx, prompt, "", "")
+	if err != nil {
+		s.logger.Warn("summarize_batch extraction failed", zap.Error(err))
+		return server.JSON(SummarizeBatchResponse{
+			Summary:  "Failed to extract summary",
+			Entities: []ExtractedEntity{},
+		}, 200)
+	}
+
+	// Parse summary
+	summary := getString(result, "summary")
+	if summary == "" {
+		summary = "Conversation processed"
+	}
+
+	// Parse entities
+	entities := []ExtractedEntity{}
+	if entityArray, ok := result["entities"].([]interface{}); ok {
+		for _, item := range entityArray {
+			if entityMap, ok := item.(map[string]interface{}); ok {
+				name := getString(entityMap, "name")
+				if name == "" {
+					continue
+				}
+				entities = append(entities, ExtractedEntity{
+					Name:        name,
+					Type:        getString(entityMap, "type"),
+					Description: getString(entityMap, "description"),
+					Source:      "wisdom_layer",
+					Confidence:  0.85,
+				})
+			}
+		}
+	}
+
+	s.logger.Info("summarize_batch completed",
+		zap.Int("entity_count", len(entities)),
+		zap.String("summary_preview", summary[:min(50, len(summary))]),
+		zap.Duration("duration", time.Since(start)))
+
+	return server.JSON(SummarizeBatchResponse{
+		Summary:  summary,
+		Entities: entities,
+	}, 200)
 }
 
 func (s *AIService) extractEntitiesFromContent(ctx context.Context, content, sourceTable string) []map[string]string {
