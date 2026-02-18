@@ -274,6 +274,7 @@ type ExtractedEntity struct {
 	Name        string                 `json:"name"`
 	Type        string                 `json:"type"`
 	Description string                 `json:"description,omitempty"`
+	SourceText  string                 `json:"source_text,omitempty"` // Original user sentence
 	Tags        []string               `json:"tags,omitempty"`
 	Attributes  map[string]interface{} `json:"attributes,omitempty"`
 	Relations   []interface{}          `json:"relations,omitempty"`
@@ -1011,14 +1012,19 @@ Conversation:
 INSTRUCTIONS:
 1. Extract entities that represent important information shared by the user
 2. Focus on: preferences, relationships, facts about the user, important events, locations, organizations
-3. Each entity should have a clear name, type, and description
+3. Each entity should have a clear name, type, description, and the EXACT source sentence from the user
 4. Also provide a brief summary of the conversation
 
 Return JSON:
 {
   "summary": "A brief summary of the key information shared",
   "entities": [
-    {"name": "Entity Name", "type": "Person|Preference|Location|Organization|Event|Fact|Concept", "description": "What we learned about this entity"}
+    {
+      "name": "Entity Name",
+      "type": "Person|Preference|Location|Organization|Event|Fact|Concept",
+      "description": "What we learned about this entity",
+      "source_text": "The exact sentence from the user where this information was mentioned"
+    }
   ]
 }
 
@@ -1026,6 +1032,7 @@ IMPORTANT:
 - Skip generic greetings (hi, hello, thanks, bye)
 - Only extract meaningful facts and preferences
 - Be specific in descriptions
+- The source_text should be a direct quote from the user's message
 
 JSON:`, r.Text)
 
@@ -1058,6 +1065,7 @@ JSON:`, r.Text)
 					Name:        name,
 					Type:        getString(entityMap, "type"),
 					Description: getString(entityMap, "description"),
+					SourceText:  getString(entityMap, "source_text"),
 					Source:      "wisdom_layer",
 					Confidence:  0.85,
 				})

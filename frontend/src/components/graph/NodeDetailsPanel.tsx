@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Clock, Zap, Link2, Tag, ChevronRight } from 'lucide-react';
+import { X, Clock, Zap, Link2, Tag, ChevronRight, Quote } from 'lucide-react';
 import { GraphNode } from './MemoryGraph2D';
 
 interface NodeDetailsPanelProps {
@@ -16,6 +16,8 @@ const GROUP_COLORS: Record<string, string> = {
     Entity: '#8b5cf6',
     Insight: '#ec4899',
     Pattern: '#14b8a6',
+    Fact: '#22c55e',
+    Preference: '#f59e0b',
 };
 
 export const NodeDetailsPanel: React.FC<NodeDetailsPanelProps> = ({
@@ -98,6 +100,24 @@ export const NodeDetailsPanel: React.FC<NodeDetailsPanelProps> = ({
                         </span>
                     </div>
                 </div>
+
+                {/* Source Text - Quote from user */}
+                {node.sourceText && (
+                    <div>
+                        <div className="flex items-center gap-2 mb-2">
+                            <Quote className="w-3 h-3 text-purple-400" />
+                            <span className="text-xs font-medium text-zinc-400 uppercase tracking-wide">Source</span>
+                        </div>
+                        <div
+                            className="bg-zinc-800/50 rounded-lg p-3 border-l-2"
+                            style={{ borderColor: color }}
+                        >
+                            <p className="text-xs text-zinc-300 italic leading-relaxed">
+                                "{node.sourceText}"
+                            </p>
+                        </div>
+                    </div>
+                )}
 
                 {/* Properties */}
                 {node.properties && Object.keys(node.properties).length > 0 && (

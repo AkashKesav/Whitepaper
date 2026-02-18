@@ -283,6 +283,7 @@ func (wm *WisdomManager) localExtractEntities(events []graph.TranscriptEvent) (s
 				Name:        wm.extractKeyPhrase(userMessage),
 				Type:        graph.NodeTypeFact,
 				Description: userMessage,
+				SourceText:  userMessage, // Store the original user sentence
 			})
 			summaryParts = append(summaryParts, userMessage)
 		}

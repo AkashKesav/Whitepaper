@@ -11,6 +11,7 @@ export interface GraphNode {
     size?: number;
     activation?: number;
     lastAccessed?: string;
+    sourceText?: string; // Original quote from user
     properties?: Record<string, any>;
 }
 
@@ -77,6 +78,7 @@ export const MemoryGraph2D: React.FC<MemoryGraph2DProps> = ({
                 group: n.group || 'Entity',
                 val: (n.size || 10) * Math.max(0.5, n.activation || 0.5),
                 activation: n.activation || 0.5,
+                sourceText: n.sourceText, // Pass through source text
                 originalData: n,
             }));
 

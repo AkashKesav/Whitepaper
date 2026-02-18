@@ -26,6 +26,8 @@ export interface GraphNode {
     label?: string;
     group?: string;
     size?: number;
+    activation?: number;
+    source_text?: string; // Original quote from user
 }
 
 export interface GraphEdge {

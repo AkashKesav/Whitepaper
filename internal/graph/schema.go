@@ -146,6 +146,7 @@ type Node struct {
 	DType       []string          `json:"dgraph.type,omitempty"`
 	Name        string            `json:"name,omitempty"`
 	Description string            `json:"description,omitempty"`
+	SourceText  string            `json:"source_text,omitempty"` // Original quote from user conversation
 	Tags        []string          `json:"tags,omitempty"`
 	Attributes  map[string]string `json:"attributes,omitempty"`
 
@@ -321,6 +322,7 @@ type TranscriptEvent struct {
 type ExtractedEntity struct {
 	Name        string              `json:"name,omitempty"`
 	Description string              `json:"description,omitempty"`
+	SourceText  string              `json:"source_text,omitempty"` // Original user sentence where this was mentioned
 	Type        NodeType            `json:"type,omitempty"`
 	Tags        []string            `json:"tags,omitempty"`
 	Attributes  map[string]string   `json:"attributes,omitempty"`

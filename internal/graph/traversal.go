@@ -677,6 +677,7 @@ func (c *Client) GetSampleNodes(ctx context.Context, namespace string, limit int
 			uid
 			name
 			description
+			source_text
 			namespace
 			activation
 			created_at

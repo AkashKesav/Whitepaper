@@ -33,6 +33,7 @@ type GraphNode struct {
 	Group      string  `json:"group,omitempty"` // Person, Skill, Location, Department
 	Size       int     `json:"size,omitempty"`
 	Activation float64 `json:"activation,omitempty"` // For frontend sizing
+	SourceText string  `json:"source_text,omitempty"` // Original quote from user
 }
 
 type GraphEdge struct {
@@ -173,6 +174,7 @@ func (s *Server) GetVisualGraph(w http.ResponseWriter, r *http.Request) {
 				Group:      group,
 				Size:       int(10 + (n.Activation * 20)), // Scale size by activation (10-30)
 				Activation: n.Activation,                  // Pass to frontend for additional scaling
+				SourceText: n.SourceText,                  // Original quote from user
 			})
 
 			// Create edges between consecutive nodes for visualization

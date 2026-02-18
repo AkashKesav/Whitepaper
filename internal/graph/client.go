@@ -2047,6 +2047,11 @@ func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summar
 `, entityNode, namespace))
 			nquads.WriteString(fmt.Sprintf(`%s <description> %q .
 `, entityNode, e.Description))
+			// Store the original source text (what the user actually said)
+			if e.SourceText != "" {
+				nquads.WriteString(fmt.Sprintf(`%s <source_text> %q .
+`, entityNode, e.SourceText))
+			}
 			// Initial activation for new entities (very low baseline for gradual strengthening)
 			nquads.WriteString(fmt.Sprintf(`%s <activation> "%f"^^<xs:double> .
 `, entityNode, 0.15))
