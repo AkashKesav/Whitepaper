@@ -190,13 +190,23 @@ func (e *DefaultEngine) Evaluate(ctx context.Context, user UserContext, resource
 		return EffectDeny, fmt.Errorf("invalid user context: authenticated but missing UserID")
 	}
 
-	// 1. Tenant Isolation (Namespace Check)
+	// 1. Explicit DENY Policy Check (Deny ALWAYS overrides everything)
+	// SECURITY: Check deny policies FIRST before any other checks
+	for _, pol := range e.policies {
+		if pol.Effect == EffectDeny {
+			if e.matches(pol, user, resource, action) {
+				return EffectDeny, fmt.Errorf("explicitly denied by policy %s", pol.ID)
+			}
+		}
+	}
+
+	// 2. Tenant Isolation (Namespace Check)
 	// If resource has a namespace, user must match it or be in a group that owns it.
-	// SECURITY FIX: Direct ownership grants immediate access for user's own namespace
+	// SECURITY FIX: Direct ownership grants access for user's own namespace (unless explicitly denied above)
 	if resource.Namespace != "" {
-		// Check direct ownership - user can always access their own namespace
+		// Check direct ownership - user can access their own namespace (unless denied above)
 		if resource.Namespace == fmt.Sprintf("user_%s", user.UserID) {
-			return EffectAllow, nil // FIX: Return ALLOW immediately for user's own namespace
+			return EffectAllow, nil
 		}
 
 		// Check group membership
@@ -211,11 +221,11 @@ func (e *DefaultEngine) Evaluate(ctx context.Context, user UserContext, resource
 		if !hasGroupAccess {
 			return EffectDeny, fmt.Errorf("namespace mismatch: resource belongs to %s", resource.Namespace)
 		}
-		// FIX: Group members have implicit ALLOW access to group namespace resources
+		// Group members have implicit ALLOW access to group namespace resources
 		return EffectAllow, nil
 	}
 
-	// 2. Classification/Clearance Level (ABAC)
+	// 3. Classification/Clearance Level (ABAC)
 	// Check for "class:X" tags on the node
 	resourceLevel := 0
 	for _, tag := range resource.Tags {
@@ -238,20 +248,7 @@ func (e *DefaultEngine) Evaluate(ctx context.Context, user UserContext, resource
 		return EffectDeny, fmt.Errorf("insufficient clearance: user=%d, resource=%d", user.Clearance, resourceLevel)
 	}
 
-	// 3. Explicit Policy Evaluation (RBAC/Policy)
-	// SECURITY: Default to Deny for secure systems - only allow if explicitly permitted
-	// Require explicit ALLOW policies or namespace ownership
-
-	// Check for Deny first (Deny overrides everything)
-	for _, pol := range e.policies {
-		if pol.Effect == EffectDeny {
-			if e.matches(pol, user, resource, action) {
-				return EffectDeny, fmt.Errorf("explicitly denied by policy %s", pol.ID)
-			}
-		}
-	}
-
-	// Check for explicit Allow
+	// 4. Explicit ALLOW Policy Check
 	for _, pol := range e.policies {
 		if pol.Effect == EffectAllow {
 			if e.matches(pol, user, resource, action) {
@@ -261,11 +258,6 @@ func (e *DefaultEngine) Evaluate(ctx context.Context, user UserContext, resource
 	}
 
 	// Default: Deny if no explicit Allow policy matches
-	// Exception: Users can always access resources in their own namespace
-	if resource.Namespace == fmt.Sprintf("user_%s", user.UserID) {
-		return EffectAllow, nil
-	}
-
 	return EffectDeny, fmt.Errorf("no explicit allow policy found for user=%s on resource=%s", user.UserID, resource.UID)
 }
 
@@ -313,13 +305,43 @@ func (e *DefaultEngine) matches(policy Policy, user UserContext, resource *graph
 			resourceMatch = true
 			break
 		}
+		// Match by node UID
 		if r == fmt.Sprintf("node:%s", resource.UID) {
 			resourceMatch = true
 			break
 		}
+		// Match by dgraph.type (e.g., "type:Entity" matches nodes with dgraph.type="Entity")
 		if strings.HasPrefix(r, "type:") && resourceType == strings.TrimPrefix(r, "type:") {
 			resourceMatch = true
 			break
+		}
+		// Match by tag (e.g., "tag:Financial" matches nodes with "tag:Financial" or "Financial" in tags)
+		if strings.HasPrefix(r, "tag:") {
+			tagValue := strings.TrimPrefix(r, "tag:")
+			for _, tag := range resource.Tags {
+				// Support multiple tag formats: "Financial", "tag:Financial", "class:Financial"
+				if tag == tagValue || tag == fmt.Sprintf("tag:%s", tagValue) || tag == fmt.Sprintf("class:%s", tagValue) {
+					resourceMatch = true
+					break
+				}
+			}
+			if resourceMatch {
+				break
+			}
+		}
+		// Match by name pattern (e.g., "name:Bank*" matches nodes with name starting with "Bank")
+		if strings.HasPrefix(r, "name:") {
+			namePattern := strings.TrimPrefix(r, "name:")
+			if strings.HasSuffix(namePattern, "*") {
+				prefix := strings.TrimSuffix(namePattern, "*")
+				if strings.HasPrefix(resource.Name, prefix) {
+					resourceMatch = true
+					break
+				}
+			} else if resource.Name == namePattern {
+				resourceMatch = true
+				break
+			}
 		}
 	}
 

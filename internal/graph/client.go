@@ -2058,6 +2058,12 @@ func (c *Client) IngestWisdomBatch(ctx context.Context, namespace string, summar
 			nquads.WriteString(fmt.Sprintf(`%s <created_at> "%s"^^<xs:dateTime> .
 `, entityNode, now))
 
+			// Store tags for policy-based access control
+			for _, tag := range e.Tags {
+				nquads.WriteString(fmt.Sprintf(`%s <tags> %q .
+`, entityNode, tag))
+			}
+
 			// Link Entity -> Summary (Derived From)
 			nquads.WriteString(fmt.Sprintf(`%s <synthesized_from> %s .
 `, entityNode, summaryNode))

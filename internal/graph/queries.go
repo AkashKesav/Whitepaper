@@ -63,6 +63,7 @@ func (q *QueryBuilder) GetHighActivationNodes(ctx context.Context, namespace str
 			dgraph.type
 			name
 			description
+			tags
 			activation
 			access_count
 			last_accessed
@@ -261,15 +262,17 @@ func (q *QueryBuilder) SearchByText(ctx context.Context, namespace string, searc
 			dgraph.type
 			name
 			description
+			tags
 			activation
 			last_accessed
 		}
-		
+
 		desc_results(func: anyoftext(description, $text), first: $limit) @filter(eq(namespace, $namespace)) {
 			uid
 			dgraph.type
 			name
 			description
+			tags
 			activation
 			last_accessed
 		}
@@ -405,6 +408,7 @@ func (q *QueryBuilder) GetAllNodes(ctx context.Context, namespace string, limit 
 			dgraph.type
 			name
 			description
+			tags
 			activation
 			access_count
 			last_accessed
@@ -513,9 +517,10 @@ func (q *QueryBuilder) GetUserRelatedNodes(ctx context.Context, userID string, l
 				dgraph.type
 				name
 				description
+				tags
 				activation
 				last_accessed
-				
+
 				# Also get the reverse relationship targets (e.g., who this person has_manager to)
 				~has_manager {
 					uid
@@ -527,6 +532,7 @@ func (q *QueryBuilder) GetUserRelatedNodes(ctx context.Context, userID string, l
 				dgraph.type
 				name
 				description
+				tags
 				activation
 			}
 		}

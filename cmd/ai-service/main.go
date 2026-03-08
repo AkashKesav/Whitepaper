@@ -428,6 +428,141 @@ type SummarizeBatchResponse struct {
 
 // Handler implementations
 
+// classifyEntity categorizes an entity and returns appropriate tags for policy enforcement
+func classifyEntity(name, description string) []string {
+  textLower := strings.ToLower(name + " " + description)
+
+  // Financial keywords
+  financialKeywords := []string{
+    "bank", "account", "credit", "debit card", "loan", "mortgage", "investment",
+    "salary", "income", "expense", "budget",
+    "money", "cash", "savings", "checking", "balance", "fund",
+    "payment", "bill", "invoice", "tax",
+    "irs", "financial", "audit", "profit", "loss",
+    "asset", "portfolio", "insurance", "policy", "premium",
+    "crypto", "bitcoin", "ethereum", "cryptocurrency", "wallet", "trading", "investment",
+  }
+
+  // Health keywords
+  healthKeywords := []string{
+    "health", "medical", "doctor", "hospital", "clinic",
+    "medicine", "medication", "prescription", "drug",
+    "treatment", "therapy", "surgery", "symptom", "diagnosis",
+    "condition", "disease", "illness", "allergy", "allergies",
+    "mental", "wellness", "fitness", "diet", "nutrition",
+  }
+
+  // Personal/Relationships keywords
+  personalKeywords := []string{
+    "family", "parent", "mother", "father", "son", "daughter",
+    "brother", "sister", "spouse", "husband", "wife",
+    "partner", "boyfriend", "girlfriend", "friend", "buddy",
+    "colleague", "coworker", "relationship", "dating", "married",
+    "divorced", "engagement", "wedding", "anniversary", "birthday",
+    "pet", "dog", "cat", "bird", "animal",
+  }
+
+  // Location keywords
+  locationKeywords := []string{
+    "location", "address", "city", "state", "country",
+    "zip", "postal", "street", "home", "house", "apartment",
+    "office", "workplace", "school", "university",
+    "gym", "restaurant", "cafe", "bar", "hotel",
+    "travel", "vacation", "trip", "flight", "destination",
+  }
+
+  // Preference keywords
+  preferenceKeywords := []string{
+    "preference", "like", "love", "hate", "enjoy", "favorite",
+    "prefer", "want", "wish", "need",
+    "goal", "dream", "hobby", "interest", "passion",
+    "sport", "music", "movie", "book", "game",
+    "food", "cuisine", "drink",
+  }
+
+  // Professional keywords
+  professionalKeywords := []string{
+    "job", "work", "career", "company", "employer", "employee",
+    "manager", "boss", "team", "project", "client",
+    "meeting", "presentation", "deadline", "task", "assignment",
+    "promotion", "raise", "resignation", "hire", "fired",
+  }
+
+  // Track which categories matched
+  matchedCategories := make([]string, 0)
+
+  // Check Financial keywords
+  for _, kw := range financialKeywords {
+    if strings.Contains(textLower, kw) {
+      matchedCategories = append(matchedCategories, "Financial")
+      break
+    }
+  }
+
+  // Check Health keywords
+  for _, kw := range healthKeywords {
+    if strings.Contains(textLower, kw) {
+      matchedCategories = append(matchedCategories, "Health")
+      break
+    }
+  }
+
+  // Check Personal keywords
+  for _, kw := range personalKeywords {
+    if strings.Contains(textLower, kw) {
+      matchedCategories = append(matchedCategories, "Personal")
+      break
+    }
+  }
+
+  // Check Location keywords
+  for _, kw := range locationKeywords {
+    if strings.Contains(textLower, kw) {
+      matchedCategories = append(matchedCategories, "Location")
+      break
+    }
+  }
+
+  // Check Preference keywords
+  for _, kw := range preferenceKeywords {
+    if strings.Contains(textLower, kw) {
+      matchedCategories = append(matchedCategories, "Preference")
+      break
+    }
+  }
+
+  // Check Professional keywords
+  for _, kw := range professionalKeywords {
+    if strings.Contains(textLower, kw) {
+      matchedCategories = append(matchedCategories, "Professional")
+      break
+    }
+  }
+
+  // Determine sensitivity level
+  sensitivity := "normal"
+  for _, cat := range matchedCategories {
+    if cat == "Health" {
+      sensitivity = "confidential"
+      break
+    }
+    if cat == "Financial" {
+      sensitivity = "sensitive"
+    }
+  }
+
+  // Add tags for matched categories only
+  tags := make([]string, 0)
+  for _, cat := range matchedCategories {
+    tags = append(tags, "tag:"+cat)
+  }
+  if sensitivity != "normal" {
+    tags = append(tags, "sensitivity:"+sensitivity)
+  }
+
+  return tags
+}
+
 func (s *AIService) extractEntities(req *server.Request, r ExtractRequest) *server.Response {
 	start := time.Now()
 	ctx := context.Background()
@@ -474,10 +609,22 @@ JSON:`, r.UserQuery, r.AIResponse, orDefault(r.Context, "None"))
 	if found {
 		for _, item := range entityArray {
 			if entityMap, ok := item.(map[string]interface{}); ok {
+				name := getString(entityMap, "name")
+				description := getString(entityMap, "description")
+
+				// Get tags from LLM response if available
+				tags := getTagsFromArray(entityMap, "tags")
+
+				// If no tags from LLM, classify locally
+				if len(tags) == 0 {
+					tags = classifyEntity(name, description)
+				}
+
 				entities = append(entities, ExtractedEntity{
-					Name:        getString(entityMap, "name"),
+					Name:        name,
 					Type:        getString(entityMap, "type"),
-					Description: getString(entityMap, "description"),
+					Description: description,
+					Tags:        tags,
 					Source:      "llm",
 					Confidence:  getFloat(entityMap, "confidence"),
 				})
@@ -487,11 +634,46 @@ JSON:`, r.UserQuery, r.AIResponse, orDefault(r.Context, "None"))
 		s.logger.Warn("no entity array in result", zap.Any("keys", getMapKeys(result)))
 	}
 
-	s.logger.Info("extracted entities",
+	s.logger.Info("extracted entities with classification",
 		zap.Int("count", len(entities)),
+		zap.Any("sample", getSampleEntities(entities)),
 		zap.Duration("duration", time.Since(start)))
 
 	return server.JSON(entities, 200)
+}
+
+// getTagsFromArray safely extracts a string array from a map
+func getTagsFromArray(m map[string]interface{}, key string) []string {
+	if val, ok := m[key]; ok {
+		switch v := val.(type) {
+		case []interface{}:
+			result := make([]string, 0, len(v))
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					result = append(result, s)
+				}
+			}
+			return result
+		case []string:
+			return v
+		}
+	}
+	return nil
+}
+
+// getSampleEntities returns a sample of entities for logging
+func getSampleEntities(entities []ExtractedEntity) []map[string]interface{} {
+	sample := make([]map[string]interface{}, 1, 3)
+	for i, e := range entities {
+		if i >= 3 {
+			break
+		}
+		sample = append(sample, map[string]interface{}{
+			"name": e.Name,
+			"tags": e.Tags,
+		})
+	}
+	return sample
 }
 
 func (s *AIService) curateFacts(req *server.Request, r CurationRequest) *server.Response {
@@ -1061,11 +1243,16 @@ JSON:`, r.Text)
 				if name == "" {
 					continue
 				}
+				description := getString(entityMap, "description")
+				// Classify entity and add tags
+				tags := classifyEntity(name, description)
+
 				entities = append(entities, ExtractedEntity{
 					Name:        name,
 					Type:        getString(entityMap, "type"),
-					Description: getString(entityMap, "description"),
+					Description: description,
 					SourceText:  getString(entityMap, "source_text"),
+					Tags:        tags,
 					Source:      "wisdom_layer",
 					Confidence:  0.85,
 				})
